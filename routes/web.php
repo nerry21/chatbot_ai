@@ -102,12 +102,40 @@ Route::middleware(['auth', 'chatbot.admin'])
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Debug / Observability Tools
-// Protected by 'auth' middleware — requires login.
+//
+// SECURITY MODEL:
+//   - Tidak membutuhkan login (tidak ada middleware 'auth').
+//   - Dilindungi dengan DEBUG_TOKEN di .env.
+//   - Setiap request wajib menyertakan ?token=DEBUG_TOKEN_VALUE.
+//   - Jika DEBUG_TOKEN kosong di .env, endpoint selalu mengembalikan 403.
+//
+// Cara mengamankan kembali setelah testing selesai (pilih salah satu):
+//   OPSI 1 — Hapus DEBUG_TOKEN dari .env → endpoint otomatis 403 forever.
+//   OPSI 2 — Kembalikan Route::middleware('auth') dan hapus checkDebugToken().
+//   OPSI 3 — Hapus seluruh grup route ini dari file.
 // ─────────────────────────────────────────────────────────────────────────────
-Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): void {
+
+/**
+ * Validate the ?token= query param against DEBUG_TOKEN in .env.
+ * Returns 403 JSON if token is missing, empty, or wrong.
+ */
+function checkDebugToken(\Illuminate\Http\Request $request): ?\Illuminate\Http\JsonResponse
+{
+    $expected = (string) env('DEBUG_TOKEN', '');
+    if ($expected === '') {
+        return response()->json(['error' => 'DEBUG_TOKEN not set in .env — endpoint disabled.'], 403);
+    }
+    $provided = (string) $request->query('token', '');
+    if (! hash_equals($expected, $provided)) {
+        return response()->json(['error' => 'Invalid or missing ?token='], 403);
+    }
+    return null;
+}
+
+Route::prefix('debug')->name('debug.')->group(function (): void {
 
     /**
-     * GET /debug/wa-log-test
+     * GET /debug/wa-log-test?token=YOUR_DEBUG_TOKEN
      *
      * Writes one test entry to every log channel and returns a health JSON.
      * Use after deployment to verify the full logging pipeline.
@@ -117,9 +145,13 @@ Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): v
      *   2. WaLog::info — whatsapp_stack (laravel.log + whatsapp-YYYY-MM-DD.log)
      *   3. Log::channel('whatsapp') — whatsapp channel directly
      *   4. WaLog::error — triggers emergency fallback copy too
-     *   5. WaLog::emergency — raw emergency file write
+     *   5. WaLog::emergency — raw emergency file write (paling aman)
      */
-    Route::get('/wa-log-test', function () {
+    Route::get('/wa-log-test', function (\Illuminate\Http\Request $request) {
+        if ($denied = checkDebugToken($request)) {
+            return $denied;
+        }
+
         $trace   = WaLog::newTrace();
         $results = [];
 
@@ -153,9 +185,9 @@ Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): v
             $results['whatsapp_channel'] = 'FAILED: ' . $e->getMessage();
         }
 
-        // 4. WaLog::error — also writes to emergency file
+        // 4. WaLog::error — juga menulis ke emergency file secara otomatis
         try {
-            WaLog::error('[DEBUG] wa-log-test — WaLog::error (also triggers emergency copy)', [
+            WaLog::error('[DEBUG] wa-log-test — WaLog::error OK (also emergency)', [
                 'source' => 'debug-endpoint',
             ]);
             $results['WaLog_error'] = 'OK (also wrote to emergency file)';
@@ -163,11 +195,11 @@ Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): v
             $results['WaLog_error'] = 'FAILED: ' . $e->getMessage();
         }
 
-        // 5. Emergency raw file (always last — most reliable)
+        // 5. Emergency raw file — paling aman, bypass semua Laravel plumbing
         WaLog::emergency('[DEBUG] wa-log-test — emergency direct write OK', ['source' => 'debug-endpoint'], 'INFO');
         $results['emergency_file'] = 'written';
 
-        // Collect log file info
+        // Kumpulkan info semua file .log
         $logDir  = storage_path('logs');
         $files   = glob($logDir . '/*.log') ?: [];
         $logInfo = [];
@@ -180,6 +212,7 @@ Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): v
         }
 
         return response()->json([
+            'ok'               => true,
             'trace_id'         => $trace,
             'storage_writable' => is_writable($logDir),
             'log_dir'          => $logDir,
@@ -196,37 +229,45 @@ Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): v
                 'VERIFY_TOKEN_SET'     => ! empty(config('services.whatsapp.verify_token')),
                 'LLM_ENABLED'          => config('chatbot.llm.enabled'),
                 'CRM_ENABLED'          => config('chatbot.crm.enabled'),
+                'whatsapp_channel_exists' => array_key_exists(
+                    'whatsapp', config('logging.channels', [])
+                ),
+                'whatsapp_stack_exists' => array_key_exists(
+                    'whatsapp_stack', config('logging.channels', [])
+                ),
             ],
-            'instructions' => [
-                'After checking this page, verify these log files updated:',
-                '  - storage/logs/laravel.log',
-                '  - storage/logs/whatsapp-' . date('Y-m-d') . '.log',
-                '  - storage/logs/whatsapp-emergency.log',
+            'expected_log_files' => [
+                'laravel.log'                                      => file_exists($logDir . '/laravel.log'),
+                'whatsapp-' . date('Y-m-d') . '.log'              => file_exists($logDir . '/whatsapp-' . date('Y-m-d') . '.log'),
+                'whatsapp-emergency.log'                           => file_exists($logDir . '/whatsapp-emergency.log'),
             ],
         ]);
     })->name('wa-log-test');
 
     /**
-     * POST /debug/wa-write-log
+     * POST /debug/wa-write-log?token=YOUR_DEBUG_TOKEN
      *
-     * Write a custom message to all channels at once.
-     * Body: { "message": "...", "level": "info|warning|error" }
-     *
-     * Useful for verifying a specific log level is captured.
+     * Tulis pesan custom ke semua channel sekaligus.
+     * Body JSON: { "message": "...", "level": "info|warning|error" }
      */
     Route::post('/wa-write-log', function (\Illuminate\Http\Request $request) {
+        if ($denied = checkDebugToken($request)) {
+            return $denied;
+        }
+
         $trace   = WaLog::newTrace();
         $message = $request->input('message', '[DEBUG] manual wa-write-log test');
-        $level   = in_array($request->input('level'), ['debug', 'info', 'warning', 'error', 'critical'])
+        $level   = in_array($request->input('level'), ['debug', 'info', 'warning', 'error', 'critical'], true)
             ? $request->input('level')
             : 'info';
 
-        $ctx = ['source' => 'wa-write-log-endpoint', 'user' => $request->user()?->id];
+        $ctx = ['source' => 'wa-write-log-endpoint'];
 
         WaLog::{$level}("[MANUAL] {$message}", $ctx);
         WaLog::emergency("[MANUAL] {$message}", $ctx, strtoupper($level));
 
         return response()->json([
+            'ok'       => true,
             'trace_id' => $trace,
             'level'    => $level,
             'message'  => $message,
