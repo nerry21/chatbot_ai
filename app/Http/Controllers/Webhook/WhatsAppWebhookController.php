@@ -8,106 +8,164 @@ use App\Support\WaLog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Throwable;
 
 class WhatsAppWebhookController extends Controller
 {
     public function __construct(
         private readonly WhatsAppWebhookService $webhookService,
-    ) {}
+    ) {
+    }
 
     // ─── GET /webhook/whatsapp — Meta hub verification ────────────────────────
 
     public function verify(Request $request): Response|JsonResponse
     {
-        $mode      = $request->query('hub_mode');
-        $token     = $request->query('hub_verify_token');
-        $challenge = $request->query('hub_challenge');
+        $mode = (string) $request->query('hub_mode', '');
+        $token = (string) $request->query('hub_verify_token', '');
+        $challenge = (string) $request->query('hub_challenge', '');
 
         WaLog::info('[Verify] Parameters received', [
-            'hub_mode'      => $mode,
-            'has_challenge' => ! empty($challenge),
-            'token_preview' => WaLog::maskToken((string) $token),
-            'ip'            => $request->ip(),
+            'hub_mode' => $mode,
+            'has_challenge' => $challenge !== '',
+            'token_preview' => WaLog::maskToken($token),
+            'ip' => $request->ip(),
         ]);
 
         if ($mode !== 'subscribe') {
             WaLog::warning('[Verify] Rejected — unexpected hub_mode', [
                 'hub_mode' => $mode,
-                'ip'       => $request->ip(),
+                'ip' => $request->ip(),
             ]);
-            return response()->json(['error' => 'Invalid hub_mode.'], 400);
+
+            return response()->json([
+                'error' => 'Invalid hub_mode.',
+            ], 400);
         }
 
-        $expectedToken = config('services.whatsapp.verify_token');
+        $expectedToken = (string) config('services.whatsapp.verify_token', '');
 
-        if (! hash_equals((string) $expectedToken, (string) $token)) {
-            WaLog::warning('[Verify] Rejected — token mismatch', [
-                'received_preview' => WaLog::maskToken((string) $token),
-                'expected_preview' => WaLog::maskToken((string) $expectedToken),
-                'ip'               => $request->ip(),
+        if ($expectedToken === '') {
+            WaLog::error('[Verify] Missing config services.whatsapp.verify_token', [
+                'ip' => $request->ip(),
             ]);
-            return response()->json(['error' => 'Forbidden.'], 403);
+
+            return response()->json([
+                'error' => 'Server misconfiguration.',
+            ], 500);
+        }
+
+        if (! hash_equals($expectedToken, $token)) {
+            WaLog::warning('[Verify] Rejected — token mismatch', [
+                'received_preview' => WaLog::maskToken($token),
+                'expected_preview' => WaLog::maskToken($expectedToken),
+                'ip' => $request->ip(),
+            ]);
+
+            return response()->json([
+                'error' => 'Forbidden.',
+            ], 403);
         }
 
         WaLog::info('[Verify] SUCCESS — challenge echoed back', [
             'challenge' => $challenge,
-            'ip'        => $request->ip(),
+            'ip' => $request->ip(),
         ]);
 
-        // Meta expects the challenge as plain text with HTTP 200.
-        return response((string) $challenge, 200)
-            ->header('Content-Type', 'text/plain');
+        return response($challenge, 200)
+            ->header('Content-Type', 'text/plain; charset=UTF-8');
     }
 
     // ─── POST /webhook/whatsapp — Incoming messages from Meta ────────────────
 
     public function receive(Request $request): JsonResponse
     {
+        WaLog::info('[Receive] POST webhook reached', [
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'headers' => $request->headers->all(),
+            'raw_body' => $request->getContent(),
+        ]);
+
         $payload = $request->json()->all();
 
-        if (empty($payload)) {
-            WaLog::warning('[Receive] Empty payload received', ['ip' => $request->ip()]);
-            return response()->json(['error' => 'Empty payload.'], 400);
+        if (! is_array($payload) || empty($payload)) {
+            WaLog::warning('[Receive] Empty payload received', [
+                'ip' => $request->ip(),
+                'raw_body' => $request->getContent(),
+            ]);
+
+            return response()->json([
+                'error' => 'Empty payload.',
+            ], 400);
         }
 
-        // Count entries and messages for the log
-        $entryCount   = count($payload['entry'] ?? []);
+        $entryCount = count($payload['entry'] ?? []);
         $messageCount = 0;
-        $eventTypes   = [];
+        $statusCount = 0;
+        $eventTypes = [];
+        $statusDetails = [];
 
-        foreach ($payload['entry'] ?? [] as $entry) {
-            foreach ($entry['changes'] ?? [] as $change) {
-                $messages = $change['value']['messages'] ?? [];
-                $statuses = $change['value']['statuses'] ?? [];
-                $messageCount += count($messages);
-                foreach ($messages as $m) {
-                    $eventTypes[] = 'message:' . ($m['type'] ?? 'unknown');
+        foreach (($payload['entry'] ?? []) as $entry) {
+            foreach (($entry['changes'] ?? []) as $change) {
+                $value = $change['value'] ?? [];
+
+                $messages = $value['messages'] ?? [];
+                $statuses = $value['statuses'] ?? [];
+
+                if (is_array($messages)) {
+                    $messageCount += count($messages);
+
+                    foreach ($messages as $message) {
+                        $eventTypes[] = 'message:' . ($message['type'] ?? 'unknown');
+                    }
                 }
-                foreach ($statuses as $s) {
-                    $eventTypes[] = 'status:' . ($s['status'] ?? 'unknown');
+
+                if (is_array($statuses)) {
+                    $statusCount += count($statuses);
+
+                    foreach ($statuses as $status) {
+                        $eventTypes[] = 'status:' . ($status['status'] ?? 'unknown');
+
+                        $statusDetails[] = [
+                            'id' => $status['id'] ?? null,
+                            'status' => $status['status'] ?? null,
+                            'recipient_id' => $status['recipient_id'] ?? null,
+                            'timestamp' => $status['timestamp'] ?? null,
+                            'conversation' => $status['conversation'] ?? null,
+                            'pricing' => $status['pricing'] ?? null,
+                            'errors' => $status['errors'] ?? null,
+                        ];
+                    }
                 }
             }
         }
 
         WaLog::info('[Receive] Payload accepted', [
-            'object'        => $payload['object'] ?? null,
-            'entry_count'   => $entryCount,
+            'object' => $payload['object'] ?? null,
+            'entry_count' => $entryCount,
             'message_count' => $messageCount,
-            'event_types'   => array_unique($eventTypes),
-            'ip'            => $request->ip(),
+            'status_count' => $statusCount,
+            'event_types' => array_values(array_unique($eventTypes)),
+            'status_details' => $statusDetails,
+            'payload' => $payload,
+            'ip' => $request->ip(),
         ]);
 
         try {
             $this->webhookService->handle($payload);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             WaLog::error('[Receive] Unhandled exception in webhookService->handle()', [
                 'error' => $e->getMessage(),
-                'file'  => $e->getFile() . ':' . $e->getLine(),
+                'file' => $e->getFile() . ':' . $e->getLine(),
                 'trace' => $e->getTraceAsString(),
+                'ip' => $request->ip(),
+                'payload' => $payload,
             ]);
         }
 
-        // Always return 200 to Meta — prevents infinite retries.
-        return response()->json(['status' => 'ok'], 200);
+        return response()->json([
+            'status' => 'ok',
+        ], 200);
     }
 }
