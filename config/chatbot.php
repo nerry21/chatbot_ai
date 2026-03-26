@@ -45,6 +45,60 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Conversation Guards
+    |--------------------------------------------------------------------------
+    |
+    | Small deterministic rules that protect the bot from awkward loops:
+    | - close_intents              — short acknowledgements treated as a polite
+    |                                close when the conversation is stuck on an
+    |                                unavailable route/slot.
+    | - unavailable_state_key      — conversation_states key used to remember the
+    |                                last unavailable/unsupported-route reply.
+    | - unavailable_state_ttl_hours — automatically expire stale unavailable state.
+    | - unavailable_followup_reply — sent instead of repeating the same
+    |                                unavailable reply when the customer has not
+    |                                provided any new relevant booking data.
+    | - unavailable_close_reply    — sent when a close intent is detected while
+    |                                unavailable state is active.
+    |
+    */
+
+    'guards' => [
+        'close_intents' => [
+            'oke',
+            'ok',
+            'baik',
+            'siap',
+            'tidak ada',
+            'ga ada',
+            'nggak ada',
+            'tidak',
+            'ya sudah',
+            'makasih',
+            'terima kasih',
+        ],
+        'close_intent_courtesy_tails' => [
+            'ya',
+            'yah',
+            'kak',
+            'kakak',
+            'min',
+            'admin',
+            'mas',
+            'mba',
+            'mbak',
+            'bang',
+            'bro',
+            'sis',
+        ],
+        'unavailable_state_key'       => 'route_unavailable_context',
+        'unavailable_state_ttl_hours' => (int) env('CHATBOT_UNAVAILABLE_STATE_TTL_HOURS', 24),
+        'unavailable_followup_reply'  => 'Baik, kalau ingin saya cek lagi, silakan kirim rute atau detail perjalanan baru yang ingin dicoba.',
+        'unavailable_close_reply'     => 'Baik, terima kasih. Jika nanti Anda ingin cek rute atau jadwal lain, silakan kirim detail barunya ya.',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Booking Engine
     |--------------------------------------------------------------------------
     |

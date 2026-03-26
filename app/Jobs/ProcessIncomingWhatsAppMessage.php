@@ -15,6 +15,7 @@ use App\Services\AI\IntentClassifierService;
 use App\Services\AI\ResponseGeneratorService;
 use App\Services\Booking\BookingAssistantService;
 use App\Services\Chatbot\ConversationManagerService;
+use App\Services\Chatbot\ConversationReplyGuardService;
 use App\Services\Chatbot\ConversationStateService;
 use App\Services\Chatbot\CustomerMemoryService;
 use App\Services\Chatbot\ReplyOrchestratorService;
@@ -56,6 +57,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ConversationSummaryService $summaryService,
         ConversationManagerService $conversationManager,
         BookingAssistantService    $bookingAssistant,
+        ConversationReplyGuardService $replyGuard,
         ReplyOrchestratorService   $replyOrchestrator,
         ContactTaggingService      $contactTagging,
         LeadPipelineService        $leadPipeline,
@@ -247,20 +249,64 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             ];
 
             $finalReply = $replyOrchestrator->compose($orchestratorContext);
+            $guardResult = $replyGuard->guardReply(
+                conversation : $conversation,
+                messageText  : $messageText,
+                entityResult : $entityResult,
+                reply        : $finalReply,
+            );
+            $finalReply = $guardResult['reply'];
+
+            if ($guardResult['close_intent_detected']) {
+                $intentResult = array_merge($intentResult, [
+                    'intent'          => IntentType::Farewell->value,
+                    'confidence'      => max((float) ($intentResult['confidence'] ?? 0), 0.99),
+                    'reasoning_short' => 'Close intent detected after unavailable route.',
+                ]);
+
+                WaLog::info('[Job:ProcessIncoming] Close intent detected — conversation will be closed politely', [
+                    'conversation_id' => $conversation->id,
+                    'message_id'      => $message->id,
+                    'text_preview'    => $message->textPreview(80),
+                ]);
+            }
+
+            if ($guardResult['unavailable_repeat_blocked']) {
+                WaLog::info('[Job:ProcessIncoming] Unavailable route no-repeat guard applied', [
+                    'conversation_id' => $conversation->id,
+                    'message_id'      => $message->id,
+                    'booking_action'  => $bookingDecision['action'] ?? null,
+                    'text_preview'    => $message->textPreview(80),
+                ]);
+            }
 
             // ── 9. Persist all results ──────────────────────────────────────
             $outboundMessage = $this->persistResults(
                 conversation        : $conversation,
                 message             : $message,
                 conversationManager : $conversationManager,
+                replyGuard          : $replyGuard,
                 intentResult        : $intentResult,
                 summaryResult       : $summaryResult,
                 finalReply          : $finalReply,
+                booking             : $booking,
+                guardResult         : $guardResult,
                 bookingDecision     : $bookingDecision,
             );
 
             // ── 9.5 Dispatch WhatsApp send job for the bot reply ────────────
-            SendWhatsAppMessageJob::dispatch($outboundMessage->id, WaLog::traceId());
+            if ($outboundMessage !== null) {
+                SendWhatsAppMessageJob::dispatch($outboundMessage->id, WaLog::traceId());
+            }
+
+            if ($guardResult['close_conversation']) {
+                $conversationManager->close($conversation);
+
+                WaLog::info('[Job:ProcessIncoming] Conversation closed after close intent', [
+                    'conversation_id' => $conversation->id,
+                    'message_id'      => $message->id,
+                ]);
+            }
 
             // ── 9.7 Update AI quality labels (Tahap 10) ─────────────────────
             // Non-fatal: must not break the pipeline on failure.
@@ -297,7 +343,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'used_knowledge'  => $replyResult['used_knowledge'] ?? false,
                 'used_faq'        => $replyResult['used_faq'] ?? false,
                 'knowledge_count' => count($knowledgeHits),
-                'outbound_id'     => $outboundMessage->id,
+                'outbound_id'     => $outboundMessage?->id,
+                'outbound_skipped' => $outboundMessage === null,
                 'duration_ms'     => $durationMs,
             ]);
         } catch (\Throwable $e) {
@@ -541,46 +588,159 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     }
 
     /**
-     * Persist all pipeline results and return the saved outbound message
-     * so the caller can dispatch SendWhatsAppMessageJob.
+     * Persist message/conversation AI results that do not depend on whether an
+     * outbound reply is eventually sent.
      *
      * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
      * @param  array{summary: string}                                             $summaryResult
-     * @param  array{text: string, is_fallback: bool, meta: array}               $finalReply
-     * @param  array<string, mixed>|null                                          $bookingDecision
      */
-    private function persistResults(
+    private function persistConversationResults(
         Conversation $conversation,
         ConversationMessage $message,
-        ConversationManagerService $conversationManager,
         array $intentResult,
         array $summaryResult,
-        array $finalReply,
-        ?array $bookingDecision,
-    ): ConversationMessage {
+    ): void {
         $message->tagWithAiResult($intentResult['intent'], $intentResult['confidence']);
         $conversation->updateIntent($intentResult['intent']);
 
         if (! empty($summaryResult['summary'])) {
             $conversation->updateSummary($summaryResult['summary']);
         }
+    }
 
-        $rawPayload = array_merge(
-            [
-                'source'      => $finalReply['meta']['source'] ?? 'ai_generated',
-                'is_fallback' => $finalReply['is_fallback'],
-                'intent'      => $intentResult['intent'],
-            ],
-            $bookingDecision !== null ? ['booking_action' => $bookingDecision['action']] : [],
+    /**
+     * Persist the outbound reply unless anti-repeat requires it to be skipped.
+     *
+     * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
+     * @param  array{text: string, is_fallback: bool, meta: array<string, mixed>}  $finalReply
+     * @param  array<string, mixed>                                                $guardResult
+     * @param  array<string, mixed>|null                                           $bookingDecision
+     */
+    private function persistResults(
+        Conversation $conversation,
+        ConversationMessage $message,
+        ConversationManagerService $conversationManager,
+        ConversationReplyGuardService $replyGuard,
+        array $intentResult,
+        array $summaryResult,
+        array $finalReply,
+        ?BookingRequest $booking,
+        array $guardResult,
+        ?array $bookingDecision,
+    ): ?ConversationMessage {
+        $this->persistConversationResults(
+            conversation  : $conversation,
+            message       : $message,
+            intentResult  : $intentResult,
+            summaryResult : $summaryResult,
         );
 
-        $outboundMessage = $conversationManager->appendOutboundMessage(
+        $latestOutbound = $conversation->latestOutboundMessage();
+
+        if ($replyGuard->shouldSkipRepeat($latestOutbound, $finalReply['text'])) {
+            WaLog::info('[Job:ProcessIncoming] Anti-repeat skip — outbound identical to latest reply', [
+                'conversation_id'    => $conversation->id,
+                'message_id'         => $message->id,
+                'latest_outbound_id' => $latestOutbound?->id,
+                'latest_preview'     => $latestOutbound?->textPreview(80),
+                'candidate_preview'  => mb_substr((string) $finalReply['text'], 0, 80),
+                'reply_source'       => $finalReply['meta']['source'] ?? null,
+                'reply_action'       => $finalReply['meta']['action'] ?? null,
+            ]);
+
+            $this->syncUnavailableContext(
+                conversation : $conversation,
+                booking      : $booking,
+                finalReply   : $finalReply,
+                guardResult  : $guardResult,
+                replyGuard   : $replyGuard,
+                outboundSent : false,
+            );
+
+            return null;
+        }
+
+        $outboundMessage = $this->persistOutboundReply(
+            conversation        : $conversation,
+            conversationManager : $conversationManager,
+            intentResult        : $intentResult,
+            finalReply          : $finalReply,
+            bookingDecision     : $bookingDecision,
+        );
+
+        $this->syncUnavailableContext(
+            conversation : $conversation,
+            booking      : $booking,
+            finalReply   : $finalReply,
+            guardResult  : $guardResult,
+            replyGuard   : $replyGuard,
+            outboundSent : true,
+        );
+
+        return $outboundMessage;
+    }
+
+    /**
+     * Persist an outbound bot reply row.
+     *
+     * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
+     * @param  array{text: string, is_fallback: bool, meta: array<string, mixed>}  $finalReply
+     * @param  array<string, mixed>|null                                           $bookingDecision
+     */
+    private function persistOutboundReply(
+        Conversation $conversation,
+        ConversationManagerService $conversationManager,
+        array $intentResult,
+        array $finalReply,
+        ?array $bookingDecision,
+    ): ConversationMessage {
+        $rawPayload = array_filter([
+            'source'        => $finalReply['meta']['source'] ?? 'ai_generated',
+            'reply_action'  => $finalReply['meta']['action'] ?? null,
+            'is_fallback'   => $finalReply['is_fallback'],
+            'intent'        => $intentResult['intent'],
+            'booking_action' => $bookingDecision['action'] ?? null,
+        ], static fn (mixed $value): bool => $value !== null);
+
+        return $conversationManager->appendOutboundMessage(
             conversation : $conversation,
             text         : $finalReply['text'],
             rawPayload   : $rawPayload,
         );
+    }
 
-        return $outboundMessage;
+    /**
+     * @param  array<string, mixed>  $guardResult
+     * @param  array{text: string, is_fallback: bool, meta: array<string, mixed>}  $finalReply
+     */
+    private function syncUnavailableContext(
+        Conversation $conversation,
+        ?BookingRequest $booking,
+        array $finalReply,
+        array $guardResult,
+        ConversationReplyGuardService $replyGuard,
+        bool $outboundSent,
+    ): void {
+        if ($guardResult['close_conversation'] ?? false) {
+            $replyGuard->clearUnavailableContext($conversation);
+            return;
+        }
+
+        if ($replyGuard->isUnavailableReply($finalReply)) {
+            if ($outboundSent) {
+                $replyGuard->rememberUnavailableContext($conversation, $booking, $finalReply);
+            }
+
+            return;
+        }
+
+        if (($finalReply['meta']['source'] ?? null) === 'guard.unavailable_followup') {
+            return;
+        }
+
+        if ($guardResult['has_unavailable_context'] ?? false) {
+            $replyGuard->clearUnavailableContext($conversation);
+        }
     }
 
     /**
