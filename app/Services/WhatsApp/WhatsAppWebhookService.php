@@ -27,10 +27,15 @@ class WhatsAppWebhookService
      *
      * @param  array<string, mixed>  $payload
      */
+    private function log(): \Illuminate\Log\LogManager|\Psr\Log\LoggerInterface
+    {
+        return Log::channel('whatsapp_stack');
+    }
+
     public function handle(array $payload): void
     {
         if (! $this->parser->isValidWebhookPayload($payload)) {
-            Log::warning('WhatsAppWebhookService: invalid or unsupported payload structure', [
+            $this->log()->warning('WhatsAppWebhookService: invalid or unsupported payload structure', [
                 'object' => $payload['object'] ?? null,
             ]);
             return;
@@ -38,13 +43,20 @@ class WhatsAppWebhookService
 
         $messages = $this->parser->extractMessages($payload);
 
+        $this->log()->info('WhatsAppWebhookService: processing payload', [
+            'message_count' => count($messages),
+        ]);
+
         foreach ($messages as $parsedMessage) {
             try {
                 $this->processSingleMessage($parsedMessage);
             } catch (\Throwable $e) {
-                Log::error('WhatsAppWebhookService: failed to process message', [
+                $this->log()->error('WhatsAppWebhookService: failed to process message', [
                     'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,
+                    'from_wa_id'    => $parsedMessage['from_wa_id'] ?? null,
                     'error'         => $e->getMessage(),
+                    'file'          => $e->getFile() . ':' . $e->getLine(),
+                    'trace'         => $e->getTraceAsString(),
                 ]);
             }
         }
@@ -67,11 +79,20 @@ class WhatsAppWebhookService
         $sentAt    = $parsedMessage['timestamp'];
 
         if ($rawWaId === null) {
-            Log::warning('WhatsAppWebhookService: message has no sender wa_id, skipping.');
+            $this->log()->warning('WhatsAppWebhookService: message has no sender wa_id, skipping.', [
+                'wa_message_id' => $messageId,
+            ]);
             return;
         }
 
         $phoneE164 = $this->phoneService->toE164($rawWaId);
+
+        $this->log()->info('WhatsAppWebhookService: message inbound received', [
+            'wa_message_id' => $messageId,
+            'from'          => $phoneE164,
+            'type'          => $type,
+            'has_text'      => $text !== null && $text !== '',
+        ]);
 
         DB::transaction(function () use (
             $phoneE164, $fromName, $messageId,

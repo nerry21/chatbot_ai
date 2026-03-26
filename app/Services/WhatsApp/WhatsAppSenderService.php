@@ -49,7 +49,7 @@ class WhatsAppSenderService
     public function sendText(string $toPhoneE164, string $text, array $meta = []): array
     {
         if (! $this->isEnabled()) {
-            Log::debug('[WhatsAppSender] Skipped — sender not enabled', [
+            Log::channel('whatsapp_stack')->debug('[WhatsAppSender] Skipped — sender not enabled', [
                 'to'      => $toPhoneE164,
                 'preview' => mb_substr($text, 0, 60),
             ]);
@@ -75,7 +75,7 @@ class WhatsAppSenderService
                 ->post($endpoint, $payload);
 
             if ($response->successful()) {
-                Log::info('[WhatsAppSender] Message sent', array_merge([
+                Log::channel('whatsapp_stack')->info('[WhatsAppSender] Message sent', array_merge([
                     'to'          => $toPhoneE164,
                     'wa_id'       => $response->json('messages.0.id'),
                 ], $meta));
@@ -83,7 +83,7 @@ class WhatsAppSenderService
                 return $this->result('sent', $response->json());
             }
 
-            Log::warning('[WhatsAppSender] Send failed — HTTP error', [
+            Log::channel('whatsapp_stack')->warning('[WhatsAppSender] Send failed — HTTP error', [
                 'to'          => $toPhoneE164,
                 'http_status' => $response->status(),
                 'body'        => $response->body(),
@@ -91,8 +91,10 @@ class WhatsAppSenderService
 
             return $this->result('failed', $response->json(), $response->body());
         } catch (\Throwable $e) {
-            Log::error('[WhatsAppSender] Send exception: ' . $e->getMessage(), [
-                'to' => $toPhoneE164,
+            Log::channel('whatsapp_stack')->error('[WhatsAppSender] Send exception: ' . $e->getMessage(), [
+                'to'    => $toPhoneE164,
+                'file'  => $e->getFile() . ':' . $e->getLine(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return $this->result('error', null, $e->getMessage());

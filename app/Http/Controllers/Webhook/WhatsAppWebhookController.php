@@ -19,6 +19,11 @@ class WhatsAppWebhookController extends Controller
     // GET /webhook/whatsapp  — Meta webhook verification
     // -------------------------------------------------------------------------
 
+    private function log(): \Illuminate\Log\LogManager|\Psr\Log\LoggerInterface
+    {
+        return Log::channel('whatsapp_stack');
+    }
+
     public function verify(Request $request): Response|JsonResponse
     {
         $mode      = $request->query('hub_mode');
@@ -26,16 +31,20 @@ class WhatsAppWebhookController extends Controller
         $challenge = $request->query('hub_challenge');
 
         if ($mode !== 'subscribe') {
-            Log::warning('WhatsApp webhook verify: unexpected hub_mode', ['hub_mode' => $mode]);
+            $this->log()->warning('WhatsApp webhook verify: unexpected hub_mode', ['hub_mode' => $mode]);
             return response()->json(['error' => 'Invalid hub_mode.'], 400);
         }
 
         $expectedToken = config('services.whatsapp.verify_token');
 
         if (! hash_equals((string) $expectedToken, (string) $token)) {
-            Log::warning('WhatsApp webhook verify: token mismatch');
+            $this->log()->warning('WhatsApp webhook verify: token mismatch', [
+                'ip' => $request->ip(),
+            ]);
             return response()->json(['error' => 'Forbidden.'], 403);
         }
+
+        $this->log()->info('WhatsApp webhook verified successfully', ['ip' => $request->ip()]);
 
         // Meta expects us to echo back the challenge as plain text with 200
         return response((string) $challenge, 200)
@@ -51,20 +60,22 @@ class WhatsAppWebhookController extends Controller
         $payload = $request->json()->all();
 
         if (empty($payload)) {
-            Log::warning('WhatsApp webhook receive: empty payload');
+            $this->log()->warning('WhatsApp webhook receive: empty payload', ['ip' => $request->ip()]);
             return response()->json(['error' => 'Empty payload.'], 400);
         }
 
-        Log::debug('WhatsApp webhook raw payload received', [
-            'object' => $payload['object'] ?? null,
+        $this->log()->debug('WhatsApp webhook raw payload received', [
+            'object'  => $payload['object'] ?? null,
+            'entries' => count($payload['entry'] ?? []),
         ]);
 
         try {
             $this->webhookService->handle($payload);
         } catch (\Throwable $e) {
             // Always return 200 to Meta to prevent retries for unrecoverable errors.
-            Log::error('WhatsApp webhook handle exception', [
+            $this->log()->error('WhatsApp webhook handle exception', [
                 'error' => $e->getMessage(),
+                'file'  => $e->getFile() . ':' . $e->getLine(),
                 'trace' => $e->getTraceAsString(),
             ]);
         }

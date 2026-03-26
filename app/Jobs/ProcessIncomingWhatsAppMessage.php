@@ -67,7 +67,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         $conversation = Conversation::with('customer')->find($this->conversationId);
 
         if ($message === null || $conversation === null) {
-            Log::warning('ProcessIncomingWhatsAppMessage: model not found', [
+            Log::channel('whatsapp_stack')->warning('ProcessIncomingWhatsAppMessage: model not found', [
                 'message_id'      => $this->messageId,
                 'conversation_id' => $this->conversationId,
             ]);
@@ -75,7 +75,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         }
 
         if ($conversation->customer === null) {
-            Log::warning('ProcessIncomingWhatsAppMessage: customer not found', [
+            Log::channel('whatsapp_stack')->warning('ProcessIncomingWhatsAppMessage: customer not found', [
                 'conversation_id' => $this->conversationId,
             ]);
             return;
@@ -89,7 +89,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             // When handoff_mode = 'admin', the conversation is owned by a human;
             // the bot must not generate or dispatch any auto-reply.
             if ($conversation->isAdminTakeover()) {
-                Log::info('ProcessIncomingWhatsAppMessage: SKIPPED — admin takeover active', [
+                Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: SKIPPED — admin takeover active', [
                     'conversation_id'  => $conversation->id,
                     'handoff_admin_id' => $conversation->handoff_admin_id,
                     'handoff_at'       => $conversation->handoff_at?->toDateTimeString(),
@@ -150,7 +150,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $intentResult = $intentClassifier->classify($aiContext);
             $aiContext['intent_result'] = $intentResult;
 
-            Log::info('ProcessIncomingWhatsAppMessage: intent classified', [
+            Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: intent classified', [
                 'conversation_id' => $conversation->id,
                 'intent'          => $intentResult['intent'],
                 'confidence'      => $intentResult['confidence'],
@@ -231,7 +231,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 leadPipeline   : $leadPipeline,
             );
 
-            Log::info('ProcessIncomingWhatsAppMessage: pipeline complete', [
+            Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: pipeline complete', [
                 'conversation_id'  => $conversation->id,
                 'message_id'       => $message->id,
                 'intent'           => $intentResult['intent'],
@@ -243,10 +243,12 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'outbound_id'      => $outboundMessage->id,
             ]);
         } catch (\Throwable $e) {
-            Log::error('ProcessIncomingWhatsAppMessage: pipeline error', [
+            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: pipeline error', [
                 'conversation_id' => $this->conversationId,
                 'message_id'      => $this->messageId,
                 'error'           => $e->getMessage(),
+                'file'            => $e->getFile() . ':' . $e->getLine(),
+                'trace'           => $e->getTraceAsString(),
             ]);
 
             $this->saveEmergencyFallback($conversation, $conversationManager);
@@ -354,7 +356,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 }
             }
         } catch (\Throwable $e) {
-            Log::warning('ProcessIncomingWhatsAppMessage: quality label update failed (non-fatal)', [
+            Log::channel('whatsapp_stack')->warning('ProcessIncomingWhatsAppMessage: quality label update failed (non-fatal)', [
                 'conversation_id' => $conversationId,
                 'message_id'      => $messageId,
                 'error'           => $e->getMessage(),
@@ -408,19 +410,22 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 );
             }
         } catch (\Throwable $e) {
-            Log::error('ProcessIncomingWhatsAppMessage: CRM layer failed (non-fatal)', [
+            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: CRM layer failed (non-fatal)', [
                 'conversation_id' => $conversation->id,
                 'error'           => $e->getMessage(),
+                'file'            => $e->getFile() . ':' . $e->getLine(),
             ]);
         }
     }
 
     public function failed(\Throwable $exception): void
     {
-        Log::critical('ProcessIncomingWhatsAppMessage: permanently failed after retries', [
+        Log::channel('whatsapp_stack')->critical('ProcessIncomingWhatsAppMessage: permanently failed after retries', [
             'message_id'      => $this->messageId,
             'conversation_id' => $this->conversationId,
             'error'           => $exception->getMessage(),
+            'file'            => $exception->getFile() . ':' . $exception->getLine(),
+            'trace'           => $exception->getTraceAsString(),
         ]);
     }
 
@@ -464,7 +469,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
         $bookingDecision = $bookingAssistant->decideNextStep($booking, $intentResult['intent']);
 
-        Log::info('ProcessIncomingWhatsAppMessage: booking engine decision', [
+        Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: booking engine decision', [
             'conversation_id' => $conversation->id,
             'booking_id'      => $booking->id,
             'action'          => $bookingDecision['action'],
@@ -565,7 +570,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'is_read' => false,
             ]);
         } catch (\Throwable $e) {
-            Log::error('ProcessIncomingWhatsAppMessage: failed to create inbound-during-takeover notification', [
+            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: failed to create inbound-during-takeover notification', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -585,8 +590,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             // Still attempt to send the fallback message to the customer.
             SendWhatsAppMessageJob::dispatch($outbound->id);
         } catch (\Throwable $inner) {
-            Log::error('ProcessIncomingWhatsAppMessage: emergency fallback also failed', [
+            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: emergency fallback also failed', [
                 'error' => $inner->getMessage(),
+                'file'  => $inner->getFile() . ':' . $inner->getLine(),
             ]);
         }
     }
