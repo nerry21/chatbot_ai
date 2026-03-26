@@ -102,38 +102,69 @@ Route::middleware(['auth', 'chatbot.admin'])
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Debug / Observability Tools
-// Requires login — remove or restrict further once confirmed working.
+// Protected by 'auth' middleware — requires login.
 // ─────────────────────────────────────────────────────────────────────────────
 Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): void {
 
     /**
      * GET /debug/wa-log-test
      *
-     * Verifies that all WhatsApp log channels are writable and returns a JSON
-     * report. Call this after deployment to confirm the logging pipeline is healthy.
+     * Writes one test entry to every log channel and returns a health JSON.
+     * Use after deployment to verify the full logging pipeline.
+     *
+     * Checks:
+     *   1. Log::info   — default Laravel channel (laravel.log)
+     *   2. WaLog::info — whatsapp_stack (laravel.log + whatsapp-YYYY-MM-DD.log)
+     *   3. Log::channel('whatsapp') — whatsapp channel directly
+     *   4. WaLog::error — triggers emergency fallback copy too
+     *   5. WaLog::emergency — raw emergency file write
      */
     Route::get('/wa-log-test', function () {
         $trace   = WaLog::newTrace();
         $results = [];
 
-        // Test WaLog (→ whatsapp_stack → laravel.log + whatsapp.log)
+        // 1. Default Laravel channel (Log::info → laravel.log)
         try {
-            WaLog::info('[DEBUG] wa-log-test — WaLog::info OK', ['source' => 'debug-endpoint']);
-            $results['WaLog::info'] = 'OK';
+            Log::info('[DEBUG] wa-log-test — default Log::info OK', [
+                '_trace'  => $trace,
+                '_source' => 'debug-endpoint',
+            ]);
+            $results['default_log'] = 'OK';
         } catch (\Throwable $e) {
-            $results['WaLog::info'] = 'FAILED: ' . $e->getMessage();
+            $results['default_log'] = 'FAILED: ' . $e->getMessage();
         }
 
-        // Test direct whatsapp channel
+        // 2. WaLog::info → whatsapp_stack → laravel.log + whatsapp-YYYY-MM-DD.log
         try {
-            Log::channel('whatsapp')->info('[DEBUG] wa-log-test — whatsapp channel OK', ['source' => 'debug-endpoint']);
+            WaLog::info('[DEBUG] wa-log-test — WaLog::info OK', ['source' => 'debug-endpoint']);
+            $results['WaLog_info'] = 'OK';
+        } catch (\Throwable $e) {
+            $results['WaLog_info'] = 'FAILED: ' . $e->getMessage();
+        }
+
+        // 3. Direct whatsapp channel
+        try {
+            Log::channel('whatsapp')->info('[DEBUG] wa-log-test — whatsapp channel direct OK', [
+                '_trace'  => $trace,
+                '_source' => 'debug-endpoint',
+            ]);
             $results['whatsapp_channel'] = 'OK';
         } catch (\Throwable $e) {
             $results['whatsapp_channel'] = 'FAILED: ' . $e->getMessage();
         }
 
-        // Test emergency file
-        WaLog::emergency('[DEBUG] wa-log-test — emergency file OK', ['source' => 'debug-endpoint'], 'INFO');
+        // 4. WaLog::error — also writes to emergency file
+        try {
+            WaLog::error('[DEBUG] wa-log-test — WaLog::error (also triggers emergency copy)', [
+                'source' => 'debug-endpoint',
+            ]);
+            $results['WaLog_error'] = 'OK (also wrote to emergency file)';
+        } catch (\Throwable $e) {
+            $results['WaLog_error'] = 'FAILED: ' . $e->getMessage();
+        }
+
+        // 5. Emergency raw file (always last — most reliable)
+        WaLog::emergency('[DEBUG] wa-log-test — emergency direct write OK', ['source' => 'debug-endpoint'], 'INFO');
         $results['emergency_file'] = 'written';
 
         // Collect log file info
@@ -155,16 +186,53 @@ Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): v
             'channel_results'  => $results,
             'log_files'        => $logInfo,
             'config' => [
-                'LOG_CHANNEL'        => config('logging.default'),
-                'LOG_LEVEL'          => config('logging.channels.single.level'),
-                'WHATSAPP_LOG_LEVEL' => config('logging.channels.whatsapp.level'),
-                'QUEUE_CONNECTION'   => config('queue.default'),
-                'WHATSAPP_ENABLED'   => config('chatbot.whatsapp.enabled'),
-                'WHATSAPP_HAS_TOKEN' => ! empty(config('chatbot.whatsapp.access_token')),
-                'VERIFY_TOKEN_SET'   => ! empty(config('services.whatsapp.verify_token')),
+                'LOG_CHANNEL'          => config('logging.default'),
+                'LOG_LEVEL'            => config('logging.channels.single.level'),
+                'WHATSAPP_LOG_LEVEL'   => config('logging.channels.whatsapp.level'),
+                'QUEUE_CONNECTION'     => config('queue.default'),
+                'WHATSAPP_ENABLED'     => config('chatbot.whatsapp.enabled'),
+                'WHATSAPP_HAS_TOKEN'   => ! empty(config('chatbot.whatsapp.access_token')),
+                'WHATSAPP_HAS_PHONE_ID'=> ! empty(config('chatbot.whatsapp.phone_number_id')),
+                'VERIFY_TOKEN_SET'     => ! empty(config('services.whatsapp.verify_token')),
+                'LLM_ENABLED'          => config('chatbot.llm.enabled'),
+                'CRM_ENABLED'          => config('chatbot.crm.enabled'),
+            ],
+            'instructions' => [
+                'After checking this page, verify these log files updated:',
+                '  - storage/logs/laravel.log',
+                '  - storage/logs/whatsapp-' . date('Y-m-d') . '.log',
+                '  - storage/logs/whatsapp-emergency.log',
             ],
         ]);
     })->name('wa-log-test');
+
+    /**
+     * POST /debug/wa-write-log
+     *
+     * Write a custom message to all channels at once.
+     * Body: { "message": "...", "level": "info|warning|error" }
+     *
+     * Useful for verifying a specific log level is captured.
+     */
+    Route::post('/wa-write-log', function (\Illuminate\Http\Request $request) {
+        $trace   = WaLog::newTrace();
+        $message = $request->input('message', '[DEBUG] manual wa-write-log test');
+        $level   = in_array($request->input('level'), ['debug', 'info', 'warning', 'error', 'critical'])
+            ? $request->input('level')
+            : 'info';
+
+        $ctx = ['source' => 'wa-write-log-endpoint', 'user' => $request->user()?->id];
+
+        WaLog::{$level}("[MANUAL] {$message}", $ctx);
+        WaLog::emergency("[MANUAL] {$message}", $ctx, strtoupper($level));
+
+        return response()->json([
+            'trace_id' => $trace,
+            'level'    => $level,
+            'message'  => $message,
+            'written'  => ['whatsapp_stack', 'emergency_file'],
+        ]);
+    })->name('wa-write-log');
 });
 
 require __DIR__.'/auth.php';

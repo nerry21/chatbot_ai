@@ -161,13 +161,19 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['knowledge_hint']  = $knowledgeHint;
 
             // ── 3. Classify intent ──────────────────────────────────────────
+            $stepStart = (int) round(microtime(true) * 1000);
+            WaLog::debug('[Job:ProcessIncoming] AI:intent START', [
+                'conversation_id' => $conversation->id,
+                'message_preview' => mb_substr($messageText, 0, 60),
+                'knowledge_hits'  => count($knowledgeHits),
+            ]);
             $intentResult = $intentClassifier->classify($aiContext);
             $aiContext['intent_result'] = $intentResult;
-
-            WaLog::info('[Job:ProcessIncoming] intent classified', [
+            WaLog::info('[Job:ProcessIncoming] AI:intent END', [
                 'conversation_id' => $conversation->id,
                 'intent'          => $intentResult['intent'],
                 'confidence'      => $intentResult['confidence'],
+                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
             // ── 3.5 FAQ resolver (Tahap 10) ─────────────────────────────────
@@ -175,16 +181,50 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             // FaqResolverService is conservative: only matches when score is very high.
             $faqResult = $faqResolver->resolve($messageText, $knowledgeHits);
             $aiContext['faq_result'] = $faqResult;
+            if ($faqResult['matched'] ?? false) {
+                WaLog::info('[Job:ProcessIncoming] FAQ matched — LLM reply may be skipped', [
+                    'conversation_id' => $conversation->id,
+                    'faq_id'          => $faqResult['id'] ?? null,
+                    'score'           => $faqResult['score'] ?? null,
+                ]);
+            }
 
             // ── 4. Extract entities ─────────────────────────────────────────
+            $stepStart = (int) round(microtime(true) * 1000);
+            WaLog::debug('[Job:ProcessIncoming] AI:extraction START', [
+                'conversation_id' => $conversation->id,
+            ]);
             $entityResult = $entityExtractor->extract($aiContext);
             $aiContext['entity_result'] = $entityResult;
+            WaLog::debug('[Job:ProcessIncoming] AI:extraction END', [
+                'conversation_id' => $conversation->id,
+                'entity_keys'     => array_keys($entityResult),
+                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+            ]);
 
             // ── 5. Generate AI reply ────────────────────────────────────────
+            $stepStart = (int) round(microtime(true) * 1000);
+            WaLog::debug('[Job:ProcessIncoming] AI:reply START', [
+                'conversation_id' => $conversation->id,
+            ]);
             $replyResult = $responseGenerator->generate($aiContext);
+            WaLog::info('[Job:ProcessIncoming] AI:reply END', [
+                'conversation_id' => $conversation->id,
+                'is_fallback'     => $replyResult['is_fallback'] ?? false,
+                'source'          => $replyResult['meta']['source'] ?? null,
+                'used_faq'        => $replyResult['used_faq'] ?? false,
+                'used_knowledge'  => $replyResult['used_knowledge'] ?? false,
+                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+            ]);
 
             // ── 6. Summarize conversation ───────────────────────────────────
+            $stepStart     = (int) round(microtime(true) * 1000);
             $summaryResult = $summaryService->summarize($conversation, $aiContext);
+            WaLog::debug('[Job:ProcessIncoming] AI:summary END', [
+                'conversation_id' => $conversation->id,
+                'has_summary'     => ! empty($summaryResult['summary']),
+                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+            ]);
 
             // ── 7. Booking engine (conditional) ────────────────────────────
             [$booking, $bookingDecision] = $this->runBookingEngine(

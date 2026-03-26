@@ -11,7 +11,11 @@ use Illuminate\Support\Facades\Log;
  *  - Trace ID per request / job for end-to-end correlation
  *  - Phone number and token masking
  *  - Safe context (strips sensitive keys, truncates large values)
+ *  - Source caller auto-detection (ClassName::method) in every log entry
  *  - Emergency fallback: writes to a raw file even if Laravel's logger is broken
+ *
+ * Emergency log format:
+ *   YYYY-MM-DD HH:MM:SS LEVEL    [TRACEID] SourceClass::method | Message {"ctx":...}
  */
 class WaLog
 {
@@ -121,18 +125,31 @@ class WaLog
     /**
      * Write directly to a raw file — bypasses ALL Laravel plumbing.
      * Guaranteed to produce a trace even if the app is partially broken.
+     *
+     * Format:
+     *   YYYY-MM-DD HH:MM:SS LEVEL    [TRACEID] Source::method | Message {"ctx":...}
+     *
+     * @param  string|null  $source  Optional caller hint. Auto-detected if null.
      */
-    public static function emergency(string $message, array $context = [], string $level = 'EMERGENCY'): void
-    {
+    public static function emergency(
+        string $message,
+        array $context = [],
+        string $level = 'EMERGENCY',
+        ?string $source = null,
+    ): void {
         try {
+            $source      = $source ?? self::detectCaller();
             $safeCtx     = self::safeContext($context, 400);
-            $contextPart = empty($safeCtx) ? '' : ' ' . json_encode($safeCtx, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $contextPart = empty($safeCtx)
+                ? ''
+                : ' ' . json_encode($safeCtx, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
             $line = sprintf(
-                '%s %s [%s] %s%s',
+                '%s %-8s [%s] %s | %s%s',
                 now()->format('Y-m-d H:i:s'),
-                str_pad(strtoupper($level), 8),
+                strtoupper($level),
                 self::traceId(),
+                $source,
                 $message,
                 $contextPart,
             );
@@ -162,7 +179,7 @@ class WaLog
     {
         static $sensitiveKeys = [
             'token', 'secret', 'password', 'access_token',
-            'api_key', 'key', 'authorization', 'webhook_secret',
+            'api_key', 'authorization', 'webhook_secret',
         ];
 
         $result = [];
@@ -206,7 +223,8 @@ class WaLog
 
     private static function write(string $level, string $message, array $context): void
     {
-        $context['_trace'] = self::traceId();
+        $context['_trace']  = self::traceId();
+        $context['_source'] = self::detectCaller();
 
         try {
             Log::channel(self::CHANNEL)->{$level}($message, self::safeContext($context));
@@ -218,5 +236,40 @@ class WaLog
                 strtoupper($level),
             );
         }
+    }
+
+    /**
+     * Walk back the call stack to find the first frame outside WaLog itself.
+     * Returns a short "ClassName::method" string for log context and emergency file.
+     *
+     * Example results:
+     *   "WhatsAppWebhookController::verify"
+     *   "LogWhatsAppWebhook::handle"
+     *   "ProcessIncomingWhatsAppMessage::handle"
+     *   "routes/web.php:123"  (for closures)
+     */
+    private static function detectCaller(): string
+    {
+        $frames = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
+
+        foreach ($frames as $frame) {
+            $class = $frame['class'] ?? '';
+            if ($class !== '' && $class !== self::class) {
+                $method     = $frame['function'] ?? '?';
+                $shortClass = class_basename($class);
+                return "{$shortClass}::{$method}";
+            }
+        }
+
+        // Fall back to file:line for closures / procedural code
+        foreach ($frames as $frame) {
+            if (isset($frame['file']) && $frame['file'] !== __FILE__) {
+                $file = basename($frame['file']);
+                $line = $frame['line'] ?? '?';
+                return "{$file}:{$line}";
+            }
+        }
+
+        return 'unknown';
     }
 }

@@ -47,7 +47,7 @@ class WhatsAppSenderService
     public function sendText(string $toPhoneE164, string $text, array $meta = []): array
     {
         if (! $this->isEnabled()) {
-            WaLog::debug('[Sender] Skipped — sender not enabled or misconfigured', [
+            WaLog::info('[Sender] Skipped — sender not enabled or misconfigured', [
                 'to'           => WaLog::maskPhone($toPhoneE164),
                 'preview'      => mb_substr($text, 0, 60),
                 'enabled_flag' => $this->enabled,
