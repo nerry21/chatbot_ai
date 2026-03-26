@@ -10,11 +10,11 @@ use App\Models\AdminNotification;
 use App\Models\ConversationMessage;
 use App\Services\Support\AuditLogService;
 use App\Services\WhatsApp\WhatsAppSenderService;
+use App\Support\WaLog;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Log;
 
 class SendWhatsAppMessageJob implements ShouldQueue
 {
@@ -25,16 +25,29 @@ class SendWhatsAppMessageJob implements ShouldQueue
     public int   $timeout = 60;
 
     public function __construct(
-        public readonly int $conversationMessageId,
+        public readonly int    $conversationMessageId,
+        public readonly string $traceId = '',
     ) {}
 
     public function handle(WhatsAppSenderService $sender, AuditLogService $audit): void
     {
+        // Restore trace ID from parent job/request
+        if ($this->traceId !== '') {
+            WaLog::setTrace($this->traceId);
+        }
+
+        $jobStartMs = (int) round(microtime(true) * 1000);
+
+        WaLog::info('[Job:SendWA] Started', [
+            'message_id' => $this->conversationMessageId,
+            'attempt'    => $this->attempts(),
+        ]);
+
         $message = ConversationMessage::with('conversation.customer')
             ->find($this->conversationMessageId);
 
         if ($message === null) {
-            Log::channel('whatsapp_stack')->warning('[SendWhatsAppMessageJob] Message not found', [
+            WaLog::warning('[Job:SendWA] Message not found', [
                 'message_id' => $this->conversationMessageId,
             ]);
             return;
@@ -43,14 +56,14 @@ class SendWhatsAppMessageJob implements ShouldQueue
         // ── Static guards — direction / sender_type / idempotency ───────────
 
         if ($message->direction !== MessageDirection::Outbound) {
-            Log::channel('whatsapp_stack')->debug('[SendWhatsAppMessageJob] Skipped — not outbound', [
+            WaLog::debug('[Job:SendWA] Skipped — not outbound', [
                 'message_id' => $message->id,
             ]);
             return;
         }
 
         if (! in_array($message->sender_type, [SenderType::Bot, SenderType::Agent], true)) {
-            Log::channel('whatsapp_stack')->debug('[SendWhatsAppMessageJob] Skipped — sender_type not bot/agent', [
+            WaLog::debug('[Job:SendWA] Skipped — sender_type not bot/agent', [
                 'message_id'  => $message->id,
                 'sender_type' => $message->sender_type->value,
             ]);
@@ -59,7 +72,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         // Idempotent guard: already successfully sent
         if (! empty($message->wa_message_id)) {
-            Log::channel('whatsapp_stack')->debug('[SendWhatsAppMessageJob] Skipped — already has wa_message_id', [
+            WaLog::debug('[Job:SendWA] Skipped — already has wa_message_id', [
                 'message_id'    => $message->id,
                 'wa_message_id' => $message->wa_message_id,
             ]);
@@ -68,7 +81,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         // Idempotent guard: already in terminal delivery status
         if ($message->delivery_status?->isTerminal()) {
-            Log::channel('whatsapp_stack')->debug('[SendWhatsAppMessageJob] Skipped — already in terminal delivery status', [
+            WaLog::debug('[Job:SendWA] Skipped — already in terminal delivery status', [
                 'message_id'      => $message->id,
                 'delivery_status' => $message->delivery_status?->value,
             ]);
@@ -98,7 +111,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 ],
             ]);
 
-            Log::channel('whatsapp_stack')->warning('[SendWhatsAppMessageJob] Skipped — max send attempts exceeded', [
+            WaLog::warning('[Job:SendWA] Skipped — max send attempts exceeded', [
                 'message_id'    => $message->id,
                 'send_attempts' => $message->send_attempts,
                 'max_attempts'  => $maxAttempts,
@@ -132,7 +145,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 'message'         => 'Dilewati — customer atau nomor telepon tidak valid.',
                 'context'         => ['reason' => 'no_valid_customer_phone', 'message_id' => $message->id],
             ]);
-            Log::channel('whatsapp_stack')->warning('[SendWhatsAppMessageJob] Skipped — no valid customer phone', [
+            WaLog::warning('[Job:SendWA] Skipped — no valid customer phone', [
                 'message_id'      => $message->id,
                 'conversation_id' => $message->conversation_id,
             ]);
@@ -184,10 +197,11 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 ],
             ]);
 
-            Log::channel('whatsapp_stack')->info('[SendWhatsAppMessageJob] Sent successfully', [
+            WaLog::info('[Job:SendWA] Sent successfully', [
                 'message_id'    => $message->id,
                 'wa_message_id' => $waMessageId,
                 'send_attempts' => $message->send_attempts,
+                'duration_ms'   => (int) round(microtime(true) * 1000) - $jobStartMs,
             ]);
 
         } elseif ($result['status'] === 'skipped') {
@@ -201,7 +215,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 'context'         => ['message_id' => $message->id, 'reason' => 'sender_disabled'],
             ]);
 
-            Log::channel('whatsapp_stack')->debug('[SendWhatsAppMessageJob] Skipped — sender not enabled', [
+            WaLog::debug('[Job:SendWA] Skipped — sender not enabled', [
                 'message_id' => $message->id,
             ]);
 
@@ -224,7 +238,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 ],
             ]);
 
-            Log::channel('whatsapp_stack')->warning('[SendWhatsAppMessageJob] Send failed', [
+            WaLog::warning('[Job:SendWA] Send failed', [
                 'message_id'    => $message->id,
                 'status'        => $result['status'],
                 'error'         => $errorText,
@@ -242,7 +256,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
     public function failed(\Throwable $exception): void
     {
-        Log::channel('whatsapp_stack')->error('[SendWhatsAppMessageJob] Permanently failed after retries', [
+        WaLog::error('[Job:SendWA] Permanently failed after retries', [
             'message_id' => $this->conversationMessageId,
             'error'      => $exception->getMessage(),
             'file'       => $exception->getFile() . ':' . $exception->getLine(),
@@ -286,7 +300,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 'is_read' => false,
             ]);
         } catch (\Throwable $e) {
-            Log::channel('whatsapp_stack')->error('[SendWhatsAppMessageJob] Failed to create failure notification', [
+            WaLog::error('[Job:SendWA] Failed to create failure notification', [
                 'error' => $e->getMessage(),
             ]);
         }

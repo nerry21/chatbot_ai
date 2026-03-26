@@ -2,8 +2,8 @@
 
 namespace App\Services\WhatsApp;
 
+use App\Support\WaLog;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 class WhatsAppSenderService
 {
@@ -22,9 +22,7 @@ class WhatsAppSenderService
         $this->enabled        = (bool)   config('chatbot.whatsapp.enabled', false);
     }
 
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
+    // ─── Public API ───────────────────────────────────────────────────────────
 
     /**
      * Returns true only when the integration is switched on, a valid token
@@ -38,76 +36,98 @@ class WhatsAppSenderService
     }
 
     /**
-     * Send a plain text message to a WhatsApp recipient.
+     * Send a plain-text message to a WhatsApp recipient.
      *
-     * @param  string               $toPhoneE164  Recipient phone in E.164 format (e.g. +628123456789)
+     * @param  string               $toPhoneE164  Recipient phone in E.164 format
      * @param  string               $text         Message body
-     * @param  array<string, mixed> $meta         Optional contextual data added to the log
+     * @param  array<string, mixed> $meta         Optional context added to logs
      *
      * @return array{status: string, provider: string, response: array|null, error: string|null}
      */
     public function sendText(string $toPhoneE164, string $text, array $meta = []): array
     {
         if (! $this->isEnabled()) {
-            Log::channel('whatsapp_stack')->debug('[WhatsAppSender] Skipped — sender not enabled', [
-                'to'      => $toPhoneE164,
-                'preview' => mb_substr($text, 0, 60),
+            WaLog::debug('[Sender] Skipped — sender not enabled or misconfigured', [
+                'to'           => WaLog::maskPhone($toPhoneE164),
+                'preview'      => mb_substr($text, 0, 60),
+                'enabled_flag' => $this->enabled,
+                'has_token'    => $this->accessToken !== '',
+                'has_phone_id' => $this->phoneNumberId !== '',
             ]);
 
             return $this->result('skipped');
         }
 
         // WhatsApp Cloud API expects the phone number WITHOUT the leading '+'.
-        $to = ltrim($toPhoneE164, '+');
-
+        $to       = ltrim($toPhoneE164, '+');
         $endpoint = "{$this->graphBaseUrl}/{$this->phoneNumberId}/messages";
 
-        $payload = [
-            'messaging_product' => 'whatsapp',
-            'to'                => $to,
-            'type'              => 'text',
-            'text'              => ['body' => $text],
-        ];
+        WaLog::info('[Sender] Sending message to Meta', array_merge([
+            'to'           => WaLog::maskPhone($toPhoneE164),
+            'preview'      => mb_substr($text, 0, 80),
+            'endpoint'     => $this->graphBaseUrl . '/{phone_id}/messages',
+            'timeout_s'    => $this->timeoutSeconds,
+        ], $meta));
+
+        $startMs = (int) round(microtime(true) * 1000);
 
         try {
             $response = Http::withToken($this->accessToken)
                 ->timeout($this->timeoutSeconds)
-                ->post($endpoint, $payload);
+                ->post($endpoint, [
+                    'messaging_product' => 'whatsapp',
+                    'to'                => $to,
+                    'type'              => 'text',
+                    'text'              => ['body' => $text],
+                ]);
+
+            $durationMs = (int) round(microtime(true) * 1000) - $startMs;
 
             if ($response->successful()) {
-                Log::channel('whatsapp_stack')->info('[WhatsAppSender] Message sent', array_merge([
-                    'to'          => $toPhoneE164,
-                    'wa_id'       => $response->json('messages.0.id'),
+                $waId = $response->json('messages.0.id');
+
+                WaLog::info('[Sender] Message sent successfully', array_merge([
+                    'to'          => WaLog::maskPhone($toPhoneE164),
+                    'wa_id'       => $waId,
+                    'http_status' => $response->status(),
+                    'duration_ms' => $durationMs,
                 ], $meta));
 
                 return $this->result('sent', $response->json());
             }
 
-            Log::channel('whatsapp_stack')->warning('[WhatsAppSender] Send failed — HTTP error', [
-                'to'          => $toPhoneE164,
+            // HTTP error from Meta
+            $errorCode = $response->json('error.code');
+            $errorMsg  = $response->json('error.message') ?? $response->body();
+
+            WaLog::warning('[Sender] Send failed — HTTP error from Meta', [
+                'to'          => WaLog::maskPhone($toPhoneE164),
                 'http_status' => $response->status(),
-                'body'        => $response->body(),
+                'error_code'  => $errorCode,
+                'error_msg'   => mb_substr((string) $errorMsg, 0, 300),
+                'duration_ms' => $durationMs,
             ]);
 
-            return $this->result('failed', $response->json(), $response->body());
+            return $this->result('failed', $response->json(), (string) $errorMsg);
+
         } catch (\Throwable $e) {
-            Log::channel('whatsapp_stack')->error('[WhatsAppSender] Send exception: ' . $e->getMessage(), [
-                'to'    => $toPhoneE164,
-                'file'  => $e->getFile() . ':' . $e->getLine(),
-                'trace' => $e->getTraceAsString(),
+            $durationMs = (int) round(microtime(true) * 1000) - $startMs;
+
+            WaLog::error('[Sender] Exception during HTTP send', [
+                'to'          => WaLog::maskPhone($toPhoneE164),
+                'error'       => $e->getMessage(),
+                'file'        => $e->getFile() . ':' . $e->getLine(),
+                'duration_ms' => $durationMs,
+                'trace'       => $e->getTraceAsString(),
             ]);
 
             return $this->result('error', null, $e->getMessage());
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
+    // ─── Private ──────────────────────────────────────────────────────────────
 
     /**
-     * Build a consistent result array.
-     *
      * @param  array<string, mixed>|null  $response
      * @return array{status: string, provider: string, response: array|null, error: string|null}
      */

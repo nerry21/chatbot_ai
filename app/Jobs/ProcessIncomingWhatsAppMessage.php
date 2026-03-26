@@ -23,11 +23,11 @@ use App\Services\CRM\LeadPipelineService;
 use App\Services\Knowledge\FaqResolverService;
 use App\Services\Knowledge\KnowledgeBaseService;
 use App\Services\Support\AuditLogService;
+use App\Support\WaLog;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Log;
 
 class ProcessIncomingWhatsAppMessage implements ShouldQueue
 {
@@ -42,8 +42,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     public int $timeout = 120;
 
     public function __construct(
-        public readonly int $messageId,
-        public readonly int $conversationId,
+        public readonly int    $messageId,
+        public readonly int    $conversationId,
+        public readonly string $traceId = '',
     ) {}
 
     public function handle(
@@ -62,12 +63,25 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         KnowledgeBaseService       $knowledgeBase,
         FaqResolverService         $faqResolver,
     ): void {
+        // ── 0. Restore trace ID from parent request ─────────────────────────
+        if ($this->traceId !== '') {
+            WaLog::setTrace($this->traceId);
+        }
+
+        $jobStartMs = (int) round(microtime(true) * 1000);
+
+        WaLog::info('[Job:ProcessIncoming] Started', [
+            'message_id'      => $this->messageId,
+            'conversation_id' => $this->conversationId,
+            'attempt'         => $this->attempts(),
+        ]);
+
         // ── 1. Load models ─────────────────────────────────────────────────
         $message      = ConversationMessage::find($this->messageId);
         $conversation = Conversation::with('customer')->find($this->conversationId);
 
         if ($message === null || $conversation === null) {
-            Log::channel('whatsapp_stack')->warning('ProcessIncomingWhatsAppMessage: model not found', [
+            WaLog::warning('[Job:ProcessIncoming] Model not found — aborting', [
                 'message_id'      => $this->messageId,
                 'conversation_id' => $this->conversationId,
             ]);
@@ -75,7 +89,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         }
 
         if ($conversation->customer === null) {
-            Log::channel('whatsapp_stack')->warning('ProcessIncomingWhatsAppMessage: customer not found', [
+            WaLog::warning('[Job:ProcessIncoming] Customer not found — aborting', [
                 'conversation_id' => $this->conversationId,
             ]);
             return;
@@ -89,7 +103,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             // When handoff_mode = 'admin', the conversation is owned by a human;
             // the bot must not generate or dispatch any auto-reply.
             if ($conversation->isAdminTakeover()) {
-                Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: SKIPPED — admin takeover active', [
+                WaLog::info('[Job:ProcessIncoming] SKIPPED — admin takeover active', [
                     'conversation_id'  => $conversation->id,
                     'handoff_admin_id' => $conversation->handoff_admin_id,
                     'handoff_at'       => $conversation->handoff_at?->toDateTimeString(),
@@ -150,7 +164,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $intentResult = $intentClassifier->classify($aiContext);
             $aiContext['intent_result'] = $intentResult;
 
-            Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: intent classified', [
+            WaLog::info('[Job:ProcessIncoming] intent classified', [
                 'conversation_id' => $conversation->id,
                 'intent'          => $intentResult['intent'],
                 'confidence'      => $intentResult['confidence'],
@@ -206,7 +220,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             );
 
             // ── 9.5 Dispatch WhatsApp send job for the bot reply ────────────
-            SendWhatsAppMessageJob::dispatch($outboundMessage->id);
+            SendWhatsAppMessageJob::dispatch($outboundMessage->id, WaLog::traceId());
 
             // ── 9.7 Update AI quality labels (Tahap 10) ─────────────────────
             // Non-fatal: must not break the pipeline on failure.
@@ -231,23 +245,30 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 leadPipeline   : $leadPipeline,
             );
 
-            Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: pipeline complete', [
-                'conversation_id'  => $conversation->id,
-                'message_id'       => $message->id,
-                'intent'           => $intentResult['intent'],
-                'booking_action'   => $bookingDecision['action'] ?? null,
-                'is_fallback'      => $finalReply['is_fallback'],
-                'used_knowledge'   => $replyResult['used_knowledge'] ?? false,
-                'used_faq'         => $replyResult['used_faq'] ?? false,
-                'knowledge_count'  => count($knowledgeHits),
-                'outbound_id'      => $outboundMessage->id,
+            $durationMs = (int) round(microtime(true) * 1000) - $jobStartMs;
+
+            WaLog::info('[Job:ProcessIncoming] Pipeline complete', [
+                'conversation_id' => $conversation->id,
+                'message_id'      => $message->id,
+                'intent'          => $intentResult['intent'],
+                'confidence'      => $intentResult['confidence'],
+                'booking_action'  => $bookingDecision['action'] ?? null,
+                'is_fallback'     => $finalReply['is_fallback'],
+                'used_knowledge'  => $replyResult['used_knowledge'] ?? false,
+                'used_faq'        => $replyResult['used_faq'] ?? false,
+                'knowledge_count' => count($knowledgeHits),
+                'outbound_id'     => $outboundMessage->id,
+                'duration_ms'     => $durationMs,
             ]);
         } catch (\Throwable $e) {
-            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: pipeline error', [
+            $durationMs = (int) round(microtime(true) * 1000) - $jobStartMs;
+
+            WaLog::error('[Job:ProcessIncoming] Pipeline error — emergency fallback triggered', [
                 'conversation_id' => $this->conversationId,
                 'message_id'      => $this->messageId,
                 'error'           => $e->getMessage(),
                 'file'            => $e->getFile() . ':' . $e->getLine(),
+                'duration_ms'     => $durationMs,
                 'trace'           => $e->getTraceAsString(),
             ]);
 
@@ -356,7 +377,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 }
             }
         } catch (\Throwable $e) {
-            Log::channel('whatsapp_stack')->warning('ProcessIncomingWhatsAppMessage: quality label update failed (non-fatal)', [
+            WaLog::warning('[Job:ProcessIncoming] quality label update failed (non-fatal)', [
                 'conversation_id' => $conversationId,
                 'message_id'      => $messageId,
                 'error'           => $e->getMessage(),
@@ -410,7 +431,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 );
             }
         } catch (\Throwable $e) {
-            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: CRM layer failed (non-fatal)', [
+            WaLog::error('[Job:ProcessIncoming] CRM layer failed (non-fatal)', [
                 'conversation_id' => $conversation->id,
                 'error'           => $e->getMessage(),
                 'file'            => $e->getFile() . ':' . $e->getLine(),
@@ -420,7 +441,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
     public function failed(\Throwable $exception): void
     {
-        Log::channel('whatsapp_stack')->critical('ProcessIncomingWhatsAppMessage: permanently failed after retries', [
+        WaLog::critical('[Job:ProcessIncoming] permanently failed after retries', [
             'message_id'      => $this->messageId,
             'conversation_id' => $this->conversationId,
             'error'           => $exception->getMessage(),
@@ -469,7 +490,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
         $bookingDecision = $bookingAssistant->decideNextStep($booking, $intentResult['intent']);
 
-        Log::channel('whatsapp_stack')->info('ProcessIncomingWhatsAppMessage: booking engine decision', [
+        WaLog::info('[Job:ProcessIncoming] booking engine decision', [
             'conversation_id' => $conversation->id,
             'booking_id'      => $booking->id,
             'action'          => $bookingDecision['action'],
@@ -570,7 +591,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'is_read' => false,
             ]);
         } catch (\Throwable $e) {
-            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: failed to create inbound-during-takeover notification', [
+            WaLog::error('[Job:ProcessIncoming] failed to create inbound-during-takeover notification', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -588,9 +609,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             );
 
             // Still attempt to send the fallback message to the customer.
-            SendWhatsAppMessageJob::dispatch($outbound->id);
+            SendWhatsAppMessageJob::dispatch($outbound->id, WaLog::traceId());
         } catch (\Throwable $inner) {
-            Log::channel('whatsapp_stack')->error('ProcessIncomingWhatsAppMessage: emergency fallback also failed', [
+            WaLog::error('[Job:ProcessIncoming] emergency fallback also failed', [
                 'error' => $inner->getMessage(),
                 'file'  => $inner->getFile() . ':' . $inner->getLine(),
             ]);

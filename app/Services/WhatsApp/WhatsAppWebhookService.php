@@ -10,14 +10,14 @@ use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Support\PhoneNumberService;
+use App\Support\WaLog;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class WhatsAppWebhookService
 {
     public function __construct(
-        private readonly WhatsAppMessageParser    $parser,
-        private readonly PhoneNumberService       $phoneService,
+        private readonly WhatsAppMessageParser      $parser,
+        private readonly PhoneNumberService         $phoneService,
         private readonly ConversationManagerService $conversationManager,
     ) {}
 
@@ -27,15 +27,10 @@ class WhatsAppWebhookService
      *
      * @param  array<string, mixed>  $payload
      */
-    private function log(): \Illuminate\Log\LogManager|\Psr\Log\LoggerInterface
-    {
-        return Log::channel('whatsapp_stack');
-    }
-
     public function handle(array $payload): void
     {
         if (! $this->parser->isValidWebhookPayload($payload)) {
-            $this->log()->warning('WhatsAppWebhookService: invalid or unsupported payload structure', [
+            WaLog::warning('[WebhookService] Invalid or unsupported payload structure', [
                 'object' => $payload['object'] ?? null,
             ]);
             return;
@@ -43,7 +38,7 @@ class WhatsAppWebhookService
 
         $messages = $this->parser->extractMessages($payload);
 
-        $this->log()->info('WhatsAppWebhookService: processing payload', [
+        WaLog::info('[WebhookService] Payload parsed — processing messages', [
             'message_count' => count($messages),
         ]);
 
@@ -51,9 +46,9 @@ class WhatsAppWebhookService
             try {
                 $this->processSingleMessage($parsedMessage);
             } catch (\Throwable $e) {
-                $this->log()->error('WhatsAppWebhookService: failed to process message', [
+                WaLog::error('[WebhookService] Failed to process single message', [
                     'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,
-                    'from_wa_id'    => $parsedMessage['from_wa_id'] ?? null,
+                    'from'          => WaLog::maskPhone($parsedMessage['from_wa_id'] ?? ''),
                     'error'         => $e->getMessage(),
                     'file'          => $e->getFile() . ':' . $e->getLine(),
                     'trace'         => $e->getTraceAsString(),
@@ -62,9 +57,7 @@ class WhatsAppWebhookService
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Private
-    // -------------------------------------------------------------------------
+    // ─── Private ──────────────────────────────────────────────────────────────
 
     /**
      * @param  array<string, mixed>  $parsedMessage
@@ -79,43 +72,72 @@ class WhatsAppWebhookService
         $sentAt    = $parsedMessage['timestamp'];
 
         if ($rawWaId === null) {
-            $this->log()->warning('WhatsAppWebhookService: message has no sender wa_id, skipping.', [
+            WaLog::warning('[WebhookService] Message has no sender wa_id — skipping', [
                 'wa_message_id' => $messageId,
+                'type'          => $type,
             ]);
             return;
         }
 
         $phoneE164 = $this->phoneService->toE164($rawWaId);
 
-        $this->log()->info('WhatsAppWebhookService: message inbound received', [
+        WaLog::info('[WebhookService] Inbound message accepted', [
             'wa_message_id' => $messageId,
-            'from'          => $phoneE164,
+            'from'          => WaLog::maskPhone($phoneE164),
             'type'          => $type,
-            'has_text'      => $text !== null && $text !== '',
+            'has_text'      => ! empty($text),
+            'text_preview'  => $text ? mb_substr($text, 0, 80) : null,
         ]);
 
         DB::transaction(function () use (
             $phoneE164, $fromName, $messageId,
-            $text, $type, $sentAt, $parsedMessage
+            $text, $type, $sentAt, $parsedMessage,
+            $phoneE164,
         ): void {
             // 1. Find or create customer
             $customer = $this->findOrCreateCustomer($phoneE164, $fromName);
 
+            WaLog::debug('[WebhookService] Customer resolved', [
+                'customer_id' => $customer->id,
+                'is_new'      => $customer->wasRecentlyCreated,
+                'phone'       => WaLog::maskPhone($phoneE164),
+            ]);
+
             // 2. Find or create active conversation
             $conversation = $this->conversationManager->findOrCreateActive($customer);
 
+            WaLog::debug('[WebhookService] Conversation resolved', [
+                'conversation_id' => $conversation->id,
+                'status'          => $conversation->status?->value ?? null,
+            ]);
+
             // 3. Persist inbound message
             $message = $this->persistMessage(
-                conversation : $conversation,
-                waMessageId  : $messageId,
-                messageType  : $type,
-                messageText  : $text,
-                sentAt       : $sentAt,
-                rawPayload   : $parsedMessage['raw_message'] ?? [],
+                conversation: $conversation,
+                waMessageId : $messageId,
+                messageType : $type,
+                messageText : $text,
+                sentAt      : $sentAt,
+                rawPayload  : $parsedMessage['raw_message'] ?? [],
             );
 
-            // 4. Dispatch job for further processing
-            ProcessIncomingWhatsAppMessage::dispatch($message->id, $conversation->id);
+            WaLog::info('[WebhookService] Inbound message persisted', [
+                'message_id'      => $message->id,
+                'conversation_id' => $conversation->id,
+                'customer_id'     => $customer->id,
+            ]);
+
+            // 4. Dispatch job — pass current trace so the job stays in the same trace
+            ProcessIncomingWhatsAppMessage::dispatch(
+                $message->id,
+                $conversation->id,
+                WaLog::traceId(),
+            );
+
+            WaLog::debug('[WebhookService] ProcessIncomingWhatsAppMessage dispatched', [
+                'message_id'      => $message->id,
+                'conversation_id' => $conversation->id,
+            ]);
         });
     }
 
@@ -130,9 +152,9 @@ class WhatsAppWebhookService
             ]
         );
 
-        // Update name if we now have one and didn't before
         if ($name !== null && $customer->name === null) {
             $customer->name = $name;
+            $customer->save();
         }
 
         $customer->touchLastInteraction();

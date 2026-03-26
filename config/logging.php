@@ -128,23 +128,23 @@ return [
         ],
 
         // ── WhatsApp dedicated channel ────────────────────────────────────
-        // Semua log WhatsApp masuk ke file ini (daily, dirotasi 30 hari).
-        // Level default debug agar semua gangguan tertangkap.
+        // Log khusus WhatsApp, file per hari, rotasi 30 hari.
+        // Level bisa dikontrol via WHATSAPP_LOG_LEVEL di .env.
         'whatsapp' => [
-            'driver' => 'daily',
-            'path'   => storage_path('logs/whatsapp.log'),
-            'level'  => env('WHATSAPP_LOG_LEVEL', 'debug'),
-            'days'   => 30,
+            'driver'               => 'daily',
+            'path'                 => storage_path('logs/whatsapp.log'),
+            'level'                => env('WHATSAPP_LOG_LEVEL', 'debug'),
+            'days'                 => 30,
             'replace_placeholders' => true,
         ],
 
         // ── WhatsApp stack: tulis ke laravel.log DAN whatsapp.log ─────────
-        // Pakai channel ini di semua kode WhatsApp supaya log muncul di
-        // kedua file sekaligus.
+        // ignore_exceptions = true: jika salah satu channel gagal,
+        // channel lain tetap menulis (tidak crash diam-diam).
         'whatsapp_stack' => [
-            'driver'   => 'stack',
-            'channels' => ['single', 'whatsapp'],
-            'ignore_exceptions' => false,
+            'driver'            => 'stack',
+            'channels'          => ['single', 'whatsapp'],
+            'ignore_exceptions' => true,
         ],
 
     ],

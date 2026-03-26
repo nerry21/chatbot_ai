@@ -9,6 +9,8 @@ use App\Http\Controllers\Admin\CustomerController as AdminCustomerController;
 use App\Http\Controllers\Admin\EscalationController;
 use App\Http\Controllers\Admin\KnowledgeBaseController;
 use App\Http\Controllers\ProfileController;
+use App\Support\WaLog;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -97,5 +99,72 @@ Route::middleware(['auth', 'chatbot.admin'])
         Route::patch('/knowledge/{knowledgeArticle}', [KnowledgeBaseController::class, 'update'])
             ->name('knowledge.update');
     });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Debug / Observability Tools
+// Requires login — remove or restrict further once confirmed working.
+// ─────────────────────────────────────────────────────────────────────────────
+Route::middleware('auth')->prefix('debug')->name('debug.')->group(function (): void {
+
+    /**
+     * GET /debug/wa-log-test
+     *
+     * Verifies that all WhatsApp log channels are writable and returns a JSON
+     * report. Call this after deployment to confirm the logging pipeline is healthy.
+     */
+    Route::get('/wa-log-test', function () {
+        $trace   = WaLog::newTrace();
+        $results = [];
+
+        // Test WaLog (→ whatsapp_stack → laravel.log + whatsapp.log)
+        try {
+            WaLog::info('[DEBUG] wa-log-test — WaLog::info OK', ['source' => 'debug-endpoint']);
+            $results['WaLog::info'] = 'OK';
+        } catch (\Throwable $e) {
+            $results['WaLog::info'] = 'FAILED: ' . $e->getMessage();
+        }
+
+        // Test direct whatsapp channel
+        try {
+            Log::channel('whatsapp')->info('[DEBUG] wa-log-test — whatsapp channel OK', ['source' => 'debug-endpoint']);
+            $results['whatsapp_channel'] = 'OK';
+        } catch (\Throwable $e) {
+            $results['whatsapp_channel'] = 'FAILED: ' . $e->getMessage();
+        }
+
+        // Test emergency file
+        WaLog::emergency('[DEBUG] wa-log-test — emergency file OK', ['source' => 'debug-endpoint'], 'INFO');
+        $results['emergency_file'] = 'written';
+
+        // Collect log file info
+        $logDir  = storage_path('logs');
+        $files   = glob($logDir . '/*.log') ?: [];
+        $logInfo = [];
+        foreach ($files as $f) {
+            $logInfo[basename($f)] = [
+                'exists'   => true,
+                'size_kb'  => round(filesize($f) / 1024, 1),
+                'modified' => date('Y-m-d H:i:s', filemtime($f)),
+            ];
+        }
+
+        return response()->json([
+            'trace_id'         => $trace,
+            'storage_writable' => is_writable($logDir),
+            'log_dir'          => $logDir,
+            'channel_results'  => $results,
+            'log_files'        => $logInfo,
+            'config' => [
+                'LOG_CHANNEL'        => config('logging.default'),
+                'LOG_LEVEL'          => config('logging.channels.single.level'),
+                'WHATSAPP_LOG_LEVEL' => config('logging.channels.whatsapp.level'),
+                'QUEUE_CONNECTION'   => config('queue.default'),
+                'WHATSAPP_ENABLED'   => config('chatbot.whatsapp.enabled'),
+                'WHATSAPP_HAS_TOKEN' => ! empty(config('chatbot.whatsapp.access_token')),
+                'VERIFY_TOKEN_SET'   => ! empty(config('services.whatsapp.verify_token')),
+            ],
+        ]);
+    })->name('wa-log-test');
+});
 
 require __DIR__.'/auth.php';
