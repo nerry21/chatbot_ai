@@ -26,6 +26,9 @@ class WhatsAppWebhookController extends Controller
 
     public function verify(Request $request): Response|JsonResponse
     {
+        $file = storage_path('logs/wa-webhook-hit.log');
+        file_put_contents($file, now().' VERIFY HIT '.json_encode($request->query()).PHP_EOL, FILE_APPEND);
+
         $mode      = $request->query('hub_mode');
         $token     = $request->query('hub_verify_token');
         $challenge = $request->query('hub_challenge');
@@ -46,7 +49,6 @@ class WhatsAppWebhookController extends Controller
 
         $this->log()->info('WhatsApp webhook verified successfully', ['ip' => $request->ip()]);
 
-        // Meta expects us to echo back the challenge as plain text with 200
         return response((string) $challenge, 200)
             ->header('Content-Type', 'text/plain');
     }
@@ -57,6 +59,9 @@ class WhatsAppWebhookController extends Controller
 
     public function receive(Request $request): JsonResponse
     {
+        $file = storage_path('logs/wa-webhook-hit.log');
+        file_put_contents($file, now().' RECEIVE HIT '.file_get_contents('php://input').PHP_EOL, FILE_APPEND);
+
         $payload = $request->json()->all();
 
         if (empty($payload)) {
@@ -72,7 +77,6 @@ class WhatsAppWebhookController extends Controller
         try {
             $this->webhookService->handle($payload);
         } catch (\Throwable $e) {
-            // Always return 200 to Meta to prevent retries for unrecoverable errors.
             $this->log()->error('WhatsApp webhook handle exception', [
                 'error' => $e->getMessage(),
                 'file'  => $e->getFile() . ':' . $e->getLine(),
@@ -80,7 +84,6 @@ class WhatsAppWebhookController extends Controller
             ]);
         }
 
-        // Meta requires a 200 OK response regardless of processing outcome.
         return response()->json(['status' => 'ok'], 200);
     }
 }
