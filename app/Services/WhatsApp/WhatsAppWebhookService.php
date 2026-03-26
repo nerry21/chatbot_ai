@@ -11,7 +11,9 @@ use App\Models\Customer;
 use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class WhatsAppWebhookService
 {
@@ -33,6 +35,7 @@ class WhatsAppWebhookService
             WaLog::warning('[WebhookService] Invalid or unsupported payload structure', [
                 'object' => $payload['object'] ?? null,
             ]);
+
             return;
         }
 
@@ -45,10 +48,10 @@ class WhatsAppWebhookService
         foreach ($messages as $parsedMessage) {
             try {
                 $this->processSingleMessage($parsedMessage);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 WaLog::error('[WebhookService] Failed to process single message', [
                     'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,
-                    'from' => WaLog::maskPhone($parsedMessage['from_wa_id'] ?? ''),
+                    'from' => WaLog::maskPhone((string) ($parsedMessage['from_wa_id'] ?? '')),
                     'error' => $e->getMessage(),
                     'file' => $e->getFile() . ':' . $e->getLine(),
                     'trace' => $e->getTraceAsString(),
@@ -66,18 +69,29 @@ class WhatsAppWebhookService
         $fromName = $parsedMessage['from_name'] ?? null;
         $messageId = $parsedMessage['wa_message_id'] ?? null;
         $text = $parsedMessage['message_text'] ?? null;
-        $type = $parsedMessage['message_type'] ?? 'text';
-        $sentAt = $parsedMessage['timestamp'] ?? null;
+        $type = (string) ($parsedMessage['message_type'] ?? 'text');
+        $sentAt = $this->parseTimestamp($parsedMessage['timestamp'] ?? null);
 
-        if ($rawWaId === null) {
+        if ($rawWaId === null || trim((string) $rawWaId) === '') {
             WaLog::warning('[WebhookService] Message has no sender wa_id — skipping', [
                 'wa_message_id' => $messageId,
                 'type' => $type,
             ]);
+
             return;
         }
 
-        $phoneE164 = $this->phoneService->toE164($rawWaId);
+        $phoneE164 = $this->phoneService->toE164((string) $rawWaId);
+
+        if ($phoneE164 === '') {
+            WaLog::warning('[WebhookService] Failed to normalize sender phone — skipping', [
+                'wa_message_id' => $messageId,
+                'raw_wa_id' => $rawWaId,
+                'type' => $type,
+            ]);
+
+            return;
+        }
 
         WaLog::info('[WebhookService] Inbound message accepted', [
             'wa_message_id' => $messageId,
@@ -113,11 +127,13 @@ class WhatsAppWebhookService
 
             $message = $this->persistMessage(
                 conversation: $conversation,
-                waMessageId: $messageId,
+                waMessageId: $messageId ? (string) $messageId : null,
                 messageType: $type,
-                messageText: $text,
+                messageText: $text !== null ? (string) $text : null,
                 sentAt: $sentAt,
-                rawPayload: $parsedMessage['raw_message'] ?? [],
+                rawPayload: is_array($parsedMessage['raw_message'] ?? null)
+                    ? $parsedMessage['raw_message']
+                    : [],
             );
 
             WaLog::info('[WebhookService] Inbound message persisted', [
@@ -150,12 +166,14 @@ class WhatsAppWebhookService
             ]
         );
 
-        if ($name !== null && $customer->name === null) {
+        if ($name !== null && trim($name) !== '' && $customer->name === null) {
             $customer->name = $name;
             $customer->save();
         }
 
-        $customer->touchLastInteraction();
+        if (method_exists($customer, 'touchLastInteraction')) {
+            $customer->touchLastInteraction();
+        }
 
         return $customer;
     }
@@ -165,10 +183,11 @@ class WhatsAppWebhookService
         ?string $waMessageId,
         string $messageType,
         ?string $messageText,
-        ?\Carbon\Carbon $sentAt,
+        ?Carbon $sentAt,
         array $rawPayload,
     ): ConversationMessage {
-        return ConversationMessage::create([
+        /** @var ConversationMessage $message */
+        $message = ConversationMessage::create([
             'conversation_id' => $conversation->id,
             'direction' => MessageDirection::Inbound,
             'sender_type' => SenderType::Customer,
@@ -179,5 +198,28 @@ class WhatsAppWebhookService
             'is_fallback' => false,
             'sent_at' => $sentAt ?? now(),
         ]);
+
+        return $message;
+    }
+
+    private function parseTimestamp(mixed $timestamp): ?Carbon
+    {
+        if ($timestamp instanceof Carbon) {
+            return $timestamp;
+        }
+
+        if (is_int($timestamp) || (is_string($timestamp) && ctype_digit($timestamp))) {
+            return Carbon::createFromTimestamp((int) $timestamp);
+        }
+
+        if (is_string($timestamp) && trim($timestamp) !== '') {
+            try {
+                return Carbon::parse($timestamp);
+            } catch (Throwable) {
+                return null;
+            }
+        }
+
+        return null;
     }
 }

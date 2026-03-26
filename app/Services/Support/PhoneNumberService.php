@@ -7,36 +7,70 @@ class PhoneNumberService
     /**
      * Normalize a phone number to E.164 format.
      *
-     * Assumes numbers without a leading '+' are Indonesian (ID) by default.
-     * Extend this method for multi-country support in later stages.
+     * Rules:
+     * - 08123456789        -> +628123456789
+     * - 628123456789       -> +628123456789
+     * - +628123456789      -> +628123456789
+     * - 00628123456789     -> +628123456789
+     * - 628123456789@s.whatsapp.net -> +628123456789
      */
     public function toE164(string $raw, string $defaultCountryCode = '62'): string
     {
-        // Strip all non-digit characters except leading '+'
-        $cleaned = preg_replace('/[^\d+]/', '', trim($raw));
+        $raw = trim($raw);
 
-        // Already in E.164 with '+'
+        if ($raw === '') {
+            return '';
+        }
+
+        // Remove WhatsApp suffix if present
+        $raw = $this->stripWaSuffix($raw);
+
+        // Keep leading plus if present, remove all other non-digit chars
+        $cleaned = preg_replace('/(?!^\+)\D+/', '', $raw) ?? '';
+
+        if ($cleaned === '') {
+            return '';
+        }
+
+        // Already E.164
         if (str_starts_with($cleaned, '+')) {
-            return $cleaned;
+            $digits = preg_replace('/\D+/', '', substr($cleaned, 1)) ?? '';
+
+            if ($digits === '') {
+                return '';
+            }
+
+            return '+' . $digits;
         }
 
-        // Leading '00' international prefix
+        // International prefix 00...
         if (str_starts_with($cleaned, '00')) {
-            return '+' . substr($cleaned, 2);
+            $digits = substr($cleaned, 2);
+
+            if ($digits === '') {
+                return '';
+            }
+
+            return '+' . $digits;
         }
 
-        // Local Indonesian number starting with '08...'
+        // Local Indonesian: 08xxxx -> +628xxxx
         if (str_starts_with($cleaned, '0')) {
             return '+' . $defaultCountryCode . substr($cleaned, 1);
         }
 
-        // Assume already numeric without country code
+        // Already has country code: 62xxxx -> +62xxxx
+        if (str_starts_with($cleaned, $defaultCountryCode)) {
+            return '+' . $cleaned;
+        }
+
+        // Fallback: assume local number without leading 0, e.g. 8123... -> +628123...
         return '+' . $defaultCountryCode . $cleaned;
     }
 
     /**
      * Validate that a string looks like a plausible E.164 number.
-     * Minimum 7 digits, maximum 15 digits (ITU-T E.164 standard).
+     * Minimum 7 digits, maximum 15 digits.
      */
     public function isValidE164(string $phone): bool
     {
@@ -45,11 +79,11 @@ class PhoneNumberService
 
     /**
      * Strip WhatsApp suffix from a phone number.
-     * WhatsApp sometimes sends numbers as "628123456789@s.whatsapp.net".
+     * Example: 628123456789@s.whatsapp.net -> 628123456789
      */
     public function stripWaSuffix(string $phone): string
     {
-        return preg_replace('/@.*$/', '', $phone);
+        return preg_replace('/@.*$/', '', trim($phone)) ?? '';
     }
 
     /**
@@ -57,7 +91,17 @@ class PhoneNumberService
      */
     public function normalizeWaSender(string $waSender): string
     {
-        $stripped = $this->stripWaSuffix($waSender);
-        return $this->toE164($stripped);
+        return $this->toE164($this->stripWaSuffix($waSender));
+    }
+
+    /**
+     * Normalize to digits only without leading plus.
+     * Example: +628123456789 -> 628123456789
+     */
+    public function toDigits(string $raw, string $defaultCountryCode = '62'): string
+    {
+        $e164 = $this->toE164($raw, $defaultCountryCode);
+
+        return ltrim($e164, '+');
     }
 }

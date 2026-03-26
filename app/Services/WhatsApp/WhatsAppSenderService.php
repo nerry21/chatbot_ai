@@ -2,6 +2,7 @@
 
 namespace App\Services\WhatsApp;
 
+use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
 use Illuminate\Support\Facades\Http;
 
@@ -10,16 +11,17 @@ class WhatsAppSenderService
     private readonly string $accessToken;
     private readonly string $phoneNumberId;
     private readonly string $graphBaseUrl;
-    private readonly int    $timeoutSeconds;
-    private readonly bool   $enabled;
+    private readonly int $timeoutSeconds;
+    private readonly bool $enabled;
 
-    public function __construct()
-    {
-        $this->accessToken    = (string) config('chatbot.whatsapp.access_token', '');
-        $this->phoneNumberId  = (string) config('chatbot.whatsapp.phone_number_id', '');
-        $this->graphBaseUrl   = rtrim((string) config('chatbot.whatsapp.graph_base_url', 'https://graph.facebook.com/v19.0'), '/');
-        $this->timeoutSeconds = (int)    config('chatbot.whatsapp.send_timeout_seconds', 15);
-        $this->enabled        = (bool)   config('chatbot.whatsapp.enabled', false);
+    public function __construct(
+        private readonly PhoneNumberService $phoneService,
+    ) {
+        $this->accessToken = (string) config('chatbot.whatsapp.access_token', '');
+        $this->phoneNumberId = (string) config('chatbot.whatsapp.phone_number_id', '');
+        $this->graphBaseUrl = rtrim((string) config('chatbot.whatsapp.graph_base_url', 'https://graph.facebook.com/v19.0'), '/');
+        $this->timeoutSeconds = (int) config('chatbot.whatsapp.send_timeout_seconds', 15);
+        $this->enabled = (bool) config('chatbot.whatsapp.enabled', false);
     }
 
     // ─── Public API ───────────────────────────────────────────────────────────
@@ -46,27 +48,41 @@ class WhatsAppSenderService
      */
     public function sendText(string $toPhoneE164, string $text, array $meta = []): array
     {
+        $normalizedE164 = $this->phoneService->toE164($toPhoneE164);
+        $to = $this->phoneService->toDigits($toPhoneE164);
+
         if (! $this->isEnabled()) {
             WaLog::info('[Sender] Skipped — sender not enabled or misconfigured', [
-                'to'           => WaLog::maskPhone($toPhoneE164),
-                'preview'      => mb_substr($text, 0, 60),
+                'to' => WaLog::maskPhone($toPhoneE164),
+                'normalized_to' => $to,
+                'preview' => mb_substr($text, 0, 60),
                 'enabled_flag' => $this->enabled,
-                'has_token'    => $this->accessToken !== '',
+                'has_token' => $this->accessToken !== '',
                 'has_phone_id' => $this->phoneNumberId !== '',
             ]);
 
             return $this->result('skipped');
         }
 
-        // WhatsApp Cloud API expects the phone number WITHOUT the leading '+'.
-        $to       = ltrim($toPhoneE164, '+');
+        if ($normalizedE164 === '' || ! $this->phoneService->isValidE164($normalizedE164) || $to === '') {
+            WaLog::warning('[Sender] Skipped — invalid recipient phone number', array_merge([
+                'input_to' => $toPhoneE164,
+                'normalized_e164' => $normalizedE164,
+                'normalized_to' => $to,
+                'preview' => mb_substr($text, 0, 80),
+            ], $meta));
+
+            return $this->result('failed', null, 'Invalid recipient phone number.');
+        }
+
         $endpoint = "{$this->graphBaseUrl}/{$this->phoneNumberId}/messages";
 
         WaLog::info('[Sender] Sending message to Meta', array_merge([
-            'to'           => WaLog::maskPhone($toPhoneE164),
-            'preview'      => mb_substr($text, 0, 80),
-            'endpoint'     => $this->graphBaseUrl . '/{phone_id}/messages',
-            'timeout_s'    => $this->timeoutSeconds,
+            'to' => WaLog::maskPhone($normalizedE164),
+            'normalized_to' => $to,
+            'preview' => mb_substr($text, 0, 80),
+            'endpoint' => $this->graphBaseUrl . '/{phone_id}/messages',
+            'timeout_s' => $this->timeoutSeconds,
         ], $meta));
 
         $startMs = (int) round(microtime(true) * 1000);
@@ -76,9 +92,11 @@ class WhatsAppSenderService
                 ->timeout($this->timeoutSeconds)
                 ->post($endpoint, [
                     'messaging_product' => 'whatsapp',
-                    'to'                => $to,
-                    'type'              => 'text',
-                    'text'              => ['body' => $text],
+                    'to' => $to,
+                    'type' => 'text',
+                    'text' => [
+                        'body' => $text,
+                    ],
                 ]);
 
             $durationMs = (int) round(microtime(true) * 1000) - $startMs;
@@ -87,39 +105,42 @@ class WhatsAppSenderService
                 $waId = $response->json('messages.0.id');
 
                 WaLog::info('[Sender] Message sent successfully', array_merge([
-                    'to'          => WaLog::maskPhone($toPhoneE164),
-                    'wa_id'       => $waId,
+                    'to' => WaLog::maskPhone($normalizedE164),
+                    'normalized_to' => $to,
+                    'wa_id' => $waId,
                     'http_status' => $response->status(),
                     'duration_ms' => $durationMs,
+                    'response' => $response->json(),
                 ], $meta));
 
                 return $this->result('sent', $response->json());
             }
 
-            // HTTP error from Meta
             $errorCode = $response->json('error.code');
-            $errorMsg  = $response->json('error.message') ?? $response->body();
+            $errorMsg = $response->json('error.message') ?? $response->body();
 
-            WaLog::warning('[Sender] Send failed — HTTP error from Meta', [
-                'to'          => WaLog::maskPhone($toPhoneE164),
+            WaLog::warning('[Sender] Send failed — HTTP error from Meta', array_merge([
+                'to' => WaLog::maskPhone($normalizedE164),
+                'normalized_to' => $to,
                 'http_status' => $response->status(),
-                'error_code'  => $errorCode,
-                'error_msg'   => mb_substr((string) $errorMsg, 0, 300),
+                'error_code' => $errorCode,
+                'error_msg' => mb_substr((string) $errorMsg, 0, 300),
                 'duration_ms' => $durationMs,
-            ]);
+                'response' => $response->json(),
+            ], $meta));
 
             return $this->result('failed', $response->json(), (string) $errorMsg);
-
         } catch (\Throwable $e) {
             $durationMs = (int) round(microtime(true) * 1000) - $startMs;
 
-            WaLog::error('[Sender] Exception during HTTP send', [
-                'to'          => WaLog::maskPhone($toPhoneE164),
-                'error'       => $e->getMessage(),
-                'file'        => $e->getFile() . ':' . $e->getLine(),
+            WaLog::error('[Sender] Exception during HTTP send', array_merge([
+                'to' => WaLog::maskPhone($normalizedE164 !== '' ? $normalizedE164 : $toPhoneE164),
+                'normalized_to' => $to,
+                'error' => $e->getMessage(),
+                'file' => $e->getFile() . ':' . $e->getLine(),
                 'duration_ms' => $durationMs,
-                'trace'       => $e->getTraceAsString(),
-            ]);
+                'trace' => $e->getTraceAsString(),
+            ], $meta));
 
             return $this->result('error', null, $e->getMessage());
         }
@@ -137,10 +158,10 @@ class WhatsAppSenderService
         ?string $error = null,
     ): array {
         return [
-            'status'   => $status,
+            'status' => $status,
             'provider' => 'whatsapp',
             'response' => $response,
-            'error'    => $error,
+            'error' => $error,
         ];
     }
 }
