@@ -8,6 +8,7 @@ use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
+use App\Services\Chatbot\GreetingService;
 use App\Services\Chatbot\HumanEscalationService;
 
 class BookingFlowStateMachine
@@ -36,6 +37,7 @@ class BookingFlowStateMachine
         private readonly SeatAvailabilityService $seatAvailability,
         private readonly BookingConfirmationService $confirmationService,
         private readonly TimeGreetingService $timeGreetingService,
+        private readonly GreetingService $greetingService,
         private readonly HumanEscalationService $humanEscalationService,
     ) {
     }
@@ -89,6 +91,7 @@ class BookingFlowStateMachine
         }
 
         $hasTravelSignals = $this->hasTravelSignals(
+            conversation: $conversation,
             intentResult: $intentResult,
             signals: $signals,
             slots: $slots,
@@ -114,12 +117,21 @@ class BookingFlowStateMachine
         if (! $hasTravelSignals && $signals['greeting_only']) {
             $this->stateService->putMany($conversation, ['booking_intent_status' => 'idle']);
             $this->stateService->setExpectedInput($conversation, null);
+            $openingGreeting = $this->greetingService->buildOpeningGreeting(
+                conversation: $conversation,
+                messageText: $messageText,
+                activeStates: $slots,
+            );
+
+            if ($openingGreeting === null) {
+                $openingGreeting = $this->buildOpeningGreeting($signals, $timeGreeting['opening'], $messageText);
+            }
 
             return $this->decision(
                 booking: $existingDraft,
                 action: 'greeting',
                 reply: $this->reply(
-                    text: $this->buildOpeningGreeting($signals, $timeGreeting['opening']),
+                    text: $openingGreeting,
                     meta: ['source' => 'jet_flow', 'action' => 'greeting'],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::Greeting),
@@ -668,11 +680,22 @@ class BookingFlowStateMachine
      * @param  array<string, mixed>  $signals
      * @param  array<string, mixed>  $updates
      */
-    private function hasTravelSignals(array $intentResult, array $signals, array $slots, array $updates, ?BookingRequest $existingDraft): bool
+    private function hasTravelSignals(Conversation $conversation, array $intentResult, array $signals, array $slots, array $updates, ?BookingRequest $existingDraft): bool
     {
         $intent = IntentType::tryFrom($intentResult['intent'] ?? '');
 
         if ($existingDraft !== null) {
+            return true;
+        }
+
+        if (filled($conversation->summary)) {
+            return true;
+        }
+
+        if (
+            filled($conversation->current_intent)
+            && ! in_array($conversation->current_intent, ['greeting', 'farewell', 'unknown'], true)
+        ) {
             return true;
         }
 
@@ -901,21 +924,25 @@ class BookingFlowStateMachine
     /**
      * @param  array<string, mixed>  $signals
      */
-    private function withSalamPrefix(array $signals, string $text): string
+    private function withSalamPrefix(array $signals, string $text, string $messageText = ''): string
     {
+        if ($messageText !== '') {
+            return $this->greetingService->prependIslamicGreeting($messageText, $text);
+        }
+
         if (($signals['salam_type'] ?? null) !== 'islamic') {
             return $text;
         }
 
-        return "Waalaikumsalam Warahmatullahi Wabarakatuh\n\n" . $text;
+        return $this->greetingService->prependIslamicGreeting('assalamualaikum', $text);
     }
 
     /**
      * @param  array<string, mixed>  $signals
      */
-    private function buildOpeningGreeting(array $signals, string $openingText): string
+    private function buildOpeningGreeting(array $signals, string $openingText, string $messageText = ''): string
     {
-        return $this->withSalamPrefix($signals, $openingText);
+        return $this->withSalamPrefix($signals, $openingText, $messageText);
     }
 
     /**
