@@ -7,73 +7,72 @@ use App\Models\BookingRequest;
 class BookingConfirmationService
 {
     public function __construct(
-        private readonly PricingService $pricing,
-    ) {}
+        private readonly FareCalculatorService $fareCalculator,
+    ) {
+    }
 
-    /**
-     * Build a human-readable booking summary for display to the customer.
-     * All values are sourced from the booking record — no AI involvement.
-     */
     public function buildSummary(BookingRequest $booking): string
     {
-        $lines = [];
-
-        $lines[] = '*Ringkasan Pesanan Anda:*';
-        $lines[] = '';
-
-        $lines[] = $this->row('Nama Penumpang', $booking->passenger_name ?? '-');
-        $lines[] = $this->row('Titik Jemput',   $booking->pickup_location ?? '-');
-        $lines[] = $this->row('Tujuan',          $booking->destination ?? '-');
-        $lines[] = $this->row('Jml. Penumpang',  $booking->passenger_count
-            ? $booking->passenger_count . ' orang'
-            : '-');
-
-        if ($booking->departure_date !== null) {
-            $lines[] = $this->row(
-                'Tanggal',
-                $booking->departure_date->translatedFormat('d F Y'),
-            );
-        }
-
-        if ($booking->departure_time !== null) {
-            $lines[] = $this->row('Jam Berangkat', $booking->departure_time . ' WIB');
-        }
-
-        // Refresh price estimate at summary time if still null
-        $price = $booking->price_estimate !== null
-            ? (float) $booking->price_estimate
-            : $this->pricing->estimate(
+        $names = $booking->passengerNamesList();
+        $seatText = $booking->selected_seats !== null && $booking->selected_seats !== []
+            ? implode(', ', $booking->selected_seats)
+            : '-';
+        $fare = $booking->price_estimate !== null
+            ? (int) round((float) $booking->price_estimate)
+            : $this->fareCalculator->calculate(
                 $booking->pickup_location,
                 $booking->destination,
                 $booking->passenger_count,
             );
 
-        $lines[] = $this->row(
-            'Estimasi Harga',
-            $this->pricing->formatRupiah($price),
-        );
-
-        if ($booking->special_notes !== null) {
-            $lines[] = '';
-            $lines[] = '_Catatan: ' . $booking->special_notes . '_';
-        }
-
-        $lines[] = '';
-        $lines[] = 'Mohon balas *YA* atau *BENAR* untuk mengkonfirmasi pesanan Anda.';
-        $lines[] = 'Balas *TIDAK* atau *BATAL* untuk membatalkan.';
+        $lines = [
+            'Izin Bapak/Ibu, berikut kami kirimkan ringkasan perjalanan Anda. Mohon dicek kembali, apakah data ini sudah benar ya?',
+            '',
+            'Jumlah penumpang : ' . (($booking->passenger_count ?? 0) > 0 ? $booking->passenger_count . ' orang' : '-'),
+            'Tanggal          : ' . ($booking->departure_date?->translatedFormat('d F Y') ?? '-'),
+            'Jam              : ' . ($booking->departure_time ? $booking->departure_time . ' WIB' : '-'),
+            'Seat             : ' . $seatText,
+            'Titik jemput     : ' . ($booking->pickup_location ?? '-'),
+            'Alamat jemput    : ' . ($booking->pickup_full_address ?? '-'),
+            'Tujuan antar     : ' . ($booking->destination ?? '-'),
+            'Nama penumpang   : ' . ($names !== [] ? implode(', ', $names) : '-'),
+            'Nomor kontak     : ' . ($booking->contact_number ?? '-'),
+            'Total ongkos     : ' . $this->fareCalculator->formatRupiah($fare),
+            '',
+            'Balas YA / BENAR / SUDAH jika datanya sudah sesuai ya.',
+        ];
 
         return implode("\n", $lines);
     }
 
-    /**
-     * Transition a booking to awaiting_confirmation status and persist it.
-     * Also refreshes the price estimate if it can be calculated.
-     */
+    public function buildAdminSummary(BookingRequest $booking, string $customerPhone): string
+    {
+        $names = $booking->passengerNamesList();
+
+        return implode("\n", [
+            'Booking baru JET siap ditindaklanjuti.',
+            'No customer      : ' . $customerPhone,
+            'Jumlah penumpang : ' . (($booking->passenger_count ?? 0) > 0 ? $booking->passenger_count . ' orang' : '-'),
+            'Tanggal          : ' . ($booking->departure_date?->format('Y-m-d') ?? '-'),
+            'Jam              : ' . ($booking->departure_time ? $booking->departure_time . ' WIB' : '-'),
+            'Seat             : ' . (($booking->selected_seats ?? []) !== [] ? implode(', ', $booking->selected_seats ?? []) : '-'),
+            'Titik jemput     : ' . ($booking->pickup_location ?? '-'),
+            'Alamat jemput    : ' . ($booking->pickup_full_address ?? '-'),
+            'Tujuan antar     : ' . ($booking->destination ?? '-'),
+            'Nama penumpang   : ' . ($names !== [] ? implode(', ', $names) : '-'),
+            'Nomor kontak     : ' . ($booking->contact_number ?? '-'),
+            'Total ongkos     : ' . $this->fareCalculator->formatRupiah(
+                $booking->price_estimate !== null
+                    ? (int) round((float) $booking->price_estimate)
+                    : null,
+            ),
+        ]);
+    }
+
     public function requestConfirmation(BookingRequest $booking): void
     {
-        // Refresh price estimate before asking for confirmation
         if ($booking->price_estimate === null) {
-            $estimate = $this->pricing->estimate(
+            $estimate = $this->fareCalculator->calculate(
                 $booking->pickup_location,
                 $booking->destination,
                 $booking->passenger_count,
@@ -88,21 +87,9 @@ class BookingConfirmationService
         $booking->save();
     }
 
-    /**
-     * Confirm a booking that is currently in awaiting_confirmation status.
-     */
     public function confirm(BookingRequest $booking): void
     {
         $booking->markConfirmed();
         $booking->save();
-    }
-
-    // -------------------------------------------------------------------------
-    // Private
-    // -------------------------------------------------------------------------
-
-    private function row(string $label, string $value): string
-    {
-        return str_pad($label, 17) . ': ' . $value;
     }
 }

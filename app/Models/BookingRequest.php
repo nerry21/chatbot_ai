@@ -16,14 +16,19 @@ class BookingRequest extends Model
         'conversation_id',
         'customer_id',
         'pickup_location',
+        'pickup_full_address',
         'destination',
         'departure_date',
         'departure_time',
         'passenger_count',
+        'selected_seats',
         'passenger_name',
+        'passenger_names',
         'special_notes',
         'price_estimate',
         'payment_method',
+        'contact_number',
+        'contact_same_as_sender',
         'booking_status',
         'confirmed_at',
     ];
@@ -31,7 +36,10 @@ class BookingRequest extends Model
     protected $casts = [
         'departure_date'  => 'date',
         'passenger_count' => 'integer',
+        'selected_seats'  => 'array',
+        'passenger_names' => 'array',
         'price_estimate'  => 'decimal:2',
+        'contact_same_as_sender' => 'boolean',
         'confirmed_at'    => 'datetime',
         'booking_status'  => BookingStatus::class,
     ];
@@ -70,6 +78,11 @@ class BookingRequest extends Model
     public function leadPipelines(): HasMany
     {
         return $this->hasMany(LeadPipeline::class);
+    }
+
+    public function seatReservations(): HasMany
+    {
+        return $this->hasMany(BookingSeatReservation::class);
     }
 
     // -------------------------------------------------------------------------
@@ -211,5 +224,24 @@ class BookingRequest extends Model
     public function isTerminal(): bool
     {
         return $this->booking_status->isTerminal();
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function passengerNamesList(): array
+    {
+        if (is_array($this->passenger_names) && $this->passenger_names !== []) {
+            return array_values(array_filter(array_map(
+                fn (mixed $name) => is_string($name) ? trim($name) : null,
+                $this->passenger_names,
+            )));
+        }
+
+        if ($this->passenger_name === null || trim($this->passenger_name) === '') {
+            return [];
+        }
+
+        return [trim($this->passenger_name)];
     }
 }

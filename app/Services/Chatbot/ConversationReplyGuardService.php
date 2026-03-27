@@ -47,7 +47,8 @@ class ConversationReplyGuardService
         array $reply,
     ): array {
         $hasUnavailableContext   = $this->hasUnavailableContext($conversation);
-        $hasRelevantBookingUpdate = $this->hasRelevantBookingUpdate($entityResult);
+        $hasRelevantBookingUpdate = ($reply['meta']['has_booking_update'] ?? false) === true
+            || $this->hasRelevantBookingUpdate($entityResult);
 
         if ($hasUnavailableContext && $this->isCloseIntent($messageText)) {
             return [

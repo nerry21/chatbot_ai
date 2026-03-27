@@ -149,6 +149,168 @@ return [
     ],
 
     /*
+    |----------------------------------------------------------------------
+    | JET (Jasa Executive Travel) Business Rules
+    |----------------------------------------------------------------------
+    */
+
+    'jet' => [
+        'business_name' => 'JET (Jasa Executive Travel)',
+        'timezone'      => 'Asia/Jakarta',
+        'admin_phone'   => env('JET_ADMIN_PHONE', '6281267975175'),
+
+        'passenger' => [
+            'standard_max'        => 5,
+            'manual_confirm_max'  => 6,
+        ],
+
+        'seat_hold_minutes' => (int) env('JET_SEAT_HOLD_MINUTES', 30),
+
+        'departure_slots' => [
+            [
+                'id'      => 'slot_1',
+                'order'   => 1,
+                'label'   => 'Subuh (05.00 WIB)',
+                'time'    => '05:00',
+                'aliases' => ['1', 'subuh', '05', '05.00', '05:00', 'jam 5', 'jam 05'],
+            ],
+            [
+                'id'      => 'slot_2',
+                'order'   => 2,
+                'label'   => 'Pagi (08.00 WIB)',
+                'time'    => '08:00',
+                'aliases' => ['2', 'pagi 8', '08', '08.00', '08:00', 'jam 8', 'jam 08', '08 pagi'],
+            ],
+            [
+                'id'      => 'slot_3',
+                'order'   => 3,
+                'label'   => 'Pagi (10.00 WIB)',
+                'time'    => '10:00',
+                'aliases' => ['3', 'pagi 10', '10', '10.00', '10:00', 'jam 10', '10 pagi'],
+            ],
+            [
+                'id'      => 'slot_4',
+                'order'   => 4,
+                'label'   => 'Siang (14.00 WIB)',
+                'time'    => '14:00',
+                'aliases' => ['4', 'siang', '14', '14.00', '14:00', 'jam 14'],
+            ],
+            [
+                'id'      => 'slot_5',
+                'order'   => 5,
+                'label'   => 'Sore (16.00 WIB)',
+                'time'    => '16:00',
+                'aliases' => ['5', 'sore', '16', '16.00', '16:00', 'jam 16'],
+            ],
+            [
+                'id'      => 'slot_6',
+                'order'   => 6,
+                'label'   => 'Malam (19.00 WIB)',
+                'time'    => '19:00',
+                'aliases' => ['6', 'malam', '19', '19.00', '19:00', 'jam 19'],
+            ],
+        ],
+
+        'locations' => [
+            ['order' => 1,  'label' => 'SKPD',             'menu' => true,  'aliases' => ['skpd']],
+            ['order' => 2,  'label' => 'Simpang D',        'menu' => true,  'aliases' => ['simpang d', 'simpangd']],
+            ['order' => 3,  'label' => 'SKPC',             'menu' => true,  'aliases' => ['skpc']],
+            ['order' => 4,  'label' => 'Simpang Kumu',     'menu' => true,  'aliases' => ['simpang kumu', 'simpangkumu']],
+            ['order' => 5,  'label' => 'Muara Rumbai',     'menu' => true,  'aliases' => ['muara rumbai', 'muararumbai']],
+            ['order' => 6,  'label' => 'Surau Tinggi',     'menu' => true,  'aliases' => ['surau tinggi', 'surautinggi']],
+            ['order' => 7,  'label' => 'Pasirpengaraian',  'menu' => true,  'aliases' => ['pasirpengaraian', 'pasir pengaraian']],
+            ['order' => 8,  'label' => 'Ujung Batu',       'menu' => true,  'aliases' => ['ujung batu', 'ujungbatu']],
+            ['order' => 9,  'label' => 'Tandun',           'menu' => true,  'aliases' => ['tandun']],
+            ['order' => 10, 'label' => 'Silam',            'menu' => true,  'aliases' => ['silam']],
+            ['order' => 11, 'label' => 'Petapahan',        'menu' => true,  'aliases' => ['petapahan']],
+            ['order' => 12, 'label' => 'Suram',            'menu' => true,  'aliases' => ['suram']],
+            ['order' => 13, 'label' => 'Aliantan',         'menu' => true,  'aliases' => ['aliantan']],
+            ['order' => 14, 'label' => 'Kuok',             'menu' => true,  'aliases' => ['kuok']],
+            ['order' => 15, 'label' => 'Bangkinang',       'menu' => true,  'aliases' => ['bangkinang']],
+            ['order' => 16, 'label' => 'Pekanbaru',        'menu' => true,  'aliases' => ['pekanbaru', 'pku']],
+            ['order' => 17, 'label' => 'Kabun',            'menu' => false, 'aliases' => ['kabun']],
+        ],
+
+        'fare_rules' => [
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Pekanbaru'],
+                'amount'       => 150000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Kabun'],
+                'amount'       => 120000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Tandun'],
+                'amount'       => 100000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Petapahan'],
+                'amount'       => 130000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Suram'],
+                'amount'       => 120000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Aliantan'],
+                'amount'       => 120000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['SKPD', 'Simpang D', 'SKPC', 'Simpang Kumu', 'Muara Rumbai', 'Surau Tinggi', 'Pasirpengaraian'],
+                'b'            => ['Bangkinang'],
+                'amount'       => 130000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['Bangkinang'],
+                'b'            => ['Pekanbaru'],
+                'amount'       => 100000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['Ujung Batu'],
+                'b'            => ['Pekanbaru'],
+                'amount'       => 130000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['Suram'],
+                'b'            => ['Pekanbaru'],
+                'amount'       => 120000,
+                'bidirectional'=> true,
+            ],
+            [
+                'a'            => ['Petapahan'],
+                'b'            => ['Pekanbaru'],
+                'amount'       => 100000,
+                'bidirectional'=> true,
+            ],
+        ],
+
+        'seat_labels' => [
+            'CC',
+            'BS',
+            'Tengah',
+            'Belakang Kiri',
+            'Belakang Kanan',
+            'Belakang Sekali',
+        ],
+    ],
+
+    /*
     |--------------------------------------------------------------------------
     | CRM Engine
     |--------------------------------------------------------------------------
@@ -388,6 +550,7 @@ return [
         'webhook_secret'       => env('WHATSAPP_WEBHOOK_SECRET', ''),
         'default_country_code' => env('WHATSAPP_DEFAULT_COUNTRY_CODE', '62'),
         'send_timeout_seconds' => (int) env('WHATSAPP_SEND_TIMEOUT_SECONDS', 15),
+        'interactive_enabled'  => (bool) env('WHATSAPP_INTERACTIVE_ENABLED', true),
 
     ],
 

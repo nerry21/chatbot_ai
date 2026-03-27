@@ -168,10 +168,14 @@ class SendWhatsAppMessageJob implements ShouldQueue
             ],
         ]);
 
-        $result = $sender->sendText(
-            $customer->phone_e164,
-            $message->message_text,
-            [
+        $result = $sender->sendMessage(
+            toPhoneE164: $customer->phone_e164,
+            text: $message->message_text,
+            messageType: $message->message_type,
+            providerPayload: is_array($message->raw_payload['outbound_payload'] ?? null)
+                ? $message->raw_payload['outbound_payload']
+                : [],
+            meta: [
                 'conversation_id' => $conversation->id,
                 'message_id'      => $message->id,
                 'sender_type'     => $message->sender_type->value,

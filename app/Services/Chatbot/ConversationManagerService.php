@@ -145,12 +145,13 @@ class ConversationManagerService
         Conversation $conversation,
         string $text,
         array $rawPayload = [],
+        string $messageType = 'text',
     ): ConversationMessage {
         $message = ConversationMessage::create([
             'conversation_id' => $conversation->id,
             'direction'       => MessageDirection::Outbound,
             'sender_type'     => SenderType::Bot,
-            'message_type'    => 'text',
+            'message_type'    => $messageType,
             'message_text'    => $text,
             'raw_payload'     => $rawPayload,
             'is_fallback'     => false,

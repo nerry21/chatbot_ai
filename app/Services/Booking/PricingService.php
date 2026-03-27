@@ -5,8 +5,9 @@ namespace App\Services\Booking;
 class PricingService
 {
     public function __construct(
-        private readonly RouteValidationService $routeValidator,
-    ) {}
+        private readonly FareCalculatorService $fareCalculator,
+    ) {
+    }
 
     /**
      * Calculate the total price estimate for a trip.
@@ -24,25 +25,9 @@ class PricingService
         ?string $destination,
         ?int $passengerCount = 1,
     ): ?float {
-        if ($pickup === null || $destination === null) {
-            return null;
-        }
+        $total = $this->fareCalculator->calculate($pickup, $destination, $passengerCount);
 
-        $normalizedPickup = mb_strtolower(trim($pickup), 'UTF-8');
-        $normalizedDest   = mb_strtolower(trim($destination), 'UTF-8');
-
-        $table = config('chatbot.booking.routes', []);
-
-        $basePricePerSeat = $table[$normalizedPickup][$normalizedDest] ?? null;
-
-        if ($basePricePerSeat === null) {
-            return null;
-        }
-
-        $count      = max(1, (int) ($passengerCount ?? 1));
-        $multiplier = (float) config('chatbot.booking.passenger_multiplier', 1.0);
-
-        return (float) ($basePricePerSeat * $count * $multiplier);
+        return $total !== null ? (float) $total : null;
     }
 
     /**
@@ -51,10 +36,6 @@ class PricingService
      */
     public function formatRupiah(?float $amount): string
     {
-        if ($amount === null) {
-            return 'Belum tersedia';
-        }
-
-        return 'Rp ' . number_format((int) $amount, 0, ',', '.');
+        return $this->fareCalculator->formatRupiah($amount);
     }
 }

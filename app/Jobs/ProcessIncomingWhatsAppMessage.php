@@ -14,6 +14,7 @@ use App\Services\AI\EntityExtractorService;
 use App\Services\AI\IntentClassifierService;
 use App\Services\AI\ResponseGeneratorService;
 use App\Services\Booking\BookingAssistantService;
+use App\Services\Booking\BookingFlowStateMachine;
 use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Chatbot\ConversationReplyGuardService;
 use App\Services\Chatbot\ConversationStateService;
@@ -57,6 +58,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ConversationSummaryService $summaryService,
         ConversationManagerService $conversationManager,
         BookingAssistantService    $bookingAssistant,
+        BookingFlowStateMachine    $bookingFlow,
         ConversationReplyGuardService $replyGuard,
         ReplyOrchestratorService   $replyOrchestrator,
         ContactTaggingService      $contactTagging,
@@ -228,27 +230,20 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
-            // ── 7. Booking engine (conditional) ────────────────────────────
-            [$booking, $bookingDecision] = $this->runBookingEngine(
-                conversation     : $conversation,
-                message          : $message,
-                intentResult     : $intentResult,
-                entityResult     : $entityResult,
-                bookingAssistant : $bookingAssistant,
+            // ── 7. Deterministic JET booking flow ──────────────────────
+            $flowDecision = $bookingFlow->handle(
+                conversation : $conversation,
+                customer     : $customer,
+                message      : $message,
+                intentResult : $intentResult,
+                entityResult : $entityResult,
+                replyResult  : $replyResult,
             );
 
-            // ── 8. Compose final reply ──────────────────────────────────────
-            $orchestratorContext = [
-                'conversation'    => $conversation,
-                'customer'        => $customer,
-                'intentResult'    => $intentResult,
-                'entityResult'    => $entityResult,
-                'replyResult'     => $replyResult,
-                'bookingDecision' => $bookingDecision,
-                'booking'         => $booking,
-            ];
-
-            $finalReply = $replyOrchestrator->compose($orchestratorContext);
+            $booking = $flowDecision['booking'] ?? null;
+            $bookingDecision = $flowDecision['booking_decision'] ?? null;
+            $finalReply = $flowDecision['reply'];
+            $intentResult = $flowDecision['intent_result'] ?? $intentResult;
             $guardResult = $replyGuard->guardReply(
                 conversation : $conversation,
                 messageText  : $messageText,
@@ -299,7 +294,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 SendWhatsAppMessageJob::dispatch($outboundMessage->id, WaLog::traceId());
             }
 
-            if ($guardResult['close_conversation']) {
+            if (($guardResult['close_conversation'] ?? false) || (($finalReply['meta']['close_conversation'] ?? false) === true)) {
                 $conversationManager->close($conversation);
 
                 WaLog::info('[Job:ProcessIncoming] Conversation closed after close intent', [
@@ -700,11 +695,15 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             'is_fallback'   => $finalReply['is_fallback'],
             'intent'        => $intentResult['intent'],
             'booking_action' => $bookingDecision['action'] ?? null,
+            'outbound_payload' => is_array($finalReply['outbound_payload'] ?? null)
+                ? $finalReply['outbound_payload']
+                : null,
         ], static fn (mixed $value): bool => $value !== null);
 
         return $conversationManager->appendOutboundMessage(
             conversation : $conversation,
             text         : $finalReply['text'],
+            messageType  : $finalReply['message_type'] ?? 'text',
             rawPayload   : $rawPayload,
         );
     }
@@ -818,3 +817,6 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         }
     }
 }
+
+
+

@@ -5,85 +5,226 @@ namespace App\Services\Booking;
 class RouteValidationService
 {
     /**
-     * @return array<string, array<string, int>>
+     * @return array<int, array<string, mixed>>
      */
-    private function routeTable(): array
+    public function locations(): array
     {
-        return config('chatbot.booking.routes', []);
+        /** @var array<int, array<string, mixed>> $locations */
+        $locations = config('chatbot.jet.locations', []);
+
+        return $locations;
     }
 
     /**
-     * Check whether the pickup → destination combination is in the supported
-     * route table. Both values are normalized before comparison.
+     * @return array<int, string>
      */
+    public function menuLocations(): array
+    {
+        return array_values(array_map(
+            fn (array $location) => (string) $location['label'],
+            array_filter($this->locations(), fn (array $location): bool => (bool) ($location['menu'] ?? true)),
+        ));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function allKnownLocations(): array
+    {
+        $labels = array_map(
+            fn (array $location) => (string) $location['label'],
+            $this->locations(),
+        );
+
+        return array_values(array_unique($labels));
+    }
+
     public function isSupported(?string $pickup, ?string $destination): bool
     {
-        if ($pickup === null || $destination === null) {
-            return false;
-        }
-
-        $normalizedPickup = $this->normalizeForLookup($pickup);
-        $normalizedDest   = $this->normalizeForLookup($destination);
-
-        return isset($this->routeTable()[$normalizedPickup][$normalizedDest]);
+        return $this->resolveFareAmount($pickup, $destination) !== null;
     }
 
-    /**
-     * Normalize a location string for display purposes (Title Case).
-     * Returns null when the input is null or blank.
-     *
-     * Examples:
-     *   'UJUNG BATU'        → 'Ujung Batu'
-     *   '  pekanbaru  '     → 'Pekanbaru'
-     *   'pasir pengaraian'  → 'Pasir Pengaraian'
-     */
+    public function resolveFareAmount(?string $pickup, ?string $destination): ?int
+    {
+        $origin = $this->knownLocation($pickup);
+        $target = $this->knownLocation($destination);
+
+        if ($origin === null || $target === null) {
+            return null;
+        }
+
+        foreach ($this->fareRules() as $rule) {
+            $a = array_map([$this, 'knownLocation'], $rule['a'] ?? []);
+            $b = array_map([$this, 'knownLocation'], $rule['b'] ?? []);
+            $amount = $rule['amount'] ?? null;
+
+            if (! is_int($amount)) {
+                continue;
+            }
+
+            $forward = in_array($origin, $a, true) && in_array($target, $b, true);
+            $reverse = ($rule['bidirectional'] ?? false) === true
+                && in_array($origin, $b, true)
+                && in_array($target, $a, true);
+
+            if ($forward || $reverse) {
+                return $amount;
+            }
+        }
+
+        return null;
+    }
+
     public function normalizeLocation(?string $value): ?string
     {
         if ($value === null || trim($value) === '') {
             return null;
         }
 
-        return mb_convert_case(trim($value), MB_CASE_TITLE, 'UTF-8');
+        return $this->knownLocation($value)
+            ?? mb_convert_case(trim($value), MB_CASE_TITLE, 'UTF-8');
+    }
+
+    public function knownLocation(?string $value): ?string
+    {
+        if ($value === null || trim($value) === '') {
+            return null;
+        }
+
+        $lookup = $this->locationAliasMap();
+
+        return $lookup[$this->normalizeLookupKey($value)] ?? null;
+    }
+
+    public function menuLocationByOrder(int $order): ?string
+    {
+        foreach ($this->locations() as $location) {
+            if ((int) ($location['order'] ?? 0) === $order && (bool) ($location['menu'] ?? true)) {
+                return (string) $location['label'];
+            }
+        }
+
+        return null;
+    }
+
+    public function findLocationInText(string $text): ?string
+    {
+        $normalizedText = $this->normalizeLookupKey($text);
+
+        if ($normalizedText === '') {
+            return null;
+        }
+
+        $direct = $this->locationAliasMap()[$normalizedText] ?? null;
+
+        if ($direct !== null) {
+            return $direct;
+        }
+
+        foreach ($this->locationAliasMap() as $alias => $label) {
+            if (str_contains(' ' . $normalizedText . ' ', ' ' . $alias . ' ')) {
+                return $label;
+            }
+        }
+
+        return null;
     }
 
     /**
-     * Return all supported pickup cities as title-cased strings.
-     *
      * @return array<int, string>
      */
     public function supportedPickups(): array
     {
-        return array_map(
-            fn (string $key) => $this->normalizeLocation($key),
-            array_keys($this->routeTable()),
-        );
+        $locations = [];
+
+        foreach ($this->fareRules() as $rule) {
+            foreach (array_merge($rule['a'] ?? [], $rule['b'] ?? []) as $point) {
+                $known = $this->knownLocation((string) $point);
+
+                if ($known !== null) {
+                    $locations[] = $known;
+                }
+            }
+        }
+
+        return array_values(array_unique($locations));
     }
 
     /**
-     * Return all supported destinations for a given pickup city.
-     *
      * @return array<int, string>
      */
     public function supportedDestinations(?string $pickup): array
     {
-        if ($pickup === null) {
+        $origin = $this->knownLocation($pickup);
+
+        if ($origin === null) {
             return [];
         }
 
-        $routes = $this->routeTable()[$this->normalizeForLookup($pickup)] ?? [];
+        $destinations = [];
 
-        return array_map(
-            fn (string $key) => $this->normalizeLocation($key),
-            array_keys($routes),
-        );
+        foreach ($this->fareRules() as $rule) {
+            $a = array_filter(array_map([$this, 'knownLocation'], $rule['a'] ?? []));
+            $b = array_filter(array_map([$this, 'knownLocation'], $rule['b'] ?? []));
+
+            if (in_array($origin, $a, true)) {
+                $destinations = array_merge($destinations, $b);
+            }
+
+            if (($rule['bidirectional'] ?? false) === true && in_array($origin, $b, true)) {
+                $destinations = array_merge($destinations, $a);
+            }
+        }
+
+        return array_values(array_unique($destinations));
     }
 
-    // -------------------------------------------------------------------------
-    // Private
-    // -------------------------------------------------------------------------
-
-    private function normalizeForLookup(string $value): string
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fareRules(): array
     {
-        return mb_strtolower(trim($value), 'UTF-8');
+        /** @var array<int, array<string, mixed>> $rules */
+        $rules = config('chatbot.jet.fare_rules', []);
+
+        return $rules;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function locationAliasMap(): array
+    {
+        $map = [];
+
+        foreach ($this->locations() as $location) {
+            $label = (string) ($location['label'] ?? '');
+
+            if ($label === '') {
+                continue;
+            }
+
+            $aliases = array_merge([$label], $location['aliases'] ?? []);
+
+            foreach ($aliases as $alias) {
+                if (! is_string($alias) || trim($alias) === '') {
+                    continue;
+                }
+
+                $map[$this->normalizeLookupKey($alias)] = $label;
+            }
+        }
+
+        return $map;
+    }
+
+    private function normalizeLookupKey(string $value): string
+    {
+        $normalized = mb_strtolower(trim($value), 'UTF-8');
+        $normalized = str_replace(['’', "'"], '', $normalized);
+        $normalized = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', ' ', trim($normalized)) ?? trim($normalized);
+
+        return $normalized;
     }
 }
