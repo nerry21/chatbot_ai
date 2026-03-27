@@ -14,20 +14,20 @@ class ResponseGeneratorService
      * @var array<string, string>
      */
     private const FALLBACK_REPLIES = [
-        'greeting'        => 'Halo! Selamat datang di layanan transportasi kami. Ada yang bisa kami bantu untuk perjalanan Anda?',
-        'booking'         => 'Baik, kami siap membantu pemesanan Anda. Bisa informasikan titik penjemputan, tujuan, tanggal, dan jam keberangkatan?',
-        'booking_confirm' => 'Terima kasih atas konfirmasinya. Tim kami akan segera memproses.',
-        'booking_cancel'  => 'Baik, kami mencatat permintaan pembatalan Anda. Tim kami akan segera menindaklanjuti.',
-        'schedule_inquiry'=> 'Terima kasih atas pertanyaannya. Untuk informasi jadwal yang akurat, boleh kami tahu rute dan tanggal yang Anda inginkan?',
-        'price_inquiry'   => 'Terima kasih atas pertanyaan harga. Kami akan sampaikan informasi tarif setelah mengetahui rute perjalanan Anda.',
-        'location_inquiry'=> 'Kami memiliki banyak titik penjemputan. Bisa informasikan kota atau area asal Anda?',
-        'support'         => 'Kami mohon maaf atas ketidaknyamanannya. Tim kami mencatat keluhan Anda dan akan segera menghubungi Anda.',
-        'human_handoff'   => 'Baik, kami akan segera menghubungkan Anda dengan tim kami. Mohon tunggu sebentar.',
-        'farewell'        => 'Terima kasih telah menghubungi kami. Semoga perjalanan Anda menyenangkan. Sampai jumpa!',
-        'confirmation'    => 'Terima kasih atas konfirmasinya. Kami akan lanjutkan prosesnya.',
-        'rejection'       => 'Baik, tidak masalah. Ada hal lain yang bisa kami bantu?',
-        'out_of_scope'    => 'Maaf, kami hanya melayani pemesanan transportasi antar kota. Ada yang bisa kami bantu terkait perjalanan Anda?',
-        'unknown'         => 'Maaf, kami belum memahami permintaan Anda. Bisa dijelaskan lebih detail agar kami bisa membantu dengan tepat?',
+        'greeting' => 'Halo, saya bantu ya. Mau cek jadwal, harga, atau lanjut booking travel?',
+        'booking' => 'Baik, saya bantu bookingnya ya. Mohon kirim titik jemput, tujuan, tanggal, dan jam keberangkatannya.',
+        'booking_confirm' => 'Baik, konfirmasinya sudah masuk ya. Kami lanjut proses bookingnya.',
+        'booking_cancel' => 'Baik, permintaan pembatalannya sudah kami catat ya. Nanti kami bantu tindak lanjuti.',
+        'schedule_inquiry' => 'Siap, saya bantu cek jadwal ya. Boleh kirim rute dan tanggal keberangkatannya dulu?',
+        'price_inquiry' => 'Baik, saya bantu cek harganya ya. Mohon kirim titik jemput dan tujuan dulu.',
+        'location_inquiry' => 'Untuk lokasi yang ingin dicek, boleh kirim titik jemput atau tujuan perjalanannya ya?',
+        'support' => 'Mohon maaf ya atas kendalanya. Boleh ceritakan singkat masalahnya, nanti kami bantu lanjutkan.',
+        'human_handoff' => 'Baik, saya teruskan ke admin ya. Mohon tunggu sebentar.',
+        'farewell' => 'Baik, terima kasih ya. Kalau nanti mau cek jadwal atau lanjut booking, tinggal chat lagi.',
+        'confirmation' => 'Siap, konfirmasinya sudah saya catat ya. Saya lanjutkan prosesnya.',
+        'rejection' => 'Baik, tidak masalah ya. Kalau ada yang mau diubah atau dicek lagi, tinggal kirim saja.',
+        'out_of_scope' => 'Mohon maaf, untuk saat ini kami fokus di layanan travel antar kota. Kalau mau cek jadwal, harga, atau booking, saya bantu.',
+        'unknown' => 'Baik, saya bantu ya. Boleh jelaskan lagi kebutuhan perjalanannya, misalnya rute, tanggal, atau jadwal yang ingin dicek?',
     ];
 
     /**
@@ -37,11 +37,11 @@ class ResponseGeneratorService
      * @var array<string, string>
      */
     private const CONTEXTUAL_FALLBACKS = [
-        'unknown' => 'Maaf, kami belum memahami dengan jelas maksud pesan Anda. Bisa Anda jelaskan lebih detail? Kami siap membantu dengan informasi perjalanan, harga, jadwal, atau pemesanan tiket.',
-        'default' => 'Maaf, kami belum bisa memproses permintaan ini. Bisa Anda ulangi atau ceritakan lebih detail kebutuhan perjalanan Anda?',
+        'unknown' => 'Baik, saya belum menangkap detailnya dengan jelas. Boleh jelaskan lagi kebutuhan perjalanannya? Misalnya rute, tanggal, jadwal, atau booking yang ingin dicek.',
+        'default' => 'Baik, saya bantu ya. Coba kirim lagi detail perjalanan yang ingin dicek, nanti saya lanjut bantu.',
     ];
 
-    private const DEFAULT_FALLBACK = 'Terima kasih atas pesan Anda. Tim kami akan segera merespons.';
+    private const DEFAULT_FALLBACK = 'Baik, pesan Anda sudah masuk ya. Silakan kirim detail perjalanan yang ingin dicek, nanti kami bantu.';
 
     /**
      * Booking-related intents that must not be intercepted by FAQ direct answer.
@@ -52,8 +52,8 @@ class ResponseGeneratorService
     private const BOOKING_INTENTS = ['booking', 'booking_confirm', 'booking_cancel'];
 
     public function __construct(
-        private readonly LlmClientService          $llmClient,
-        private readonly PromptBuilderService      $promptBuilder,
+        private readonly LlmClientService $llmClient,
+        private readonly PromptBuilderService $promptBuilder,
         private readonly JsonSchemaValidatorService $validator,
     ) {}
 
@@ -69,10 +69,10 @@ class ResponseGeneratorService
      */
     public function generate(array $context): array
     {
-        $intent           = $context['intent_result']['intent']     ?? 'unknown';
+        $intent = $context['intent_result']['intent'] ?? 'unknown';
         $intentConfidence = (float) ($context['intent_result']['confidence'] ?? 1.0);
-        $hasKnowledge     = ! empty($context['knowledge_hits']);
-        $faqResult        = $context['faq_result'] ?? ['matched' => false, 'answer' => null];
+        $hasKnowledge = ! empty($context['knowledge_hits']);
+        $faqResult = $context['faq_result'] ?? ['matched' => false, 'answer' => null];
         $isBookingRelated = in_array($intent, self::BOOKING_INTENTS, true);
 
         // ── 1. FAQ direct answer (skip for booking intents) ─────────────────
@@ -84,18 +84,18 @@ class ResponseGeneratorService
             && ! empty($faqResult['answer'])
         ) {
             return [
-                'text'         => $faqResult['answer'],
-                'is_fallback'  => false,
+                'text' => $faqResult['answer'],
+                'is_fallback' => false,
                 'used_knowledge' => true,
-                'used_faq'     => true,
+                'used_faq' => true,
             ];
         }
 
         // ── 2. Low-confidence contextual fallback ────────────────────────────
         // Applied only when: config opt-in, confidence is below threshold, AND
         // no knowledge context is available to ground the LLM's answer.
-        $lowConfThreshold     = (float) config('chatbot.ai_quality.low_confidence_threshold', 0.40);
-        $fallbackOnLowConf    = (bool)  config('chatbot.ai_quality.reply_fallback_on_low_confidence', false);
+        $lowConfThreshold = (float) config('chatbot.ai_quality.low_confidence_threshold', 0.40);
+        $fallbackOnLowConf = (bool) config('chatbot.ai_quality.reply_fallback_on_low_confidence', false);
 
         if (
             $fallbackOnLowConf
@@ -111,11 +111,11 @@ class ResponseGeneratorService
 
             $llmContext = array_merge($context, [
                 'system' => $prompts['system'],
-                'user'   => $prompts['user'],
-                'model'  => config('chatbot.llm.models.reply'),
+                'user' => $prompts['user'],
+                'model' => config('chatbot.llm.models.reply'),
             ]);
 
-            $raw  = $this->llmClient->generateReply($llmContext);
+            $raw = $this->llmClient->generateReply($llmContext);
             $text = trim($raw['text'] ?? '');
 
             if ($text === '') {
@@ -123,13 +123,14 @@ class ResponseGeneratorService
             }
 
             return [
-                'text'         => $text,
-                'is_fallback'  => (bool) ($raw['is_fallback'] ?? false),
+                'text' => $text,
+                'is_fallback' => (bool) ($raw['is_fallback'] ?? false),
                 'used_knowledge' => $hasKnowledge && config('chatbot.knowledge.include_in_reply_tasks', true),
-                'used_faq'     => false,
+                'used_faq' => false,
             ];
         } catch (\Throwable $e) {
             Log::error('ResponseGeneratorService: unexpected error', ['error' => $e->getMessage()]);
+
             return $this->buildFallback($intent);
         }
     }
@@ -146,10 +147,10 @@ class ResponseGeneratorService
     private function buildFallback(string $intent): array
     {
         return [
-            'text'          => self::FALLBACK_REPLIES[$intent] ?? self::DEFAULT_FALLBACK,
-            'is_fallback'   => true,
+            'text' => self::FALLBACK_REPLIES[$intent] ?? self::DEFAULT_FALLBACK,
+            'is_fallback' => true,
             'used_knowledge' => false,
-            'used_faq'      => false,
+            'used_faq' => false,
         ];
     }
 
@@ -165,10 +166,10 @@ class ResponseGeneratorService
             ?? self::CONTEXTUAL_FALLBACKS['default'];
 
         return [
-            'text'          => $text,
-            'is_fallback'   => true,
+            'text' => $text,
+            'is_fallback' => true,
             'used_knowledge' => false,
-            'used_faq'      => false,
+            'used_faq' => false,
         ];
     }
 }

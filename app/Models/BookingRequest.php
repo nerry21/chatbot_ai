@@ -54,6 +54,9 @@ class BookingRequest extends Model
         'destination',
         'passenger_name',
         'passenger_count',
+        'departure_date',
+        'departure_time',
+        'payment_method',
     ];
 
     // -------------------------------------------------------------------------
@@ -124,6 +127,7 @@ class BookingRequest extends Model
             'departure_date'  => 'departure_date',
             'departure_time'  => 'departure_time',
             'passenger_count' => 'passenger_count',
+            'payment_method'  => 'payment_method',
             'notes'           => 'special_notes',
         ];
 

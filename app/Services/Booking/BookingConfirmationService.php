@@ -26,21 +26,21 @@ class BookingConfirmationService
             );
 
         $lines = [
-            'Izin Bapak/Ibu, berikut kami kirimkan ringkasan perjalanan Anda.',
+            'Baik, saya rangkum dulu data perjalanannya:',
             '',
             'Jumlah penumpang : ' . (($booking->passenger_count ?? 0) > 0 ? $booking->passenger_count . ' orang' : '-'),
             'Tanggal          : ' . ($booking->departure_date?->translatedFormat('d F Y') ?? '-'),
-            'Jam              : ' . ($booking->departure_time ? $booking->departure_time . ' WIB' : '-'),
+            'Jam berangkat    : ' . ($booking->departure_time ? $booking->departure_time . ' WIB' : '-'),
             'Seat             : ' . $seatText,
             'Titik jemput     : ' . ($booking->pickup_location ?? '-'),
             'Alamat jemput    : ' . ($booking->pickup_full_address ?? '-'),
-            'Tujuan antar     : ' . ($booking->destination ?? '-'),
+            'Tujuan           : ' . ($booking->destination ?? '-'),
             'Nama penumpang   : ' . ($names !== [] ? implode(', ', $names) : '-'),
+            'Metode bayar     : ' . $this->paymentMethodLabel($booking->payment_method),
             'Nomor kontak     : ' . ($booking->contact_number ?? '-'),
-            'Total ongkos     : ' . $this->fareCalculator->formatRupiah($fare),
+            'Estimasi ongkos  : ' . $this->fareCalculator->formatRupiah($fare),
             '',
-            'Apakah data ini sudah benar ya Bapak/Ibu?',
-            'Jika sudah sesuai, silakan balas YA / BENAR / SUDAH / OKE ya.',
+            'Kalau datanya sudah benar, silakan balas YA / BENAR / SUDAH ya.',
         ];
 
         return implode("\n", $lines);
@@ -59,8 +59,9 @@ class BookingConfirmationService
             'Seat             : ' . (($booking->selected_seats ?? []) !== [] ? implode(', ', $booking->selected_seats ?? []) : '-'),
             'Titik jemput     : ' . ($booking->pickup_location ?? '-'),
             'Alamat jemput    : ' . ($booking->pickup_full_address ?? '-'),
-            'Tujuan antar     : ' . ($booking->destination ?? '-'),
+            'Tujuan           : ' . ($booking->destination ?? '-'),
             'Nama penumpang   : ' . ($names !== [] ? implode(', ', $names) : '-'),
+            'Metode bayar     : ' . $this->paymentMethodLabel($booking->payment_method),
             'Nomor kontak     : ' . ($booking->contact_number ?? '-'),
             'Total ongkos     : ' . $this->fareCalculator->formatRupiah(
                 $booking->price_estimate !== null
@@ -92,5 +93,20 @@ class BookingConfirmationService
     {
         $booking->markConfirmed();
         $booking->save();
+    }
+
+    private function paymentMethodLabel(?string $value): string
+    {
+        if (blank($value)) {
+            return '-';
+        }
+
+        foreach ((array) config('chatbot.jet.payment_methods', []) as $method) {
+            if (($method['id'] ?? null) === $value) {
+                return (string) ($method['label'] ?? $value);
+            }
+        }
+
+        return mb_convert_case((string) $value, MB_CASE_TITLE, 'UTF-8');
     }
 }

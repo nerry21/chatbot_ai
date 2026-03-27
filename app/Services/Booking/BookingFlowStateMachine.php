@@ -2,6 +2,7 @@
 
 namespace App\Services\Booking;
 
+use App\Enums\BookingFlowState;
 use App\Enums\BookingStatus;
 use App\Enums\IntentType;
 use App\Models\BookingRequest;
@@ -15,18 +16,13 @@ use App\Support\WaLog;
 class BookingFlowStateMachine
 {
     /**
-     * @var array<string, string>
+     * @var array<int, string>
      */
-    private const SLOT_LABELS = [
-        'passenger_count'     => 'jumlah penumpang',
-        'travel_date'         => 'tanggal keberangkatan',
-        'travel_time'         => 'jam keberangkatan',
-        'selected_seats'      => 'seat',
-        'pickup_point'        => 'titik jemput',
-        'pickup_full_address' => 'alamat jemput',
-        'destination_point'   => 'tujuan antar',
-        'passenger_names'     => 'nama penumpang',
-        'contact_number'      => 'nomor kontak',
+    private const CORE_REQUIRED_SLOTS = [
+        'pickup_location',
+        'destination',
+        'passenger_name',
+        'passenger_count',
     ];
 
     public function __construct(
@@ -40,8 +36,8 @@ class BookingFlowStateMachine
         private readonly TimeGreetingService $timeGreetingService,
         private readonly GreetingService $greetingService,
         private readonly HumanEscalationService $humanEscalationService,
-    ) {
-    }
+        private readonly ?BookingReplyNaturalizerService $replyNaturalizer = null,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $intentResult
@@ -63,16 +59,16 @@ class BookingFlowStateMachine
         array $entityResult,
         array $replyResult,
     ): array {
-        $existingDraft = $this->bookingAssistant->findExistingDraft($conversation);
-        $slots = $this->stateService->load($conversation);
-        $timeGreeting = $this->timeGreetingService->resolve();
+        $booking = $this->bookingAssistant->findExistingDraft($conversation);
+        $slots = $this->stateService->hydrateFromBooking($conversation, $booking);
         $expectedInput = $this->stateService->expectedInput($conversation);
         $messageText = trim((string) ($message->message_text ?? ''));
+        $timeGreeting = $this->timeGreetingService->resolve();
 
         $this->stateService->putMany($conversation, [
             'time_greeting' => $timeGreeting['label'],
             'admin_takeover' => $conversation->isAdminTakeover(),
-        ]);
+        ], 'conversation_context');
 
         $extracted = $this->slotExtractor->extract(
             messageText: $messageText,
@@ -84,182 +80,113 @@ class BookingFlowStateMachine
 
         $updates = $extracted['updates'];
         $signals = $extracted['signals'];
-        $correctionNotice = $this->buildCorrectionNotice($slots, $updates);
+
+        $this->logExtraction($conversation, $messageText, $expectedInput, $updates, $signals);
 
         if ($signals['greeting_detected']) {
-            $updates['greeting_detected'] = true;
-            $updates['salam_type'] = $signals['salam_type'];
+            $this->stateService->putMany($conversation, [
+                'greeting_detected' => true,
+                'salam_type' => $signals['salam_type'],
+            ], 'greeting_signal');
         }
 
-        $hasTravelSignals = $this->hasTravelSignals(
+        if ($signals['human_keyword']) {
+            return $this->escalateToHuman($conversation, $customer, $intentResult, $signals, $messageText, $booking);
+        }
+
+        $hasBookingContext = $this->hasBookingContext(
             conversation: $conversation,
+            booking: $booking,
             intentResult: $intentResult,
-            signals: $signals,
             slots: $slots,
             updates: $updates,
-            existingDraft: $existingDraft,
+            signals: $signals,
         );
 
-        if (! $hasTravelSignals && $signals['close_intent']) {
-            return $this->decision(
-                booking: $existingDraft,
-                action: 'close_conversation',
-                reply: $this->reply(
-                    text: $this->withSalamPrefix(
-                        $signals,
-                        'Baik Bapak/Ibu, terima kasih ya. Jika nanti ingin cek jadwal atau booking lagi, silakan hubungi kami kembali.',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'close_conversation', 'close_conversation' => true],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Farewell),
-            );
-        }
+        if ($signals['greeting_only'] && ! $hasBookingContext) {
+            $opening = $this->greetingService->buildOpeningGreeting($conversation, $messageText, $slots)
+                ?? $timeGreeting['opening'];
 
-        if (! $hasTravelSignals && $signals['greeting_only']) {
-            $this->stateService->putMany($conversation, ['booking_intent_status' => 'idle']);
-            $this->stateService->setExpectedInput($conversation, null);
-            $openingGreeting = $this->greetingService->buildOpeningGreeting(
-                conversation: $conversation,
-                messageText: $messageText,
-                activeStates: $slots,
+            $this->stateService->transitionFlowState(
+                $conversation,
+                BookingFlowState::Idle,
+                null,
+                'greeting_only',
             );
 
-            if ($openingGreeting === null) {
-                $openingGreeting = $this->buildOpeningGreeting($signals, $timeGreeting['opening'], $messageText);
-            }
-
             return $this->decision(
-                booking: $existingDraft,
+                booking: $booking,
                 action: 'greeting',
                 reply: $this->reply(
-                    text: $openingGreeting,
-                    meta: ['source' => 'jet_flow', 'action' => 'greeting'],
+                    text: $opening,
+                    meta: ['source' => 'booking_engine', 'action' => 'greeting'],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::Greeting),
             );
         }
 
-        if ($signals['close_intent'] && $updates === [] && ($slots['review_sent'] ?? false) !== true) {
-            $this->stateService->putMany($conversation, [
-                'booking_intent_status' => 'idle',
-                'review_sent' => false,
-            ]);
-            $this->stateService->setExpectedInput($conversation, null);
-
-            return $this->decision(
-                booking: $existingDraft,
-                action: 'close_conversation',
-                reply: $this->reply(
-                    text: $this->withSalamPrefix(
-                        $signals,
-                        'Baik Bapak/Ibu, terima kasih ya. Jika nanti ingin cek jadwal atau booking lagi, silakan hubungi kami kembali.',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'close_conversation', 'close_conversation' => true],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Farewell),
-            );
-        }
-
-        if ($signals['human_keyword']) {
-            $this->markEscalationState($conversation);
-            $this->humanEscalationService->escalateQuestion(
-                conversation: $conversation,
-                customer: $customer,
-                reason: 'Permintaan admin manusia dari customer.',
-            );
-
-            return $this->decision(
-                booking: $existingDraft,
-                action: 'human_handoff',
-                reply: $this->reply(
-                    text: $this->withSalamPrefix(
-                        $signals,
-                        'Izin Bapak/Ibu, terima kasih atas pertanyaannya. Mohon izin, kami konsultasikan terlebih dahulu ya.',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'human_handoff'],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::HumanHandoff),
-            );
-        }
-
-        if ($this->isRouteListInquiry($signals, $messageText) && $existingDraft === null) {
-            return $this->decision(
-                booking: null,
-                action: 'route_list',
-                reply: $this->reply(
-                    text: $this->withSalamPrefix(
-                        $signals,
-                        "Berikut titik jemput dan tujuan yang tersedia saat ini:\n\n" . $this->locationMenuText() . "\n\nIzin Bapak/Ibu, jika ingin lanjut booking silakan kirim titik jemput, tujuan, atau tanggal keberangkatannya ya.",
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'route_list'],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::LocationInquiry),
-            );
-        }
-
-        if (($signals['price_keyword'] || IntentType::tryFrom($intentResult['intent'] ?? '') === IntentType::PriceInquiry) && $existingDraft === null) {
-            if ($updates !== []) {
-                $this->stateService->putMany($conversation, $this->applyDerivedStateUpdates($slots, $updates));
-            }
-            $priceReply = $this->handleDirectPriceInquiry($signals, $updates);
-
-            if ($priceReply !== null) {
+        if ($booking === null && $updates === []) {
+            if ($this->isRouteListInquiry($signals, $messageText)) {
                 return $this->decision(
                     booking: null,
-                    action: $priceReply['meta']['action'] ?? 'price_inquiry',
-                    reply: $priceReply,
+                    action: 'route_list',
+                    reply: $this->reply(
+                        text: $this->withGreetingContext($signals, $messageText, $this->naturalizer()->routeListReply()),
+                        meta: ['source' => 'booking_engine', 'action' => 'route_list'],
+                    ),
+                    intentResult: $this->overrideIntent($intentResult, IntentType::LocationInquiry),
+                );
+            }
+
+            if ($signals['schedule_keyword']) {
+                return $this->decision(
+                    booking: null,
+                    action: 'schedule_inquiry',
+                    reply: $this->reply(
+                        text: $this->withGreetingContext(
+                            $signals,
+                            $messageText,
+                            $this->naturalizer()->scheduleLine()."\n\nKalau ingin saya cek lebih lanjut, silakan kirim titik jemput dan tujuan perjalanannya ya.",
+                        ),
+                        meta: ['source' => 'booking_engine', 'action' => 'schedule_inquiry'],
+                    ),
+                    intentResult: $this->overrideIntent($intentResult, IntentType::ScheduleInquiry),
+                );
+            }
+
+            if ($signals['price_keyword']) {
+                return $this->decision(
+                    booking: null,
+                    action: 'price_inquiry',
+                    reply: $this->reply(
+                        text: $this->withGreetingContext(
+                            $signals,
+                            $messageText,
+                            'Baik, untuk cek harga saya perlu titik jemput dan tujuan dulu ya.',
+                        ),
+                        meta: ['source' => 'booking_engine', 'action' => 'price_inquiry'],
+                    ),
                     intentResult: $this->overrideIntent($intentResult, IntentType::PriceInquiry),
                 );
             }
         }
 
-        if (($signals['schedule_keyword'] || IntentType::tryFrom($intentResult['intent'] ?? '') === IntentType::ScheduleInquiry) && $existingDraft === null) {
-            $continueBooking = $this->shouldStartBooking($signals, $updates);
-
-            if ($updates !== []) {
-                $this->stateService->putMany($conversation, array_merge(
-                    $this->applyDerivedStateUpdates($slots, $updates),
-                    $continueBooking ? ['booking_intent_status' => 'collecting'] : [],
-                ));
-            }
-
-            if ($continueBooking) {
-                $this->stateService->setExpectedInput($conversation, 'passenger_count');
+        if (! $hasBookingContext) {
+            if ($signals['close_intent']) {
+                return $this->closeConversation($conversation, $booking, $intentResult, $signals, $messageText);
             }
 
             return $this->decision(
                 booking: null,
-                action: 'schedule_inquiry',
-                reply: $this->buildScheduleReply($signals, $continueBooking),
-                intentResult: $this->overrideIntent($intentResult, IntentType::ScheduleInquiry),
+                action: 'pass_through',
+                reply: $this->passThroughReply($replyResult, $signals, $messageText, $slots),
+                intentResult: $intentResult,
             );
         }
 
-        if (! $hasTravelSignals) {
-            $this->markEscalationState($conversation);
-            $this->humanEscalationService->escalateQuestion(
-                conversation: $conversation,
-                customer: $customer,
-                reason: 'Pertanyaan di luar cakupan flow travel JET.',
-            );
+        $booking = $booking ?? $this->bookingAssistant->findOrCreateDraft($conversation);
 
-            return $this->decision(
-                booking: $existingDraft,
-                action: 'human_escalation',
-                reply: $this->reply(
-                    text: $this->withSalamPrefix(
-                        $signals,
-                        'Izin Bapak/Ibu, terima kasih atas pertanyaannya. Mohon izin, kami konsultasikan terlebih dahulu ya.',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'human_escalation'],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Support),
-            );
-        }
-
-        $booking = $existingDraft ?? $this->bookingAssistant->findOrCreateDraft($conversation);
-
-        return $this->handleBookingFlow(
+        return $this->advanceBookingFlow(
             conversation: $conversation,
             customer: $customer,
             booking: $booking,
@@ -267,8 +194,7 @@ class BookingFlowStateMachine
             signals: $signals,
             slots: $slots,
             updates: $updates,
-            correctionNotice: $correctionNotice,
-            timeGreeting: $timeGreeting,
+            messageText: $messageText,
         );
     }
 
@@ -277,10 +203,9 @@ class BookingFlowStateMachine
      * @param  array<string, mixed>  $signals
      * @param  array<string, mixed>  $slots
      * @param  array<string, mixed>  $updates
-     * @param  array<string, string> $timeGreeting
      * @return array<string, mixed>
      */
-    private function handleBookingFlow(
+    private function advanceBookingFlow(
         Conversation $conversation,
         Customer $customer,
         BookingRequest $booking,
@@ -288,39 +213,53 @@ class BookingFlowStateMachine
         array $signals,
         array $slots,
         array $updates,
-        string $correctionNotice,
-        array $timeGreeting,
+        string $messageText,
     ): array {
-        $updates = $this->applyDerivedStateUpdates($slots, $updates);
-        $this->logSlotUpdates($conversation, $slots, $updates);
-        $seatSensitiveChanged = $this->hasAnyKey($updates, ['passenger_count', 'travel_date', 'travel_time']);
+        $correctionLines = [];
+        $capturedSlotUpdates = [];
 
-        if ($seatSensitiveChanged) {
-            $this->seatAvailability->releaseSeats($booking);
+        if ($updates !== []) {
+            $changes = $this->stateService->putMany($conversation, array_merge($updates, [
+                'needs_human_escalation' => false,
+                'admin_takeover' => false,
+            ]), 'slot_extraction');
+
+            $trackedSlotChanges = $this->stateService->trackedSlotChanges($changes);
+            $correctionLines = $this->naturalizer()->correctionLinesFromChanges($trackedSlotChanges['overwritten']);
+            $capturedSlotUpdates = array_map(
+                fn (array $change): mixed => $change['new'],
+                $trackedSlotChanges['created'],
+            );
+
+            $slots = $this->stateService->load($conversation);
         }
 
-        $this->stateService->putMany($conversation, array_merge($updates, [
-            'booking_intent_status' => 'collecting',
-            'time_greeting' => $timeGreeting['label'],
-        ]));
-        $slots = array_replace($slots, $updates, [
-            'booking_intent_status' => 'collecting',
-            'time_greeting' => $timeGreeting['label'],
-        ]);
+        $routeEvaluation = $this->evaluateRoute($slots);
+
+        $this->stateService->putMany($conversation, [
+            'route_status' => $routeEvaluation['status'],
+            'route_issue' => $routeEvaluation['focus_slot'],
+            'fare_amount' => $routeEvaluation['fare_amount'],
+        ], 'route_evaluation');
+        $slots = $this->stateService->load($conversation);
         $booking = $this->stateService->syncBooking($booking, $slots, $customer->phone_e164 ?? '');
+        $currentState = $this->determineFlowState($slots);
 
-        $prefixLines = array_filter([$correctionNotice, $this->manualPassengerNotice($slots)]);
-
-        if (($slots['review_sent'] ?? false) === true && ($signals['affirmation'] ?? false) === true) {
+        if (($slots['review_sent'] ?? false) === true && ($signals['affirmation'] ?? false) === true && $updates === []) {
             $this->confirmationService->confirm($booking);
-            $this->seatAvailability->confirmSeats($booking);
             $this->stateService->putMany($conversation, [
-                'booking_intent_status' => 'confirmed',
                 'booking_confirmed' => true,
-                'needs_human_escalation' => false,
-            ]);
-            $this->stateService->setExpectedInput($conversation, null);
-            $this->humanEscalationService->forwardBooking($conversation, $customer, $booking);
+                'review_sent' => true,
+            ], 'booking_confirmation');
+            $this->stateService->transitionFlowState(
+                $conversation,
+                BookingFlowState::Confirmed,
+                null,
+                'booking_confirmation',
+                ['reason' => 'customer_affirmed_review'],
+            );
+            $this->humanEscalationService->forwardBooking($conversation, $customer, $booking->fresh());
+
             WaLog::info('[BookingFlow] booking confirmed', [
                 'conversation_id' => $conversation->id,
                 'booking_id' => $booking->id,
@@ -330,11 +269,8 @@ class BookingFlowStateMachine
                 booking: $booking->fresh(),
                 action: 'confirmed',
                 reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        'Baik Bapak/Ibu, data perjalanan sudah kami terima. Kami akan kembali menghubungi Bapak/Ibu melalui kanal WhatsApp ini atau dari Admin Utama.',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'confirmed'],
+                    text: $this->withGreetingContext($signals, $messageText, $this->naturalizer()->confirmed()),
+                    meta: ['source' => 'booking_engine', 'action' => 'confirmed'],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::BookingConfirm),
             );
@@ -344,365 +280,663 @@ class BookingFlowStateMachine
             $this->stateService->putMany($conversation, [
                 'review_sent' => false,
                 'booking_confirmed' => false,
-            ]);
-            $this->stateService->setExpectedInput($conversation, null);
+            ], 'booking_rejection');
+            $slots = $this->stateService->load($conversation);
+            $currentState = $this->determineFlowState($slots);
+            $this->stateService->transitionFlowState(
+                $conversation,
+                $currentState,
+                $currentState === BookingFlowState::RouteUnavailable
+                    ? ($slots['route_issue'] ?? 'pickup_location')
+                    : null,
+                'booking_rejection',
+                ['reason' => 'customer_rejected_review'],
+            );
 
             return $this->decision(
                 booking: $booking,
                 action: 'ask_correction',
                 reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        'Baik Bapak/Ibu, silakan kirim bagian data yang ingin diubah ya. Saya bantu update satu per satu.',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_correction'],
+                    text: $this->withGreetingContext($signals, $messageText, $this->naturalizer()->askCorrection()),
+                    meta: ['source' => 'booking_engine', 'action' => 'ask_correction'],
                 ),
                 intentResult: $intentResult,
             );
         }
 
-        if ($slots['passenger_count'] === null) {
-            $this->stateService->setExpectedInput($conversation, 'passenger_count');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'ask_passenger_count',
-                reply: $this->reply(
-                    text: $this->prependNotes($prefixLines, 'Izin Bapak/Ibu, untuk keberangkatan ini ada berapa orang penumpangnya ya?'),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_passenger_count'],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
-            );
+        if ($this->shouldCloseConversation($signals, $slots, $updates)) {
+            return $this->closeConversation($conversation, $booking, $intentResult, $signals, $messageText);
         }
 
-        if ((int) $slots['passenger_count'] > (int) config('chatbot.jet.passenger.manual_confirm_max', 6)) {
-            $this->markEscalationState($conversation);
-            $this->humanEscalationService->escalateQuestion(
-                conversation: $conversation,
-                customer: $customer,
-                reason: 'Permintaan booking lebih dari 6 penumpang.',
-            );
+        if (($signals['acknowledgement'] ?? false) === true && $updates === [] && $currentState->isCollecting()) {
+            $pendingPrompt = $this->pendingPrompt($slots, $currentState);
 
-            return $this->decision(
-                booking: $booking,
-                action: 'human_escalation',
-                reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        'Izin Bapak/Ibu, untuk jumlah penumpang lebih dari 6 orang perlu kami bantu konfirmasi manual terlebih dahulu ya.',
+            if ($pendingPrompt !== null) {
+                return $this->decision(
+                    booking: $booking,
+                    action: 'acknowledge_pending',
+                    reply: $this->reply(
+                        text: $this->withGreetingContext($signals, $messageText, $this->naturalizer()->inProgressAcknowledgement($pendingPrompt)),
+                        meta: ['source' => 'booking_engine', 'action' => 'acknowledge_pending'],
                     ),
-                    meta: ['source' => 'jet_flow', 'action' => 'human_escalation'],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::HumanHandoff),
-            );
+                    intentResult: $intentResult,
+                );
+            }
         }
 
-        if ($slots['travel_date'] === null || $slots['travel_time'] === null) {
-            $this->stateService->setExpectedInput($conversation, 'travel_time');
+        if ($updates === [] && $this->shouldUseStateFallback($signals, $currentState, $slots)) {
+            $pendingPrompt = $currentState->isCollecting()
+                ? $this->pendingPrompt($slots, $currentState)
+                : null;
 
             return $this->decision(
                 booking: $booking,
-                action: 'ask_travel_datetime',
-                reply: $this->buildTravelDateTimeReply($signals, $prefixLines, $slots),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
-            );
-        }
-
-        $availableSeats = $this->seatAvailability->availableSeats(
-            travelDate: (string) $slots['travel_date'],
-            travelTime: (string) $slots['travel_time'],
-            excludeBookingId: $booking->id,
-        );
-        $this->stateService->putMany($conversation, ['seat_choices_available' => $availableSeats]);
-        $slots['seat_choices_available'] = $availableSeats;
-
-        if (count($availableSeats) < (int) $slots['passenger_count']) {
-            $this->stateService->setExpectedInput($conversation, 'travel_time');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'unavailable',
+                action: 'state_fallback',
                 reply: $this->reply(
-                    text: $this->prependNotes($prefixLines, $this->unavailableSeatReply($slots, (int) $slots['passenger_count'])),
-                    meta: ['source' => 'booking_engine', 'action' => 'unavailable', 'has_booking_update' => $updates !== []],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::ScheduleInquiry),
-            );
-        }
-
-        if (! $this->hasValidSeatSelection($slots)) {
-            $this->stateService->setExpectedInput($conversation, 'selected_seats');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'ask_seats',
-                reply: $this->reply(
-                    text: $this->prependNotes($prefixLines, $this->seatSelectionPrompt($slots)),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_seats'],
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
-            );
-        }
-
-        try {
-            $reservedSeats = $this->seatAvailability->reserveSeats($booking, $slots['selected_seats']);
-            $this->stateService->putMany($conversation, ['selected_seats' => $reservedSeats]);
-            $slots['selected_seats'] = $reservedSeats;
-            $booking = $this->stateService->syncBooking($booking, $slots, $customer->phone_e164 ?? '');
-        } catch (\RuntimeException) {
-            $freshAvailability = $this->seatAvailability->availableSeats(
-                travelDate: (string) $slots['travel_date'],
-                travelTime: (string) $slots['travel_time'],
-                excludeBookingId: $booking->id,
-            );
-            $this->stateService->putMany($conversation, [
-                'selected_seats' => [],
-                'seat_choices_available' => $freshAvailability,
-            ]);
-            $this->stateService->setExpectedInput($conversation, 'selected_seats');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'ask_seats',
-                reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        'Mohon maaf ya Bapak/Ibu, seat yang dipilih baru saja terambil. Silakan pilih seat lain dari daftar berikut ya:' . "\n\n" . $this->seatMenuText($freshAvailability),
+                    text: $this->withGreetingContext(
+                        $signals,
+                        $messageText,
+                        $this->naturalizer()->fallbackForState(
+                            state: $currentState->value,
+                            slots: $slots,
+                            pendingPrompt: $pendingPrompt,
+                            signals: $signals,
+                            routeIssue: $routeEvaluation['focus_slot'] ?? $slots['route_issue'] ?? null,
+                            routeSuggestions: $routeEvaluation['suggestions'],
+                        ),
                     ),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_seats'],
+                    meta: ['source' => 'booking_engine', 'action' => 'state_fallback'],
                 ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
+                intentResult: $intentResult,
             );
         }
 
-        if ($slots['pickup_point'] === null) {
-            $this->stateService->setExpectedInput($conversation, 'pickup_point');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'ask_pickup_point',
-                reply: $this->buildLocationSelectionReply(
-                    notes: $prefixLines,
-                    text: 'Izin Bapak/Ibu, untuk penjemputannya di mana ya?',
-                    action: 'ask_pickup_point',
-                    buttonText: 'Pilih Jemput',
-                    bodyText: 'Silakan pilih titik jemput yang sesuai ya.',
-                    rowDescription: 'Pilih lokasi jemput ini',
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
+        if ($currentState === BookingFlowState::RouteUnavailable) {
+            $focusSlot = $routeEvaluation['focus_slot'] ?? $slots['route_issue'] ?? 'pickup_location';
+            $this->stateService->transitionFlowState(
+                $conversation,
+                BookingFlowState::RouteUnavailable,
+                $focusSlot,
+                'unsupported_route',
+                ['route_status' => $routeEvaluation['status']],
             );
-        }
 
-        if ($slots['pickup_full_address'] === null) {
-            $this->stateService->setExpectedInput($conversation, 'pickup_full_address');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'ask_pickup_full_address',
-                reply: $this->reply(
-                    text: $this->prependNotes($prefixLines, 'Izin Bapak/Ibu, boleh dibantu alamat lengkap penjemputannya ya?'),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_pickup_full_address'],
+            $replyText = $this->naturalizer()->naturalizeUnsupportedRuleReply(
+                capturedUpdates: $capturedSlotUpdates,
+                correctionLines: $correctionLines,
+                unsupportedReply: $this->naturalizer()->unsupportedRouteReply(
+                    pickup: $slots['pickup_location'] ?? null,
+                    destination: $slots['destination'] ?? null,
+                    suggestions: $routeEvaluation['suggestions'],
+                    focusSlot: $focusSlot,
                 ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
             );
-        }
-
-        if ($slots['destination_point'] === null) {
-            $this->stateService->setExpectedInput($conversation, 'destination_point');
-
-            return $this->decision(
-                booking: $booking,
-                action: 'ask_destination',
-                reply: $this->buildLocationSelectionReply(
-                    notes: $prefixLines,
-                    text: 'Baik Bapak/Ibu, lalu untuk pengantarannya ke mana ya?',
-                    action: 'ask_destination',
-                    buttonText: 'Pilih Tujuan',
-                    bodyText: 'Silakan pilih titik tujuan pengantaran yang sesuai ya.',
-                    rowDescription: 'Pilih lokasi tujuan ini',
-                ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
-            );
-        }
-
-        $fareAmount = $this->fareCalculator->calculate(
-            pickup: $slots['pickup_point'],
-            destination: $slots['destination_point'],
-            passengerCount: (int) $slots['passenger_count'],
-        );
-
-        if ($fareAmount === null) {
-            $this->stateService->putMany($conversation, [
-                'route_status' => 'unsupported',
-                'fare_amount' => null,
-                'review_sent' => false,
-                'booking_confirmed' => false,
-            ]);
-            $this->stateService->setExpectedInput($conversation, null);
 
             return $this->decision(
                 booking: $booking,
                 action: 'unsupported_route',
                 reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        'Mohon maaf ya Bapak/Ibu, untuk rute tersebut kami belum memiliki tarif yang tersedia. Jika berkenan, silakan kirim rute lain atau kami bantu konsultasikan ke admin.',
-                    ),
-                    meta: ['source' => 'booking_engine', 'action' => 'unsupported_route', 'has_booking_update' => $updates !== []],
+                    text: $this->withGreetingContext($signals, $messageText, $replyText),
+                    meta: [
+                        'source' => 'booking_engine',
+                        'action' => 'unsupported_route',
+                        'has_booking_update' => $updates !== [],
+                    ],
                 ),
-                intentResult: $this->overrideIntent($intentResult, IntentType::PriceInquiry),
+                intentResult: $this->overrideIntent($intentResult, IntentType::LocationInquiry),
             );
         }
 
-        $this->stateService->putMany($conversation, ['route_status' => 'supported', 'fare_amount' => $fareAmount]);
-        $slots['route_status'] = 'supported';
-        $slots['fare_amount'] = $fareAmount;
-        $booking = $this->stateService->syncBooking($booking, $slots, $customer->phone_e164 ?? '');
+        $coreMissing = $this->missingSlots($slots, self::CORE_REQUIRED_SLOTS);
 
-        if (! $this->hasValidPassengerNames($slots)) {
-            $this->stateService->setExpectedInput($conversation, 'passenger_names');
+        if ($currentState === BookingFlowState::CollectingRoute || $currentState === BookingFlowState::CollectingPassenger) {
+            $source = $currentState === BookingFlowState::CollectingRoute
+                ? 'collecting_route'
+                : 'collecting_passenger';
+            $this->stateService->transitionFlowState(
+                $conversation,
+                $currentState,
+                $coreMissing[0] ?? 'pickup_location',
+                $source,
+                ['missing_slots' => $coreMissing],
+            );
+
+            $facts = $this->contextFacts($signals, $slots);
+            $replyText = $this->naturalizer()->naturalizeRuleReply(
+                capturedUpdates: $capturedSlotUpdates,
+                correctionLines: $correctionLines,
+                prompt: $this->naturalizer()->askBasicDetails($coreMissing, $slots),
+                routeLine: $facts['route_line'],
+                priceLine: $facts['price_line'],
+                scheduleLine: $facts['schedule_line'],
+            );
 
             return $this->decision(
                 booking: $booking,
-                action: 'ask_passenger_names',
+                action: $currentState === BookingFlowState::CollectingRoute
+                    ? 'collect_route'
+                    : 'collect_passenger',
                 reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        (int) $slots['passenger_count'] > 1
-                            ? 'Izin Bapak/Ibu, boleh dibantu nama-nama penumpangnya ya?'
-                            : 'Izin Bapak/Ibu, boleh dibantu nama penumpangnya ya?',
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_passenger_names'],
+                    text: $this->withGreetingContext($signals, $messageText, $replyText),
+                    meta: [
+                        'source' => 'booking_engine',
+                        'action' => $currentState === BookingFlowState::CollectingRoute
+                            ? 'collect_route'
+                            : 'collect_passenger',
+                        'has_booking_update' => $updates !== [],
+                    ],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
             );
         }
 
-        if (($slots['contact_number'] ?? null) === null) {
-            $this->stateService->setExpectedInput($conversation, 'contact_number');
+        if ($currentState === BookingFlowState::CollectingSchedule) {
+            $schedulePrompt = $this->schedulePrompt($slots, $signals);
+
+            $this->stateService->transitionFlowState(
+                $conversation,
+                BookingFlowState::CollectingSchedule,
+                $schedulePrompt['expected_input'],
+                'collecting_schedule',
+                ['missing_slot' => $schedulePrompt['expected_input']],
+            );
+
+            $facts = $this->contextFacts($signals, $slots);
+            $replyText = $this->naturalizer()->naturalizeRuleReply(
+                capturedUpdates: $capturedSlotUpdates,
+                correctionLines: $correctionLines,
+                prompt: $schedulePrompt['prompt'],
+                routeLine: $facts['route_line'],
+                priceLine: $facts['price_line'],
+                scheduleLine: $facts['schedule_line'],
+            );
 
             return $this->decision(
                 booking: $booking,
-                action: 'ask_contact_number',
+                action: $schedulePrompt['action'],
                 reply: $this->reply(
-                    text: $this->prependNotes(
-                        $prefixLines,
-                        "Izin Bapak/Ibu, apakah nomor kontak penumpangnya sama dengan nomor yang sedang menghubungi ini atau berbeda? Jika berbeda, boleh dibantu nomor HP-nya ya. Jika sama, cukup ketik 'sama'.",
-                    ),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_contact_number'],
+                    text: $this->withGreetingContext($signals, $messageText, $replyText),
+                    meta: [
+                        'source' => 'booking_engine',
+                        'action' => $schedulePrompt['action'],
+                        'has_booking_update' => $updates !== [],
+                    ],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
             );
         }
 
-        if (($slots['review_sent'] ?? false) !== true) {
-            $this->confirmationService->requestConfirmation($booking);
-            $this->stateService->putMany($conversation, [
-                'review_sent' => true,
-                'booking_confirmed' => false,
-                'booking_intent_status' => 'awaiting_confirmation',
-            ]);
-            $this->stateService->setExpectedInput($conversation, 'final_confirmation');
-            WaLog::info('[BookingFlow] review sent', [
-                'conversation_id' => $conversation->id,
-                'booking_id' => $booking->id,
-            ]);
-
-            return $this->decision(
-                booking: $booking->fresh(),
-                action: 'ask_confirmation',
-                reply: $this->buildReviewReply($booking->fresh(), $prefixLines),
-                intentResult: $this->overrideIntent($intentResult, IntentType::BookingConfirm),
-            );
-        }
+        $this->confirmationService->requestConfirmation($booking);
+        $this->stateService->putMany($conversation, [
+            'review_sent' => true,
+            'booking_confirmed' => false,
+        ], 'ready_to_confirm');
+        $this->stateService->transitionFlowState(
+            $conversation,
+            BookingFlowState::ReadyToConfirm,
+            null,
+            'ready_to_confirm',
+            ['reason' => 'all_required_slots_collected'],
+        );
 
         return $this->decision(
-            booking: $booking,
+            booking: $booking->fresh(),
             action: 'ask_confirmation',
-            reply: $this->buildReviewReply($booking, $prefixLines),
-            intentResult: $this->overrideIntent($intentResult, IntentType::BookingConfirm),
-        );
-    }
-
-    /**
-     * @param  array<string, mixed>  $signals
-     * @param  array<string, mixed>  $updates
-     */
-    private function handleDirectPriceInquiry(array $signals, array $updates): ?array
-    {
-        $pickup = $updates['pickup_point'] ?? null;
-        $destination = $updates['destination_point'] ?? null;
-
-        if ($pickup === null || $destination === null) {
-            return $this->reply(
-                text: $this->withSalamPrefix(
-                    $signals,
-                    'Izin Bapak/Ibu, agar saya bisa cek ongkosnya dengan tepat, mohon dibantu titik jemput dan tujuan perjalanannya ya.',
-                ),
-                meta: ['source' => 'jet_flow', 'action' => 'ask_route_for_price'],
-            );
-        }
-
-        $fare = $this->fareCalculator->unitFare($pickup, $destination);
-
-        if ($fare === null) {
-            return $this->reply(
-                text: $this->withSalamPrefix(
-                    $signals,
-                    'Mohon maaf ya Bapak/Ibu, untuk rute tersebut kami belum memiliki tarif yang tersedia. Jika berkenan, silakan kirim rute lain atau kami bantu konsultasikan ke admin.',
-                ),
-                meta: ['source' => 'booking_engine', 'action' => 'unsupported_route', 'has_booking_update' => $updates !== []],
-            );
-        }
-
-        return $this->reply(
-            text: $this->withSalamPrefix(
-                $signals,
-                'Untuk rute ' . $pickup . ' ke ' . $destination . ', ongkosnya ' . $this->fareCalculator->formatRupiah($fare) . ' per penumpang ya Bapak/Ibu. Jika ingin lanjut booking, saya bantu lanjutkan sekarang.',
+            reply: $this->reply(
+                text: $this->withGreetingContext($signals, $messageText, $this->naturalizer()->reviewSummary($booking->fresh())),
+                meta: ['source' => 'booking_engine', 'action' => 'ask_confirmation'],
             ),
-            meta: ['source' => 'jet_flow', 'action' => 'price_inquiry'],
+            intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
         );
     }
 
     /**
+     * @param  array<string, mixed>  $replyResult
      * @param  array<string, mixed>  $signals
+     * @param  array<string, mixed>  $slots
+     * @return array<string, mixed>
      */
-    private function buildScheduleReply(array $signals, bool $continueBooking = false): array
+    private function passThroughReply(array $replyResult, array $signals, string $messageText, array $slots): array
     {
-        $body = 'Untuk jadwal reguler JET, keberangkatan tersedia di 05.00, 08.00, 10.00, 14.00, 16.00, dan 19.00 WIB ya Bapak/Ibu. Jika ingin, saya bisa bantu cek seat yang masih tersedia sesuai tanggal dan jam pilihan Bapak/Ibu.';
+        $text = trim((string) ($replyResult['text'] ?? ''));
 
-        if ($continueBooking) {
-            $body .= ' Izin Bapak/Ibu, untuk keberangkatan ini ada berapa orang penumpangnya ya?';
-        }
-
-        if (! $this->interactiveEnabled()) {
-            return $this->reply(
-                text: $this->withSalamPrefix($signals, $body . "\n\n" . $this->departureSlotMenuText()),
-                meta: ['source' => 'jet_flow', 'action' => 'schedule_inquiry'],
+        if ($text === '' || ($replyResult['is_fallback'] ?? false) === true) {
+            $text = $this->naturalizer()->fallbackForState(
+                state: (string) ($slots['booking_intent_status'] ?? BookingFlowState::Idle->value),
+                slots: $slots,
+                signals: $signals,
             );
         }
 
         return $this->reply(
-            text: $this->withSalamPrefix($signals, $body),
-            meta: ['source' => 'jet_flow', 'action' => 'schedule_inquiry'],
-            messageType: 'interactive',
-            outboundPayload: [
-                'type' => 'interactive',
-                'interactive' => $this->departureTimeInteractivePayload('Silakan pilih jam keberangkatan yang ingin dicek ya.'),
-            ],
+            text: $this->withGreetingContext($signals, $messageText, $text),
+            meta: ['source' => 'ai_reply', 'action' => 'pass_through'],
+            isFallback: (bool) ($replyResult['is_fallback'] ?? false),
         );
     }
 
     /**
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $signals
+     * @return array<string, mixed>
+     */
+    private function escalateToHuman(
+        Conversation $conversation,
+        Customer $customer,
+        array $intentResult,
+        array $signals,
+        string $messageText,
+        ?BookingRequest $booking,
+    ): array {
+        $this->stateService->putMany($conversation, [
+            'admin_takeover' => true,
+            'needs_human_escalation' => true,
+        ], 'human_handoff');
+        $this->stateService->transitionFlowState(
+            $conversation,
+            BookingFlowState::Closed,
+            null,
+            'human_handoff',
+            ['reason' => 'customer_requested_admin'],
+        );
+
+        $this->humanEscalationService->escalateQuestion(
+            conversation: $conversation,
+            customer: $customer,
+            reason: 'Permintaan admin manusia dari customer.',
+        );
+
+        return $this->decision(
+            booking: $booking,
+            action: 'human_handoff',
+            reply: $this->reply(
+                text: $this->withGreetingContext(
+                    $signals,
+                    $messageText,
+                    'Baik, saya bantu teruskan ke admin ya. Mohon tunggu sebentar.',
+                ),
+                meta: ['source' => 'booking_engine', 'action' => 'human_handoff'],
+            ),
+            intentResult: $this->overrideIntent($intentResult, IntentType::HumanHandoff),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $signals
+     * @return array<string, mixed>
+     */
+    private function closeConversation(
+        Conversation $conversation,
+        ?BookingRequest $booking,
+        array $intentResult,
+        array $signals,
+        string $messageText,
+    ): array {
+        $this->stateService->transitionFlowState(
+            $conversation,
+            BookingFlowState::Closed,
+            null,
+            'conversation_closed',
+            ['reason' => 'customer_close_intent'],
+        );
+
+        return $this->decision(
+            booking: $booking,
+            action: 'close_conversation',
+            reply: $this->reply(
+                text: $this->withGreetingContext($signals, $messageText, $this->naturalizer()->closing()),
+                meta: ['source' => 'booking_engine', 'action' => 'close_conversation', 'close_conversation' => true],
+            ),
+            intentResult: $this->overrideIntent($intentResult, IntentType::Farewell),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $signals
+     */
+    private function withGreetingContext(array $signals, string $messageText, string $text): string
+    {
+        if (($signals['salam_type'] ?? null) !== 'islamic') {
+            return $text;
+        }
+
+        return $this->greetingService->prependIslamicGreeting($messageText, $text);
+    }
+
+    /**
+     * @param  array<string, mixed>  $signals
+     * @param  array<string, mixed>  $slots
+     * @return array{route_line: string|null, price_line: string|null, schedule_line: string|null}
+     */
+    private function contextFacts(array $signals, array $slots): array
+    {
+        return [
+            'route_line' => ($slots['route_status'] ?? null) === 'supported'
+                ? $this->naturalizer()->routeAvailableLine(
+                    $slots['pickup_location'] ?? null,
+                    $slots['destination'] ?? null,
+                )
+                : null,
+            'price_line' => ($signals['price_keyword'] ?? false) === true
+                ? $this->naturalizer()->priceLine(
+                    pickup: $slots['pickup_location'] ?? null,
+                    destination: $slots['destination'] ?? null,
+                    passengerCount: $slots['passenger_count'] ?? null,
+                )
+                : null,
+            'schedule_line' => ($signals['schedule_keyword'] ?? false) === true
+                ? $this->naturalizer()->scheduleLine()
+                : null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     * @return array<int, string>
+     */
+    private function missingSlots(array $slots, array $requiredSlots): array
+    {
+        return array_values(array_filter(
+            $requiredSlots,
+            fn (string $slot) => blank($slots[$slot] ?? null),
+        ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
      * @param  array<string, mixed>  $updates
      */
-    private function hasTravelSignals(Conversation $conversation, array $intentResult, array $signals, array $slots, array $updates, ?BookingRequest $existingDraft): bool
+    private function shouldCloseConversation(array $signals, array $slots, array $updates): bool
     {
-        $intent = IntentType::tryFrom($intentResult['intent'] ?? '');
+        if (($signals['close_intent'] ?? false) !== true || $updates !== []) {
+            return false;
+        }
 
-        if ($existingDraft !== null) {
+        if (($signals['affirmation'] ?? false) === true && ($slots['review_sent'] ?? false) === true) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $signals
+     * @param  array<string, mixed>  $slots
+     */
+    private function shouldUseStateFallback(array $signals, BookingFlowState $state, array $slots): bool
+    {
+        if (($signals['close_intent'] ?? false) === true) {
+            return false;
+        }
+
+        if (($signals['affirmation'] ?? false) === true || ($signals['rejection'] ?? false) === true) {
+            return false;
+        }
+
+        if (($signals['human_keyword'] ?? false) === true) {
+            return false;
+        }
+
+        if ($state === BookingFlowState::ReadyToConfirm) {
+            return ($slots['review_sent'] ?? false) === true;
+        }
+
+        return in_array($state, [
+            BookingFlowState::CollectingRoute,
+            BookingFlowState::CollectingPassenger,
+            BookingFlowState::CollectingSchedule,
+            BookingFlowState::RouteUnavailable,
+            BookingFlowState::Confirmed,
+        ], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function pendingPrompt(array $slots, BookingFlowState $state): ?string
+    {
+        if ($state === BookingFlowState::RouteUnavailable) {
+            $focusSlot = $slots['route_issue'] ?? 'pickup_location';
+
+            return $this->naturalizer()->askBasicDetails([$focusSlot], $slots);
+        }
+
+        $coreMissing = $this->missingSlots($slots, self::CORE_REQUIRED_SLOTS);
+
+        if ($coreMissing !== []) {
+            return $this->naturalizer()->askBasicDetails($coreMissing, $slots);
+        }
+
+        if (($slots['travel_date'] ?? null) === null) {
+            return $this->naturalizer()->askTravelDate();
+        }
+
+        if (($slots['travel_time'] ?? null) === null) {
+            return $this->naturalizer()->askTravelTime();
+        }
+
+        if (($slots['payment_method'] ?? null) === null) {
+            return $this->naturalizer()->askPaymentMethod();
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     * @param  array<string, mixed>  $signals
+     * @return array{action: string, expected_input: string, prompt: string}
+     */
+    private function schedulePrompt(array $slots, array $signals): array
+    {
+        if (($slots['travel_date'] ?? null) === null) {
+            return [
+                'action' => 'ask_travel_date',
+                'expected_input' => 'travel_date',
+                'prompt' => $this->naturalizer()->askTravelDate(),
+            ];
+        }
+
+        if (($slots['travel_time'] ?? null) === null) {
+            return [
+                'action' => 'ask_travel_time',
+                'expected_input' => 'travel_time',
+                'prompt' => $this->naturalizer()->askTravelTime((bool) ($signals['time_ambiguous'] ?? false)),
+            ];
+        }
+
+        return [
+            'action' => 'ask_payment_method',
+            'expected_input' => 'payment_method',
+            'prompt' => $this->naturalizer()->askPaymentMethod(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function determineFlowState(array $slots): BookingFlowState
+    {
+        if (($slots['booking_confirmed'] ?? false) === true) {
+            return BookingFlowState::Confirmed;
+        }
+
+        if (($slots['route_status'] ?? null) === 'unsupported') {
+            return BookingFlowState::RouteUnavailable;
+        }
+
+        if (blank($slots['pickup_location'] ?? null) || blank($slots['destination'] ?? null)) {
+            return BookingFlowState::CollectingRoute;
+        }
+
+        if (blank($slots['passenger_name'] ?? null) || blank($slots['passenger_count'] ?? null)) {
+            return BookingFlowState::CollectingPassenger;
+        }
+
+        if (
+            blank($slots['travel_date'] ?? null)
+            || blank($slots['travel_time'] ?? null)
+            || blank($slots['payment_method'] ?? null)
+        ) {
+            return BookingFlowState::CollectingSchedule;
+        }
+
+        return BookingFlowState::ReadyToConfirm;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     * @return array{
+     *     status: string|null,
+     *     focus_slot: string|null,
+     *     suggestions: array<int, string>,
+     *     fare_amount: int|null
+     * }
+     */
+    private function evaluateRoute(array $slots): array
+    {
+        $pickup = $slots['pickup_location'] ?? null;
+        $destination = $slots['destination'] ?? null;
+
+        if (blank($pickup) || blank($destination)) {
+            return [
+                'status' => null,
+                'focus_slot' => null,
+                'suggestions' => [],
+                'fare_amount' => null,
+            ];
+        }
+
+        $fareAmount = $this->fareCalculator->calculate(
+            $pickup,
+            $destination,
+            (int) ($slots['passenger_count'] ?? 1),
+        );
+
+        if ($fareAmount !== null) {
+            return [
+                'status' => 'supported',
+                'focus_slot' => null,
+                'suggestions' => [],
+                'fare_amount' => $fareAmount,
+            ];
+        }
+
+        $pickupKnown = $this->routeValidator->isKnownLocation($pickup);
+        $destinationKnown = $this->routeValidator->isKnownLocation($destination);
+
+        if ($destinationKnown && ! $pickupKnown) {
+            return [
+                'status' => 'unsupported',
+                'focus_slot' => 'pickup_location',
+                'suggestions' => array_slice($this->routeValidator->supportedPickupsForDestination($destination), 0, 6),
+                'fare_amount' => null,
+            ];
+        }
+
+        if ($pickupKnown && ! $destinationKnown) {
+            return [
+                'status' => 'unsupported',
+                'focus_slot' => 'destination',
+                'suggestions' => array_slice($this->routeValidator->supportedDestinations($pickup), 0, 6),
+                'fare_amount' => null,
+            ];
+        }
+
+        $destinationSuggestions = array_slice($this->routeValidator->supportedDestinations($pickup), 0, 6);
+
+        if ($destinationSuggestions !== []) {
+            return [
+                'status' => 'unsupported',
+                'focus_slot' => 'destination',
+                'suggestions' => $destinationSuggestions,
+                'fare_amount' => null,
+            ];
+        }
+
+        return [
+            'status' => 'unsupported',
+            'focus_slot' => 'pickup_location',
+            'suggestions' => array_slice($this->routeValidator->supportedPickupsForDestination($destination), 0, 6),
+            'fare_amount' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $slots
+     * @param  array<string, mixed>  $updates
+     * @param  array<string, mixed>  $signals
+     */
+    private function hasBookingContext(
+        Conversation $conversation,
+        ?BookingRequest $booking,
+        array $intentResult,
+        array $slots,
+        array $updates,
+        array $signals,
+    ): bool {
+        $currentState = BookingFlowState::from(
+            $this->stateService->normalizeFlowState((string) ($slots['booking_intent_status'] ?? null), $slots),
+        );
+
+        if ($currentState === BookingFlowState::Closed) {
+            $intent = IntentType::tryFrom((string) ($intentResult['intent'] ?? ''));
+
+            return $updates !== []
+                || $intent?->isBookingRelated() === true
+                || in_array($intent, [IntentType::LocationInquiry, IntentType::PriceInquiry, IntentType::ScheduleInquiry], true)
+                || ($signals['booking_keyword'] ?? false)
+                || ($signals['schedule_keyword'] ?? false)
+                || ($signals['price_keyword'] ?? false)
+                || ($signals['route_keyword'] ?? false)
+                || ($signals['affirmation'] ?? false)
+                || ($signals['rejection'] ?? false);
+        }
+
+        if ($booking !== null) {
+            return true;
+        }
+
+        if ($currentState !== BookingFlowState::Idle) {
+            return true;
+        }
+
+        foreach ([
+            'pickup_location',
+            'destination',
+            'passenger_name',
+            'passenger_count',
+            'travel_date',
+            'travel_time',
+            'payment_method',
+        ] as $slot) {
+            if (filled($slots[$slot] ?? null)) {
+                return true;
+            }
+        }
+
+        $intent = IntentType::tryFrom((string) ($intentResult['intent'] ?? ''));
+
+        if ($intent !== null && $intent->isBookingRelated()) {
+            return true;
+        }
+
+        if (in_array($intent, [IntentType::LocationInquiry, IntentType::PriceInquiry, IntentType::ScheduleInquiry], true)) {
+            return true;
+        }
+
+        if (
+            ($signals['booking_keyword'] ?? false)
+            || ($signals['schedule_keyword'] ?? false)
+            || ($signals['price_keyword'] ?? false)
+            || ($signals['route_keyword'] ?? false)
+        ) {
+            return true;
+        }
+
+        if ($updates !== []) {
             return true;
         }
 
@@ -710,63 +944,8 @@ class BookingFlowStateMachine
             return true;
         }
 
-        if (
-            filled($conversation->current_intent)
-            && ! in_array($conversation->current_intent, ['greeting', 'farewell', 'unknown'], true)
-        ) {
-            return true;
-        }
-
-        if (($slots['booking_intent_status'] ?? 'idle') !== 'idle') {
-            return true;
-        }
-
-        if (
-            ($slots['pickup_point'] ?? null) !== null
-            || ($slots['destination_point'] ?? null) !== null
-            || ($slots['travel_date'] ?? null) !== null
-            || ($slots['travel_time'] ?? null) !== null
-        ) {
-            return true;
-        }
-
-        if ($intent !== null && in_array($intent, [
-            IntentType::Greeting,
-            IntentType::Booking,
-            IntentType::BookingConfirm,
-            IntentType::BookingCancel,
-            IntentType::ScheduleInquiry,
-            IntentType::PriceInquiry,
-            IntentType::LocationInquiry,
-            IntentType::Confirmation,
-            IntentType::Rejection,
-        ], true)) {
-            return true;
-        }
-
-        if ($signals['greeting_only'] ?? false) {
-            return false;
-        }
-
-        if ($signals['booking_keyword'] || $signals['schedule_keyword'] || $signals['price_keyword'] || $signals['route_keyword']) {
-            return true;
-        }
-
-        return $updates !== [];
-    }
-
-    /**
-     * @param  array<string, mixed>  $signals
-     * @param  array<string, mixed>  $updates
-     */
-    private function shouldStartBooking(array $signals, array $updates): bool
-    {
-        return $signals['booking_keyword']
-            || ($updates['passenger_count'] ?? null) !== null
-            || ($updates['travel_date'] ?? null) !== null
-            || ($updates['travel_time'] ?? null) !== null
-            || ($updates['pickup_point'] ?? null) !== null
-            || ($updates['destination_point'] ?? null) !== null;
+        return filled($conversation->current_intent)
+            && ! in_array($conversation->current_intent, ['greeting', 'farewell', 'unknown'], true);
     }
 
     /**
@@ -774,7 +953,7 @@ class BookingFlowStateMachine
      */
     private function isRouteListInquiry(array $signals, string $messageText): bool
     {
-        if (! $signals['route_keyword']) {
+        if (($signals['route_keyword'] ?? false) !== true) {
             return false;
         }
 
@@ -782,155 +961,35 @@ class BookingFlowStateMachine
     }
 
     /**
-     * @param  array<string, mixed>  $slots
-     * @param  array<string, mixed>  $updates
+     * @param  array<string, mixed>  $intentResult
+     * @return array<string, mixed>
      */
-    private function applyDerivedStateUpdates(array $slots, array $updates): array
+    private function overrideIntent(array $intentResult, IntentType $intent): array
     {
-        if ($this->hasAnyKey($updates, ['passenger_count', 'travel_date', 'travel_time'])) {
-            $updates['selected_seats'] = [];
-            $updates['seat_choices_available'] = [];
-        }
+        $intentResult['intent'] = $intent->value;
+        $intentResult['confidence'] = max((float) ($intentResult['confidence'] ?? 0), 0.95);
 
-        if ($this->hasAnyKey($updates, ['pickup_point', 'destination_point'])) {
-            $updates['route_status'] = null;
-            $updates['fare_amount'] = null;
-        }
-
-        if ($this->hasAnyKey($updates, array_keys(self::SLOT_LABELS))) {
-            $updates['review_sent'] = false;
-            $updates['booking_confirmed'] = false;
-        }
-
-        if (($updates['contact_same_as_sender'] ?? null) === true && ($updates['contact_number'] ?? null) === null) {
-            $updates['contact_number'] = $slots['contact_number'] ?? null;
-        }
-
-        return $updates;
+        return $intentResult;
     }
 
     /**
-     * @param  array<string, mixed>  $slots
+     * @param  array<string, mixed>  $meta
+     * @return array<string, mixed>
      */
-    private function hasValidSeatSelection(array $slots): bool
-    {
-        if (! is_array($slots['selected_seats'] ?? null)) {
-            return false;
-        }
-
-        return count($slots['selected_seats']) === (int) ($slots['passenger_count'] ?? 0);
-    }
-
-    /**
-     * @param  array<string, mixed>  $slots
-     */
-    private function hasValidPassengerNames(array $slots): bool
-    {
-        if (! is_array($slots['passenger_names'] ?? null)) {
-            return false;
-        }
-
-        return count($slots['passenger_names']) === (int) ($slots['passenger_count'] ?? 0);
-    }
-
-    /**
-     * @param  array<string, mixed>  $signals
-     * @param  array<int, string>    $notes
-     * @param  array<string, mixed>  $slots
-     */
-    private function buildTravelDateTimeReply(array $signals, array $notes, array $slots): array
-    {
-        $message = 'Izin Bapak/Ibu, kalau boleh tahu untuk keberangkatannya di tanggal berapa dan jam berapa ya?';
-
-        if (($signals['time_ambiguous'] ?? false) === true && $slots['travel_date'] !== null) {
-            $message = 'Baik Bapak/Ibu, tanggalnya sudah saya catat. Untuk pilihan jam paginya, boleh pilih salah satu slot berikut ya.';
-        }
-
-        if (! $this->interactiveEnabled()) {
-            return $this->reply(
-                text: $this->prependNotes($notes, $message . "\n\n" . $this->departureSlotMenuText()),
-                meta: ['source' => 'jet_flow', 'action' => 'ask_travel_datetime'],
-            );
-        }
-
-        return $this->reply(
-            text: $this->prependNotes($notes, $message),
-            meta: ['source' => 'jet_flow', 'action' => 'ask_travel_datetime'],
-            messageType: 'interactive',
-            outboundPayload: [
-                'type' => 'interactive',
-                'interactive' => $this->departureTimeInteractivePayload(
-                    'Silakan pilih jam keberangkatan. Tanggalnya bisa langsung dibalas bersamaan atau sesudah pilih jam ya.',
-                ),
-            ],
-        );
-    }
-
-    /**
-     * @param  array<int, string>  $notes
-     */
-    private function buildReviewReply(BookingRequest $booking, array $notes): array
-    {
-        $summary = $this->confirmationService->buildSummary($booking);
-
-        if (! $this->interactiveEnabled()) {
-            return $this->reply(
-                text: $this->prependNotes($notes, $summary),
-                meta: ['source' => 'jet_flow', 'action' => 'ask_confirmation'],
-            );
-        }
-
-        return $this->reply(
-            text: $this->prependNotes($notes, $summary),
-            meta: ['source' => 'jet_flow', 'action' => 'ask_confirmation'],
-            messageType: 'interactive',
-            outboundPayload: [
-                'type' => 'interactive',
-                'interactive' => [
-                    'type' => 'button',
-                    'body' => ['text' => 'Apakah data perjalanan ini sudah benar ya Bapak/Ibu?'],
-                    'action' => [
-                        'buttons' => [
-                            ['type' => 'reply', 'reply' => ['id' => 'jet_confirm_yes', 'title' => 'Benar']],
-                            ['type' => 'reply', 'reply' => ['id' => 'jet_confirm_fix', 'title' => 'Ubah Data']],
-                        ],
-                    ],
-                ],
-            ],
-        );
-    }
-
-    /**
-     * @param  array<int, string>  $notes
-     */
-    private function buildLocationSelectionReply(
-        array $notes,
+    private function reply(
         string $text,
-        string $action,
-        string $buttonText,
-        string $bodyText,
-        string $rowDescription,
+        array $meta,
+        bool $isFallback = false,
+        string $messageType = 'text',
+        array $outboundPayload = [],
     ): array {
-        if (! $this->interactiveEnabled()) {
-            return $this->reply(
-                text: $this->prependNotes($notes, $text . "\n\n" . $this->locationMenuText()),
-                meta: ['source' => 'jet_flow', 'action' => $action],
-            );
-        }
-
-        return $this->reply(
-            text: $this->prependNotes($notes, $text),
-            meta: ['source' => 'jet_flow', 'action' => $action],
-            messageType: 'interactive',
-            outboundPayload: [
-                'type' => 'interactive',
-                'interactive' => $this->locationInteractivePayload(
-                    bodyText: $bodyText,
-                    buttonText: $buttonText,
-                    rowDescription: $rowDescription,
-                ),
-            ],
-        );
+        return [
+            'text' => $text,
+            'is_fallback' => $isFallback,
+            'message_type' => $messageType,
+            'outbound_payload' => $outboundPayload,
+            'meta' => $meta,
+        ];
     }
 
     /**
@@ -952,331 +1011,37 @@ class BookingFlowStateMachine
     }
 
     /**
-     * @param  array<string, mixed>  $meta
-     * @param  array<string, mixed>  $outboundPayload
-     * @return array<string, mixed>
-     */
-    private function reply(
-        string $text,
-        array $meta,
-        bool $isFallback = false,
-        string $messageType = 'text',
-        array $outboundPayload = [],
-    ): array {
-        return [
-            'text' => $text,
-            'is_fallback' => $isFallback,
-            'message_type' => $messageType,
-            'outbound_payload' => $outboundPayload,
-            'meta' => $meta,
-        ];
-    }
-
-    /**
+     * @param  array<string, mixed>  $updates
      * @param  array<string, mixed>  $signals
      */
-    private function withSalamPrefix(array $signals, string $text, string $messageText = ''): string
-    {
-        if ($messageText !== '') {
-            return $this->greetingService->prependIslamicGreeting($messageText, $text);
-        }
-
-        if (($signals['salam_type'] ?? null) !== 'islamic') {
-            return $text;
-        }
-
-        return $this->greetingService->prependIslamicGreeting('assalamualaikum', $text);
-    }
-
-    /**
-     * @param  array<string, mixed>  $signals
-     */
-    private function buildOpeningGreeting(array $signals, string $openingText, string $messageText = ''): string
-    {
-        return $this->withSalamPrefix($signals, $openingText, $messageText);
-    }
-
-    /**
-     * @param  array<int, string>  $notes
-     */
-    private function prependNotes(array $notes, string $text): string
-    {
-        $lines = array_filter(array_merge($notes, [$text]));
-
-        return implode("\n\n", $lines);
-    }
-
-    /**
-     * @param  array<string, mixed>  $slots
-     */
-    private function manualPassengerNotice(array $slots): ?string
-    {
-        return (int) ($slots['passenger_count'] ?? 0) === (int) config('chatbot.jet.passenger.manual_confirm_max', 6)
-            ? 'Untuk 6 penumpang, izin Bapak/Ibu, perlu kami konfirmasikan terlebih dahulu ya.'
-            : null;
-    }
-
-    /**
-     * @param  array<string, mixed>  $currentSlots
-     * @param  array<string, mixed>  $updates
-     */
-    private function buildCorrectionNotice(array $currentSlots, array $updates): string
-    {
-        $messages = [];
-
-        foreach (self::SLOT_LABELS as $key => $label) {
-            if (! array_key_exists($key, $updates)) {
-                continue;
-            }
-
-            $old = $currentSlots[$key] ?? null;
-            $new = $updates[$key];
-
-            if ($old === null || $old === [] || json_encode($old) === json_encode($new)) {
-                continue;
-            }
-
-            $messages[] = 'Baik Bapak/Ibu, saya update ' . $label . ' menjadi ' . $this->stringifyValue($new) . ' ya.';
-        }
-
-        return implode("\n", $messages);
-    }
-
-    private function stringifyValue(mixed $value): string
-    {
-        if (is_array($value)) {
-            return implode(', ', array_map(fn (mixed $item) => (string) $item, $value));
-        }
-
-        if (is_bool($value)) {
-            return $value ? 'ya' : 'tidak';
-        }
-
-        return (string) $value;
-    }
-
-    /**
-     * @param  array<string, mixed>  $currentSlots
-     * @param  array<string, mixed>  $updates
-     */
-    private function logSlotUpdates(Conversation $conversation, array $currentSlots, array $updates): void
-    {
-        if ($updates === []) {
-            return;
-        }
-
-        $changes = [];
-
-        foreach ($updates as $key => $value) {
-            $before = $currentSlots[$key] ?? null;
-
-            if (json_encode($before) === json_encode($value)) {
-                continue;
-            }
-
-            $changes[$key] = [
-                'old' => $before,
-                'new' => $value,
-            ];
-        }
-
-        if ($changes === []) {
-            return;
-        }
-
-        WaLog::debug('[BookingFlow] slot updates detected', [
+    private function logExtraction(
+        Conversation $conversation,
+        string $messageText,
+        ?string $expectedInput,
+        array $updates,
+        array $signals,
+    ): void {
+        WaLog::debug('[BookingFlow] extractor result', [
             'conversation_id' => $conversation->id,
-            'changes' => $changes,
+            'expected_input' => $expectedInput,
+            'message_preview' => mb_substr($messageText, 0, 120),
+            'updates' => $updates,
+            'signals' => [
+                'booking_keyword' => $signals['booking_keyword'] ?? false,
+                'schedule_keyword' => $signals['schedule_keyword'] ?? false,
+                'price_keyword' => $signals['price_keyword'] ?? false,
+                'route_keyword' => $signals['route_keyword'] ?? false,
+                'affirmation' => $signals['affirmation'] ?? false,
+                'rejection' => $signals['rejection'] ?? false,
+                'close_intent' => $signals['close_intent'] ?? false,
+                'time_ambiguous' => $signals['time_ambiguous'] ?? false,
+            ],
         ]);
     }
 
-    /**
-     * @param  array<string, mixed>  $slots
-     */
-    private function seatSelectionPrompt(array $slots): string
+    private function naturalizer(): BookingReplyNaturalizerService
     {
-        return 'Izin Bapak/Ibu, untuk keberangkatan jam ' . $slots['travel_time'] . ' WIB, seat yang masih tersedia saat ini adalah: ' . implode(', ', $slots['seat_choices_available']) . ".\n\nSilakan pilih " . $slots['passenger_count'] . ' seat ya. Jika ingin pilih berdasarkan nomor daftar, balas dengan nomor seat dipisahkan koma.' . "\n\n" . $this->seatMenuText($slots['seat_choices_available']);
-    }
-
-    /**
-     * @param  array<string, mixed>  $slots
-     */
-    private function unavailableSeatReply(array $slots, int $passengerCount): string
-    {
-        $alternatives = [];
-
-        foreach (config('chatbot.jet.departure_slots', []) as $slot) {
-            $time = $slot['time'] ?? null;
-
-            if (! is_string($time) || $time === (string) $slots['travel_time']) {
-                continue;
-            }
-
-            $available = $this->seatAvailability->availableSeats((string) $slots['travel_date'], $time);
-
-            if (count($available) >= $passengerCount) {
-                $alternatives[] = $time . ' WIB';
-            }
-        }
-
-        $text = 'Mohon maaf ya Bapak/Ibu, untuk keberangkatan ' . $slots['travel_time'] . ' WIB seat yang tersedia saat ini belum mencukupi untuk ' . $passengerCount . ' penumpang.';
-
-        if ($alternatives !== []) {
-            $text .= ' Pilihan jam lain yang masih memungkinkan: ' . implode(', ', $alternatives) . '.';
-        }
-
-        $text .= ' Jika berkenan, silakan pilih jam lain atau kami bantu konsultasikan ke admin.';
-
-        return $text;
-    }
-
-    private function locationMenuText(): string
-    {
-        $lines = ['Pilihan titik jemput / tujuan:'];
-
-        foreach ($this->routeValidator->menuLocations() as $index => $label) {
-            $lines[] = ($index + 1) . '. ' . $label;
-        }
-
-        return implode("\n", $lines);
-    }
-
-    /**
-     * @param  array<int, string>  $seats
-     */
-    private function seatMenuText(array $seats): string
-    {
-        $lines = ['Pilihan seat:'];
-
-        foreach ($seats as $index => $seat) {
-            $lines[] = ($index + 1) . '. ' . $seat;
-        }
-
-        return implode("\n", $lines);
-    }
-
-    private function departureSlotMenuText(): string
-    {
-        $lines = ['Pilihan jam keberangkatan:'];
-
-        foreach (config('chatbot.jet.departure_slots', []) as $slot) {
-            $lines[] = ($slot['order'] ?? '?') . '. ' . ($slot['label'] ?? '');
-        }
-
-        return implode("\n", $lines);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function departureTimeInteractivePayload(string $bodyText): array
-    {
-        $rows = [];
-
-        foreach (config('chatbot.jet.departure_slots', []) as $slot) {
-            $rows[] = [
-                'id' => 'jet_time_' . ($slot['time'] ?? ''),
-                'title' => (string) ($slot['label'] ?? ''),
-                'description' => 'Pilih slot keberangkatan ini',
-            ];
-        }
-
-        return [
-            'type' => 'list',
-            'header' => ['type' => 'text', 'text' => 'Jadwal JET'],
-            'body' => ['text' => $bodyText],
-            'footer' => ['text' => 'JET (Jasa Executive Travel)'],
-            'action' => [
-                'button' => 'Pilih Jam',
-                'sections' => [
-                    [
-                        'title' => 'Jam Keberangkatan',
-                        'rows' => $rows,
-                    ],
-                ],
-            ],
-        ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function locationInteractivePayload(string $bodyText, string $buttonText, string $rowDescription): array
-    {
-        $sections = [];
-        $locations = $this->routeValidator->menuLocations();
-        $chunks = array_chunk($locations, 8, true);
-
-        foreach ($chunks as $chunkIndex => $chunk) {
-            $rows = [];
-            $firstNumber = ($chunkIndex * 8) + 1;
-            $lastNumber = $firstNumber + count($chunk) - 1;
-
-            foreach ($chunk as $index => $label) {
-                $rows[] = [
-                    'id' => 'jet_location_' . ($index + 1),
-                    'title' => $label,
-                    'description' => $rowDescription,
-                ];
-            }
-
-            $sections[] = [
-                'title' => 'Daftar ' . $firstNumber . '-' . $lastNumber,
-                'rows' => $rows,
-            ];
-        }
-
-        return [
-            'type' => 'list',
-            'header' => ['type' => 'text', 'text' => 'Lokasi JET'],
-            'body' => ['text' => $bodyText],
-            'footer' => ['text' => 'JET (Jasa Executive Travel)'],
-            'action' => [
-                'button' => $buttonText,
-                'sections' => $sections,
-            ],
-        ];
-    }
-
-    private function interactiveEnabled(): bool
-    {
-        return (bool) config('chatbot.whatsapp.interactive_enabled', true);
-    }
-
-    /**
-     * @param  array<string, mixed>  $intentResult
-     * @return array<string, mixed>
-     */
-    private function overrideIntent(array $intentResult, IntentType $intent): array
-    {
-        $intentResult['intent'] = $intent->value;
-        $intentResult['confidence'] = max((float) ($intentResult['confidence'] ?? 0), 0.95);
-
-        return $intentResult;
-    }
-
-    private function markEscalationState(Conversation $conversation): void
-    {
-        $this->stateService->putMany($conversation, [
-            'admin_takeover' => true,
-            'needs_human_escalation' => true,
-            'booking_intent_status' => 'needs_human',
-        ]);
-        $this->stateService->setExpectedInput($conversation, null);
-    }
-
-    /**
-     * @param  array<string, mixed>  $updates
-     * @param  array<int, string>    $keys
-     */
-    private function hasAnyKey(array $updates, array $keys): bool
-    {
-        foreach ($keys as $key) {
-            if (array_key_exists($key, $updates)) {
-                return true;
-            }
-        }
-
-        return false;
+        return $this->replyNaturalizer
+            ?? new BookingReplyNaturalizerService($this->fareCalculator, $this->routeValidator);
     }
 }

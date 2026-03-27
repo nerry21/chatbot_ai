@@ -1,0 +1,1142 @@
+diff --git a/app/Services/AI/PromptBuilderService.php b/app/Services/AI/PromptBuilderService.php
+index 229e81c..430090c 100644
+--- a/app/Services/AI/PromptBuilderService.php
++++ b/app/Services/AI/PromptBuilderService.php
+@@ -18,7 +18,7 @@ public function buildIntentPrompt(array $context): array
+     {
+         $style = config('chatbot.prompts.style', 'sopan_ringkas');
+ 
+-        $system = <<<SYSTEM
++        $system = <<<'SYSTEM'
+         Kamu adalah classifier intent untuk layanan pemesanan transportasi antar kota di Indonesia.
+         Tugasmu: mengklasifikasikan intent pesan pelanggan dengan TEPAT dan KONSISTEN.
+ 
+@@ -66,7 +66,7 @@ public function buildIntentPrompt(array $context): array
+      */
+     public function buildExtractionPrompt(array $context): array
+     {
+-        $system = <<<SYSTEM
++        $system = <<<'SYSTEM'
+         Kamu adalah extractor informasi perjalanan untuk layanan transportasi antar kota Indonesia.
+         Tugasmu: mengekstrak data perjalanan dari pesan pelanggan secara akurat.
+ 
+@@ -105,8 +105,8 @@ public function buildExtractionPrompt(array $context): array
+      */
+     public function buildReplyPrompt(array $context): array
+     {
+-        $style       = config('chatbot.prompts.style', 'sopan_ringkas');
+-        $styleGuide  = $this->styleInstruction($style);
++        $style = config('chatbot.prompts.style', 'sopan_ringkas');
++        $styleGuide = $this->styleInstruction($style);
+         $intentLabel = $context['intent_result']['intent'] ?? 'unknown';
+ 
+         $system = <<<SYSTEM
+@@ -124,6 +124,9 @@ public function buildReplyPrompt(array $context): array
+         7. JANGAN tambahkan emoji kecuali memang diperlukan.
+         8. Jika ada knowledge base di bawah, PRIORITASKAN informasinya. Jangan mengarang aturan, harga, atau jadwal di luar knowledge/data sistem.
+         9. Jika knowledge tidak memiliki jawaban yang tepat, jawab secara konservatif dan tawarkan untuk mengecek lebih lanjut.
++        10. Terdengar seperti admin travel WhatsApp di Indonesia: hangat, sopan, ringkas, dan profesional.
++        11. Hindari bahasa birokratis, kaku, terlalu formal, atau terasa seperti template sistem.
++        12. Hindari bullet/list kecuali memang perlu untuk merangkum data.
+ 
+         INTENT SAAT INI: {$intentLabel}
+ 
+@@ -154,7 +157,7 @@ public function buildReplyPrompt(array $context): array
+      */
+     public function buildSummaryPrompt(array $context): array
+     {
+-        $system = <<<SYSTEM
++        $system = <<<'SYSTEM'
+         Kamu adalah pencatat ringkasan percakapan layanan transportasi.
+         Buat ringkasan singkat percakapan berikut dalam 2-3 kalimat bahasa Indonesia.
+         Fokus pada: intent utama pelanggan, informasi perjalanan yang sudah dikumpulkan, dan status percakapan saat ini.
+@@ -189,7 +192,7 @@ private function formatIntentUserPrompt(array $context): string
+         if (! empty($context['recent_messages'])) {
+             $lines[] = '=== RIWAYAT PERCAKAPAN (terbaru terakhir) ===';
+             foreach ($context['recent_messages'] as $msg) {
+-                $dir  = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
++                $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
+                 $text = $msg['text'] ?? '';
+                 $lines[] = "[{$dir}]: {$text}";
+             }
+@@ -235,8 +238,8 @@ private function formatExtractionUserPrompt(array $context): string
+         if (! empty($context['recent_messages'])) {
+             $lines[] = '=== RIWAYAT PERCAKAPAN ===';
+             foreach ($context['recent_messages'] as $msg) {
+-                $dir   = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
+-                $lines[] = "[{$dir}]: " . ($msg['text'] ?? '');
++                $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
++                $lines[] = "[{$dir}]: ".($msg['text'] ?? '');
+             }
+             $lines[] = '';
+         }
+@@ -286,7 +289,7 @@ private function formatReplyUserPrompt(array $context): string
+         }
+ 
+         $memory = $context['customer_memory'] ?? [];
+-        $name   = $memory['primary_name'] ?? null;
++        $name = $memory['primary_name'] ?? null;
+ 
+         if ($name !== null) {
+             $lines[] = "Nama pelanggan: {$name}";
+@@ -340,9 +343,9 @@ private function formatSummaryUserPrompt(array $context): string
+ 
+         $lines[] = '=== PERCAKAPAN ===';
+         foreach ($context['recent_messages'] as $msg) {
+-            $dir   = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
+-            $text  = $msg['text'] ?? '(kosong)';
+-            $time  = $msg['sent_at'] ?? '';
++            $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
++            $text = $msg['text'] ?? '(kosong)';
++            $time = $msg['sent_at'] ?? '';
+             $lines[] = "[{$dir}] {$time}: {$text}";
+         }
+ 
+@@ -351,11 +354,11 @@ private function formatSummaryUserPrompt(array $context): string
+ 
+     private function styleInstruction(string $style): string
+     {
+-        return match($style) {
+-            'formal'        => 'Formal dan profesional. Gunakan "Anda" dan bahasa resmi.',
+-            'casual'        => 'Santai dan akrab. Gunakan "kamu" dan bahasa sehari-hari.',
+-            'sopan_ringkas' => 'Sopan dan ringkas. Gunakan "Anda", langsung ke poin, tidak bertele-tele.',
+-            default         => 'Sopan dan ringkas dalam bahasa Indonesia.',
++        return match ($style) {
++            'formal' => 'Formal dan profesional. Gunakan "Anda" dan bahasa resmi.',
++            'casual' => 'Santai dan akrab. Gunakan "kamu" dan bahasa sehari-hari.',
++            'sopan_ringkas' => 'Sopan, hangat, ringkas, dan natural seperti admin customer service travel di WhatsApp Indonesia. Hindari bahasa birokratis, jangan terdengar seperti template atau mesin.',
++            default => 'Sopan, hangat, ringkas, dan natural dalam bahasa Indonesia.',
+         };
+     }
+ }
+diff --git a/app/Services/AI/ResponseGeneratorService.php b/app/Services/AI/ResponseGeneratorService.php
+index 5292780..ef38fa0 100644
+--- a/app/Services/AI/ResponseGeneratorService.php
++++ b/app/Services/AI/ResponseGeneratorService.php
+@@ -14,20 +14,20 @@ class ResponseGeneratorService
+      * @var array<string, string>
+      */
+     private const FALLBACK_REPLIES = [
+-        'greeting'        => 'Halo! Selamat datang di layanan transportasi kami. Ada yang bisa kami bantu untuk perjalanan Anda?',
+-        'booking'         => 'Baik, kami siap membantu pemesanan Anda. Bisa informasikan titik penjemputan, tujuan, tanggal, dan jam keberangkatan?',
+-        'booking_confirm' => 'Terima kasih atas konfirmasinya. Tim kami akan segera memproses.',
+-        'booking_cancel'  => 'Baik, kami mencatat permintaan pembatalan Anda. Tim kami akan segera menindaklanjuti.',
+-        'schedule_inquiry'=> 'Terima kasih atas pertanyaannya. Untuk informasi jadwal yang akurat, boleh kami tahu rute dan tanggal yang Anda inginkan?',
+-        'price_inquiry'   => 'Terima kasih atas pertanyaan harga. Kami akan sampaikan informasi tarif setelah mengetahui rute perjalanan Anda.',
+-        'location_inquiry'=> 'Kami memiliki banyak titik penjemputan. Bisa informasikan kota atau area asal Anda?',
+-        'support'         => 'Kami mohon maaf atas ketidaknyamanannya. Tim kami mencatat keluhan Anda dan akan segera menghubungi Anda.',
+-        'human_handoff'   => 'Baik, kami akan segera menghubungkan Anda dengan tim kami. Mohon tunggu sebentar.',
+-        'farewell'        => 'Terima kasih telah menghubungi kami. Semoga perjalanan Anda menyenangkan. Sampai jumpa!',
+-        'confirmation'    => 'Terima kasih atas konfirmasinya. Kami akan lanjutkan prosesnya.',
+-        'rejection'       => 'Baik, tidak masalah. Ada hal lain yang bisa kami bantu?',
+-        'out_of_scope'    => 'Maaf, kami hanya melayani pemesanan transportasi antar kota. Ada yang bisa kami bantu terkait perjalanan Anda?',
+-        'unknown'         => 'Maaf, kami belum memahami permintaan Anda. Bisa dijelaskan lebih detail agar kami bisa membantu dengan tepat?',
++        'greeting' => 'Halo, saya bantu ya. Mau cek jadwal, harga, atau lanjut booking travel?',
++        'booking' => 'Baik, saya bantu bookingnya ya. Mohon kirim titik jemput, tujuan, tanggal, dan jam keberangkatannya.',
++        'booking_confirm' => 'Baik, konfirmasinya sudah masuk ya. Kami lanjut proses bookingnya.',
++        'booking_cancel' => 'Baik, permintaan pembatalannya sudah kami catat ya. Nanti kami bantu tindak lanjuti.',
++        'schedule_inquiry' => 'Siap, saya bantu cek jadwal ya. Boleh kirim rute dan tanggal keberangkatannya dulu?',
++        'price_inquiry' => 'Baik, saya bantu cek harganya ya. Mohon kirim titik jemput dan tujuan dulu.',
++        'location_inquiry' => 'Untuk lokasi yang ingin dicek, boleh kirim titik jemput atau tujuan perjalanannya ya?',
++        'support' => 'Mohon maaf ya atas kendalanya. Boleh ceritakan singkat masalahnya, nanti kami bantu lanjutkan.',
++        'human_handoff' => 'Baik, saya teruskan ke admin ya. Mohon tunggu sebentar.',
++        'farewell' => 'Baik, terima kasih ya. Kalau nanti mau cek jadwal atau lanjut booking, tinggal chat lagi.',
++        'confirmation' => 'Siap, konfirmasinya sudah saya catat ya. Saya lanjutkan prosesnya.',
++        'rejection' => 'Baik, tidak masalah ya. Kalau ada yang mau diubah atau dicek lagi, tinggal kirim saja.',
++        'out_of_scope' => 'Mohon maaf, untuk saat ini kami fokus di layanan travel antar kota. Kalau mau cek jadwal, harga, atau booking, saya bantu.',
++        'unknown' => 'Baik, saya bantu ya. Boleh jelaskan lagi kebutuhan perjalanannya, misalnya rute, tanggal, atau jadwal yang ingin dicek?',
+     ];
+ 
+     /**
+@@ -37,11 +37,11 @@ class ResponseGeneratorService
+      * @var array<string, string>
+      */
+     private const CONTEXTUAL_FALLBACKS = [
+-        'unknown' => 'Maaf, kami belum memahami dengan jelas maksud pesan Anda. Bisa Anda jelaskan lebih detail? Kami siap membantu dengan informasi perjalanan, harga, jadwal, atau pemesanan tiket.',
+-        'default' => 'Maaf, kami belum bisa memproses permintaan ini. Bisa Anda ulangi atau ceritakan lebih detail kebutuhan perjalanan Anda?',
++        'unknown' => 'Baik, saya belum menangkap detailnya dengan jelas. Boleh jelaskan lagi kebutuhan perjalanannya? Misalnya rute, tanggal, jadwal, atau booking yang ingin dicek.',
++        'default' => 'Baik, saya bantu ya. Coba kirim lagi detail perjalanan yang ingin dicek, nanti saya lanjut bantu.',
+     ];
+ 
+-    private const DEFAULT_FALLBACK = 'Terima kasih atas pesan Anda. Tim kami akan segera merespons.';
++    private const DEFAULT_FALLBACK = 'Baik, pesan Anda sudah masuk ya. Silakan kirim detail perjalanan yang ingin dicek, nanti kami bantu.';
+ 
+     /**
+      * Booking-related intents that must not be intercepted by FAQ direct answer.
+@@ -52,8 +52,8 @@ class ResponseGeneratorService
+     private const BOOKING_INTENTS = ['booking', 'booking_confirm', 'booking_cancel'];
+ 
+     public function __construct(
+-        private readonly LlmClientService          $llmClient,
+-        private readonly PromptBuilderService      $promptBuilder,
++        private readonly LlmClientService $llmClient,
++        private readonly PromptBuilderService $promptBuilder,
+         private readonly JsonSchemaValidatorService $validator,
+     ) {}
+ 
+@@ -69,10 +69,10 @@ public function __construct(
+      */
+     public function generate(array $context): array
+     {
+-        $intent           = $context['intent_result']['intent']     ?? 'unknown';
++        $intent = $context['intent_result']['intent'] ?? 'unknown';
+         $intentConfidence = (float) ($context['intent_result']['confidence'] ?? 1.0);
+-        $hasKnowledge     = ! empty($context['knowledge_hits']);
+-        $faqResult        = $context['faq_result'] ?? ['matched' => false, 'answer' => null];
++        $hasKnowledge = ! empty($context['knowledge_hits']);
++        $faqResult = $context['faq_result'] ?? ['matched' => false, 'answer' => null];
+         $isBookingRelated = in_array($intent, self::BOOKING_INTENTS, true);
+ 
+         // ── 1. FAQ direct answer (skip for booking intents) ─────────────────
+@@ -84,18 +84,18 @@ public function generate(array $context): array
+             && ! empty($faqResult['answer'])
+         ) {
+             return [
+-                'text'         => $faqResult['answer'],
+-                'is_fallback'  => false,
++                'text' => $faqResult['answer'],
++                'is_fallback' => false,
+                 'used_knowledge' => true,
+-                'used_faq'     => true,
++                'used_faq' => true,
+             ];
+         }
+ 
+         // ── 2. Low-confidence contextual fallback ────────────────────────────
+         // Applied only when: config opt-in, confidence is below threshold, AND
+         // no knowledge context is available to ground the LLM's answer.
+-        $lowConfThreshold     = (float) config('chatbot.ai_quality.low_confidence_threshold', 0.40);
+-        $fallbackOnLowConf    = (bool)  config('chatbot.ai_quality.reply_fallback_on_low_confidence', false);
++        $lowConfThreshold = (float) config('chatbot.ai_quality.low_confidence_threshold', 0.40);
++        $fallbackOnLowConf = (bool) config('chatbot.ai_quality.reply_fallback_on_low_confidence', false);
+ 
+         if (
+             $fallbackOnLowConf
+@@ -111,11 +111,11 @@ public function generate(array $context): array
+ 
+             $llmContext = array_merge($context, [
+                 'system' => $prompts['system'],
+-                'user'   => $prompts['user'],
+-                'model'  => config('chatbot.llm.models.reply'),
++                'user' => $prompts['user'],
++                'model' => config('chatbot.llm.models.reply'),
+             ]);
+ 
+-            $raw  = $this->llmClient->generateReply($llmContext);
++            $raw = $this->llmClient->generateReply($llmContext);
+             $text = trim($raw['text'] ?? '');
+ 
+             if ($text === '') {
+@@ -123,13 +123,14 @@ public function generate(array $context): array
+             }
+ 
+             return [
+-                'text'         => $text,
+-                'is_fallback'  => (bool) ($raw['is_fallback'] ?? false),
++                'text' => $text,
++                'is_fallback' => (bool) ($raw['is_fallback'] ?? false),
+                 'used_knowledge' => $hasKnowledge && config('chatbot.knowledge.include_in_reply_tasks', true),
+-                'used_faq'     => false,
++                'used_faq' => false,
+             ];
+         } catch (\Throwable $e) {
+             Log::error('ResponseGeneratorService: unexpected error', ['error' => $e->getMessage()]);
++
+             return $this->buildFallback($intent);
+         }
+     }
+@@ -146,10 +147,10 @@ public function generate(array $context): array
+     private function buildFallback(string $intent): array
+     {
+         return [
+-            'text'          => self::FALLBACK_REPLIES[$intent] ?? self::DEFAULT_FALLBACK,
+-            'is_fallback'   => true,
++            'text' => self::FALLBACK_REPLIES[$intent] ?? self::DEFAULT_FALLBACK,
++            'is_fallback' => true,
+             'used_knowledge' => false,
+-            'used_faq'      => false,
++            'used_faq' => false,
+         ];
+     }
+ 
+@@ -165,10 +166,10 @@ private function buildContextualFallback(string $intent): array
+             ?? self::CONTEXTUAL_FALLBACKS['default'];
+ 
+         return [
+-            'text'          => $text,
+-            'is_fallback'   => true,
++            'text' => $text,
++            'is_fallback' => true,
+             'used_knowledge' => false,
+-            'used_faq'      => false,
++            'used_faq' => false,
+         ];
+     }
+ }
+diff --git a/app/Services/Booking/BookingReplyNaturalizerService.php b/app/Services/Booking/BookingReplyNaturalizerService.php
+new file mode 100644
+index 0000000..e2daa3e
+--- /dev/null
++++ b/app/Services/Booking/BookingReplyNaturalizerService.php
+@@ -0,0 +1,649 @@
++<?php
++
++namespace App\Services\Booking;
++
++use App\Models\BookingRequest;
++
++class BookingReplyNaturalizerService
++{
++    /**
++     * @var array<string, string>
++     */
++    private const SLOT_LABELS = [
++        'pickup_location' => 'titik jemput',
++        'destination' => 'tujuan',
++        'passenger_name' => 'nama penumpang',
++        'passenger_count' => 'jumlah penumpang',
++        'travel_date' => 'tanggal keberangkatan',
++        'travel_time' => 'jam berangkat',
++        'payment_method' => 'metode pembayaran',
++    ];
++
++    public function __construct(
++        private readonly FareCalculatorService $fareCalculator,
++        private readonly RouteValidationService $routeValidator,
++    ) {}
++
++    /**
++     * @param  array<string, mixed>  $currentSlots
++     * @param  array<string, mixed>  $updates
++     * @return array<int, string>
++     */
++    public function correctionLines(array $currentSlots, array $updates): array
++    {
++        $lines = [];
++        foreach (self::SLOT_LABELS as $slot => $label) {
++            if (! array_key_exists($slot, $updates)) {
++                continue;
++            }
++            $oldValue = $currentSlots[$slot] ?? null;
++            $newValue = $updates[$slot];
++            if ($this->sameValue($oldValue, $newValue) || $this->isBlank($oldValue)) {
++                continue;
++            }
++            $value = $this->displayValue($slot, $newValue);
++            $lines[] = $this->chooseVariant(
++                'correction_line.'.$slot,
++                [$oldValue, $newValue],
++                [
++                    'Baik, saya update '.$label.' jadi '.$value.'.',
++                    'Siap, saya ubah '.$label.' jadi '.$value.'.',
++                    'Oke, saya sesuaikan '.$label.' jadi '.$value.'.',
++                ],
++            );
++        }
++
++        return $lines;
++    }
++
++    /**
++     * @param  array<string, mixed>  $updates
++     */
++    public function captureBlock(array $updates): ?string
++    {
++        $lines = [];
++        foreach (self::SLOT_LABELS as $slot => $label) {
++            if (! array_key_exists($slot, $updates)) {
++                continue;
++            }
++            $lines[] = '- '.$label.': '.$this->displayValue($slot, $updates[$slot]);
++        }
++        if ($lines === []) {
++            return null;
++        }
++        $intro = $this->chooseVariant(
++            'capture_block_intro',
++            array_keys($updates),
++            [
++                'Baik, saya catat dulu ya:',
++                'Siap, saya catat ya:',
++                'Oke, saya rangkum dulu datanya ya:',
++            ],
++        );
++
++        return implode("\n", array_merge([$intro], $lines));
++    }
++
++    public function routeAvailableLine(?string $pickup, ?string $destination): ?string
++    {
++        if (blank($pickup) || blank($destination)) {
++            return null;
++        }
++
++        return $this->chooseVariant(
++            'route_available',
++            [$pickup, $destination],
++            [
++                'Rute '.$pickup.' ke '.$destination.' tersedia ya.',
++                'Untuk rute '.$pickup.' ke '.$destination.' tersedia ya.',
++                'Rute '.$pickup.' ke '.$destination.' saat ini tersedia ya.',
++            ],
++        );
++    }
++
++    /**
++     * @param  array<int, string>  $suggestions
++     */
++    public function unsupportedRouteReply(
++        ?string $pickup,
++        ?string $destination,
++        array $suggestions,
++        string $focusSlot,
++    ): string {
++        if ($focusSlot === 'pickup_location' && filled($pickup) && filled($destination)) {
++            $text = $this->chooseVariant(
++                'unsupported.pickup',
++                [$pickup, $destination],
++                [
++                    'Mohon maaf ya, untuk penjemputan dari '.$pickup.' ke '.$destination.' saat ini belum tersedia.',
++                    'Mohon maaf, untuk penjemputan dari '.$pickup.' ke '.$destination.' saat ini belum tersedia ya.',
++                ],
++            );
++        } elseif ($focusSlot === 'destination' && filled($pickup) && filled($destination)) {
++            $text = $this->chooseVariant(
++                'unsupported.destination',
++                [$pickup, $destination],
++                [
++                    'Mohon maaf ya, untuk tujuan '.$destination.' dari '.$pickup.' saat ini belum tersedia.',
++                    'Mohon maaf, untuk tujuan '.$destination.' dari '.$pickup.' saat ini belum tersedia ya.',
++                ],
++            );
++        } else {
++            $parts = array_filter([$pickup, $destination]);
++            $text = $this->chooseVariant(
++                'unsupported.route',
++                $parts,
++                [
++                    'Mohon maaf ya, untuk rute '.implode(' ke ', $parts).' saat ini belum tersedia.',
++                    'Mohon maaf, untuk rute '.implode(' ke ', $parts).' saat ini belum tersedia ya.',
++                ],
++            );
++        }
++        if ($suggestions !== []) {
++            $label = $focusSlot === 'destination'
++                ? 'Tujuan yang tersedia saat ini'
++                : 'Titik jemput yang tersedia saat ini';
++            $text .= "\n\n".$label.' antara lain '.$this->joinLabels($suggestions).'.';
++        }
++        $followUp = $focusSlot === 'destination'
++            ? $this->chooseVariant(
++                'unsupported.followup.destination',
++                $suggestions,
++                [
++                    'Kalau mau lanjut, silakan kirim tujuan lain yang tersedia ya. Nanti saya bantu lanjutkan.',
++                    'Kalau ingin saya cek lagi, kirim tujuan lain yang tersedia ya. Nanti saya bantu proses.',
++                ],
++            )
++            : $this->chooseVariant(
++                'unsupported.followup.pickup',
++                $suggestions,
++                [
++                    'Kalau mau lanjut, silakan kirim titik jemput lain yang tersedia ya. Nanti saya bantu lanjutkan.',
++                    'Kalau ingin saya cek lagi, kirim titik jemput lain yang tersedia ya. Nanti saya bantu proses.',
++                ],
++            );
++
++        return $text."\n\n".$followUp;
++    }
++
++    /**
++     * @param  array<int, string>  $missing
++     * @param  array<string, mixed>  $slots
++     */
++    public function askBasicDetails(array $missing, array $slots): string
++    {
++        $hasPickup = filled($slots['pickup_location'] ?? null);
++        $hasDestination = filled($slots['destination'] ?? null);
++        if ($hasDestination && in_array('pickup_location', $missing, true)) {
++            $labels = ['titik jemput'];
++            if (in_array('passenger_name', $missing, true)) {
++                $labels[] = 'nama penumpang';
++            }
++            if (in_array('passenger_count', $missing, true)) {
++                $labels[] = 'jumlah penumpang';
++            }
++
++            return $this->chooseVariant(
++                'ask_basic.pickup',
++                [$missing, $slots['destination'] ?? null],
++                [
++                    'Baik, saya bantu cek ya. '.$this->detailRequest($labels, 'Supaya saya cek lebih lanjut'),
++                    'Siap, saya bantu ya. '.$this->detailRequest($labels, 'Biar saya lanjut cek'),
++                    'Oke, saya bantu lanjut ya. '.$this->detailRequest($labels, 'Supaya saya proses'),
++                ],
++            );
++        }
++        if ($hasPickup && in_array('destination', $missing, true)) {
++            $labels = ['tujuan'];
++            if (in_array('passenger_name', $missing, true)) {
++                $labels[] = 'nama penumpang';
++            }
++            if (in_array('passenger_count', $missing, true)) {
++                $labels[] = 'jumlah penumpang';
++            }
++
++            return $this->chooseVariant(
++                'ask_basic.destination',
++                [$missing, $slots['pickup_location'] ?? null],
++                [
++                    'Baik, saya bantu lanjut ya. '.$this->detailRequest($labels, 'Supaya saya cek lebih lanjut'),
++                    'Siap, saya bantu ya. '.$this->detailRequest($labels, 'Biar saya lanjut proses'),
++                    'Oke, saya bantu cek ya. '.$this->detailRequest($labels, 'Supaya saya lanjutkan'),
++                ],
++            );
++        }
++        if ($missing === ['pickup_location', 'destination']) {
++            return $this->chooseVariant(
++                'ask_basic.route_only',
++                $missing,
++                [
++                    'Baik, saya bantu ya. Mohon kirim titik jemput dan tujuan perjalanannya.',
++                    'Siap, saya bantu cek ya. Boleh kirim titik jemput dan tujuan perjalanannya dulu.',
++                    'Oke, lanjut ya. Mohon kirim titik jemput dan tujuan perjalanannya.',
++                ],
++            );
++        }
++        if ($missing === ['passenger_name']) {
++            return $this->chooseVariant(
++                'ask_basic.passenger_name',
++                $missing,
++                [
++                    'Baik, tinggal kirim nama penumpangnya ya.',
++                    'Siap, tinggal kirim nama penumpangnya ya.',
++                    'Oke, boleh kirim nama penumpangnya dulu ya.',
++                ],
++            );
++        }
++        if ($missing === ['passenger_count']) {
++            return $this->chooseVariant(
++                'ask_basic.passenger_count',
++                $missing,
++                [
++                    'Baik, untuk keberangkatan ini ada berapa penumpang ya?',
++                    'Siap, jumlah penumpangnya ada berapa orang ya?',
++                    'Oke, boleh kirim jumlah penumpangnya ya.',
++                ],
++            );
++        }
++        if ($missing === ['passenger_name', 'passenger_count']) {
++            return $this->chooseVariant(
++                'ask_basic.passenger_name_count',
++                $missing,
++                [
++                    'Baik, tinggal kirim nama penumpang dan jumlah penumpangnya ya.',
++                    'Siap, boleh kirim nama penumpang dan jumlah penumpangnya dulu ya.',
++                    'Oke, saya lanjut ya. Mohon kirim nama penumpang dan jumlah penumpangnya.',
++                ],
++            );
++        }
++        $labels = array_map(
++            fn (string $slot) => self::SLOT_LABELS[$slot] ?? $slot,
++            $missing,
++        );
++
++        return $this->chooseVariant(
++            'ask_basic.default',
++            $labels,
++            [
++                'Baik, supaya bisa saya proses, mohon kirim '.$this->joinLabels($labels).'.',
++                'Siap, saya bantu ya. Boleh kirim '.$this->joinLabels($labels).' dulu.',
++                'Oke, saya lanjutkan ya. Mohon kirim '.$this->joinLabels($labels).'.',
++            ],
++        );
++    }
++
++    public function askTravelDate(): string
++    {
++        return $this->chooseVariant(
++            'ask_travel_date',
++            [],
++            [
++                'Boleh kirim tanggal keberangkatannya ya?',
++                'Tanggal keberangkatannya kapan ya?',
++                'Untuk lanjut bookingnya, mohon kirim tanggal keberangkatannya ya.',
++            ],
++        );
++    }
++
++    public function askTravelTime(bool $ambiguous = false): string
++    {
++        $slots = '05.00, 08.00, 10.00, 14.00, 16.00, atau 19.00 WIB';
++        if ($ambiguous) {
++            return $this->chooseVariant(
++                'ask_travel_time.ambiguous',
++                [$ambiguous],
++                [
++                    'Baik, tanggalnya sudah saya catat. Biar tidak keliru, mohon kirim jam pastinya ya. Slot yang tersedia '.$slots.'.',
++                    'Siap, tanggalnya sudah masuk ya. Supaya pas, mohon kirim jam yang dipilih. Slot yang tersedia '.$slots.'.',
++                    'Oke, tanggalnya sudah saya catat. Sekarang mohon kirim jam keberangkatannya ya. Slot yang tersedia '.$slots.'.',
++                ],
++            );
++        }
++
++        return $this->chooseVariant(
++            'ask_travel_time',
++            [],
++            [
++                'Untuk jam berangkatnya, ingin yang jam berapa ya? Contoh: 08.00 atau 10.00.',
++                'Jam keberangkatannya mau pilih yang jam berapa ya? Contoh: 08.00 atau 10.00.',
++                'Boleh kirim jam keberangkatannya ya? Contoh: 08.00 atau 10.00.',
++            ],
++        );
++    }
++
++    public function askPaymentMethod(): string
++    {
++        return $this->chooseVariant(
++            'ask_payment_method',
++            [],
++            [
++                'Untuk pembayarannya, mau transfer bank, QRIS, atau cash ya?',
++                'Metode pembayarannya ingin transfer bank, QRIS, atau cash ya?',
++                'Baik, untuk pembayarannya pilih transfer bank, QRIS, atau cash ya?',
++            ],
++        );
++    }
++
++    public function askCorrection(): string
++    {
++        return $this->chooseVariant(
++            'ask_correction',
++            [],
++            [
++                'Baik, silakan kirim bagian data yang mau diubah ya. Nanti saya bantu update tanpa mulai dari awal.',
++                'Siap, kirim saja data yang ingin diubah ya. Saya bantu perbarui tanpa mengulang dari awal.',
++                'Oke, tinggal kirim bagian yang mau dikoreksi ya. Saya bantu update.',
++            ],
++        );
++    }
++
++    public function closing(): string
++    {
++        return $this->chooseVariant(
++            'closing',
++            [],
++            [
++                'Baik, terima kasih ya. Kalau nanti mau cek jadwal atau lanjut booking, tinggal chat lagi.',
++                'Siap, terima kasih ya. Kalau ada yang mau dicek lagi, langsung kirim pesan saja.',
++                'Oke, terima kasih ya. Kalau nanti ingin lanjut booking atau cek jadwal lain, tinggal hubungi lagi.',
++            ],
++        );
++    }
++
++    public function inProgressAcknowledgement(string $pendingPrompt): string
++    {
++        $nextStep = $this->normalizePendingPrompt($pendingPrompt);
++        if ($nextStep === '') {
++            $nextStep = 'tinggal kirim data lanjutnya ya.';
++        }
++
++        return $this->chooseVariant(
++            'in_progress_acknowledgement',
++            [$pendingPrompt],
++            [
++                'Baik, kalau sudah siap, '.$nextStep,
++                'Siap, kalau sudah siap, '.$nextStep,
++                'Oke, kalau sudah siap, '.$nextStep,
++            ],
++        );
++    }
++
++    public function generalFallback(): string
++    {
++        return $this->chooseVariant(
++            'general_fallback',
++            [],
++            [
++                'Baik, saya bantu ya. Kalau terkait travel, silakan kirim rute, tanggal, atau detail booking yang ingin dicek.',
++                'Siap, saya bantu cek ya. Boleh kirim rute, jadwal, atau detail booking yang mau ditanyakan.',
++                'Oke, saya bantu semampu saya ya. Silakan kirim detail perjalanan yang ingin dicek.',
++            ],
++        );
++    }
++
++    public function confirmed(): string
++    {
++        return $this->chooseVariant(
++            'confirmed',
++            [],
++            [
++                'Baik, data perjalanannya sudah saya catat ya. Admin kami lanjut hubungi Anda di WhatsApp ini untuk proses berikutnya.',
++                'Siap, data bookingnya sudah masuk ya. Admin kami akan lanjut hubungi Anda lewat WhatsApp ini.',
++                'Oke, data perjalanan sudah tercatat ya. Admin kami lanjut proses dan akan hubungi Anda di WhatsApp ini.',
++            ],
++        );
++    }
++
++    public function reviewSummary(BookingRequest $booking): string
++    {
++        $fare = $booking->price_estimate !== null
++            ? (int) round((float) $booking->price_estimate)
++            : $this->fareCalculator->calculate(
++                $booking->pickup_location,
++                $booking->destination,
++                $booking->passenger_count,
++            );
++        $lines = [
++            $this->chooseVariant(
++                'review_summary_intro',
++                [
++                    $booking->pickup_location,
++                    $booking->destination,
++                    $booking->passenger_count,
++                ],
++                [
++                    'Baik, saya rangkum dulu data perjalanannya ya:',
++                    'Siap, saya rangkum dulu detail perjalanannya ya:',
++                    'Oke, saya cek lagi data perjalanannya ya:',
++                ],
++            ),
++            '- titik jemput: '.($booking->pickup_location ?? '-'),
++            '- tujuan: '.($booking->destination ?? '-'),
++            '- nama penumpang: '.($booking->passenger_name ?? '-'),
++            '- jumlah penumpang: '.(($booking->passenger_count ?? 0) > 0 ? $booking->passenger_count.' orang' : '-'),
++            '- tanggal keberangkatan: '.($booking->departure_date?->translatedFormat('d F Y') ?? '-'),
++            '- jam berangkat: '.($booking->departure_time ? $booking->departure_time.' WIB' : '-'),
++            '- metode pembayaran: '.$this->paymentMethodLabel($booking->payment_method),
++        ];
++        if ($fare !== null) {
++            $lines[] = '- estimasi total: '.$this->fareCalculator->formatRupiah($fare);
++        }
++        $lines[] = '';
++        $lines[] = $this->chooseVariant(
++            'review_summary_confirm',
++            [$booking->pickup_location, $booking->destination],
++            [
++                'Kalau datanya sudah sesuai, balas YA atau BENAR ya.',
++                'Kalau sudah cocok, cukup balas YA atau BENAR ya.',
++                'Kalau semuanya sudah benar, balas YA atau BENAR ya.',
++            ],
++        );
++        $lines[] = $this->chooseVariant(
++            'review_summary_edit',
++            [$booking->pickup_location, $booking->destination],
++            [
++                'Kalau ada yang mau diubah, tinggal kirim bagian yang benar saja.',
++                'Kalau ada yang perlu diubah, kirim koreksinya saja ya.',
++                'Kalau masih ada yang salah, tinggal kirim perbaikannya ya.',
++            ],
++        );
++
++        return implode("\n", $lines);
++    }
++
++    public function scheduleLine(): string
++    {
++        return $this->chooseVariant(
++            'schedule_line',
++            [],
++            [
++                'Jadwal keberangkatan tersedia setiap hari di jam 05.00, 08.00, 10.00, 14.00, 16.00, dan 19.00 WIB.',
++                'Untuk jadwal, kami tersedia setiap hari di jam 05.00, 08.00, 10.00, 14.00, 16.00, dan 19.00 WIB.',
++                'Jadwal travel tersedia setiap hari pada pukul 05.00, 08.00, 10.00, 14.00, 16.00, dan 19.00 WIB.',
++            ],
++        );
++    }
++
++    public function priceLine(?string $pickup, ?string $destination, ?int $passengerCount = null): ?string
++    {
++        if (blank($pickup) || blank($destination)) {
++            return null;
++        }
++        $unitFare = $this->fareCalculator->unitFare($pickup, $destination);
++        if ($unitFare === null) {
++            return null;
++        }
++        $text = $this->chooseVariant(
++            'price_line',
++            [$pickup, $destination, $passengerCount],
++            [
++                'Untuk rute '.$pickup.' ke '.$destination.', tarifnya saat ini '.$this->fareCalculator->formatRupiah($unitFare).' per penumpang.',
++                'Tarif rute '.$pickup.' ke '.$destination.' saat ini '.$this->fareCalculator->formatRupiah($unitFare).' per penumpang.',
++                'Kalau untuk rute '.$pickup.' ke '.$destination.', tarifnya '.$this->fareCalculator->formatRupiah($unitFare).' per penumpang.',
++            ],
++        );
++        if (($passengerCount ?? 0) > 1) {
++            $totalFare = $this->fareCalculator->calculate($pickup, $destination, $passengerCount);
++            if ($totalFare !== null) {
++                $text .= $this->chooseVariant(
++                    'price_line_total',
++                    [$passengerCount, $totalFare],
++                    [
++                        ' Estimasi total untuk '.$passengerCount.' penumpang sekitar '.$this->fareCalculator->formatRupiah($totalFare).'.',
++                        ' Kalau '.$passengerCount.' penumpang, estimasi totalnya '.$this->fareCalculator->formatRupiah($totalFare).'.',
++                        ' Total perkiraannya untuk '.$passengerCount.' penumpang sekitar '.$this->fareCalculator->formatRupiah($totalFare).'.',
++                    ],
++                );
++            }
++        }
++
++        return $text;
++    }
++
++    public function routeListReply(): string
++    {
++        $locations = $this->routeValidator->menuLocations();
++
++        return $this->chooseVariant(
++            'route_list_reply',
++            $locations,
++            [
++                'Titik jemput dan tujuan yang tersedia saat ini antara lain '.$this->joinLabels($locations).'. Kalau mau lanjut booking, silakan kirim titik jemput, tujuan, atau tanggal keberangkatannya ya.',
++                'Untuk titik jemput dan tujuan yang tersedia saat ini ada '.$this->joinLabels($locations).'. Kalau mau lanjut, kirim titik jemput, tujuan, atau tanggal keberangkatannya ya.',
++                'Lokasi yang tersedia saat ini antara lain '.$this->joinLabels($locations).'. Kalau ingin lanjut booking, tinggal kirim titik jemput, tujuan, atau tanggal keberangkatannya ya.',
++            ],
++        );
++    }
++
++    public function paymentMethodLabel(?string $value): string
++    {
++        if (blank($value)) {
++            return '-';
++        }
++        foreach ((array) config('chatbot.jet.payment_methods', []) as $method) {
++            if (($method['id'] ?? null) === $value) {
++                return (string) ($method['label'] ?? $value);
++            }
++        }
++
++        return mb_convert_case((string) $value, MB_CASE_TITLE, 'UTF-8');
++    }
++
++    private function detailRequest(array $labels, string $context): string
++    {
++        return $context.', mohon kirim '.$this->joinLabels($labels).'.';
++    }
++
++    private function normalizePendingPrompt(string $pendingPrompt): string
++    {
++        $text = trim(preg_replace('/\s+/u', ' ', $pendingPrompt) ?? $pendingPrompt);
++        $knownLeads = [
++            'Baik, saya bantu ya. ',
++            'Baik, saya bantu cek ya. ',
++            'Baik, saya bantu lanjut ya. ',
++            'Baik, saya bantu lanjutkan ya. ',
++            'Siap, saya bantu ya. ',
++            'Siap, saya bantu cek ya. ',
++            'Siap, saya bantu lanjut ya. ',
++            'Siap, saya bantu lanjutkan ya. ',
++            'Oke, saya bantu ya. ',
++            'Oke, saya bantu cek ya. ',
++            'Oke, saya bantu lanjut ya. ',
++            'Oke, saya bantu lanjutkan ya. ',
++            'Baik, tinggal ',
++            'Siap, tinggal ',
++            'Oke, tinggal ',
++        ];
++        foreach ($knownLeads as $lead) {
++            if (str_starts_with($text, $lead)) {
++                $text = substr($text, strlen($lead));
++                break;
++            }
++        }
++
++        return $this->lowercaseFirst($text);
++    }
++
++    private function displayValue(string $slot, mixed $value): string
++    {
++        return match ($slot) {
++            'passenger_count' => (int) $value.' orang',
++            'travel_time' => (string) $value.' WIB',
++            'payment_method' => $this->paymentMethodLabel(is_string($value) ? $value : null),
++            default => (string) $value,
++        };
++    }
++
++    /**
++     * @param  array<int, string>  $labels
++     */
++    private function joinLabels(array $labels): string
++    {
++        $labels = array_values(array_filter(array_map(
++            fn (mixed $label) => is_string($label) ? trim($label) : '',
++            $labels,
++        )));
++        if ($labels === []) {
++            return '';
++        }
++        if (count($labels) === 1) {
++            return $labels[0];
++        }
++        if (count($labels) === 2) {
++            return $labels[0].' dan '.$labels[1];
++        }
++        $last = array_pop($labels);
++
++        return implode(', ', $labels).', dan '.$last;
++    }
++
++    private function lowercaseFirst(string $text): string
++    {
++        if ($text === '') {
++            return '';
++        }
++        $first = mb_substr($text, 0, 1, 'UTF-8');
++        $rest = mb_substr($text, 1, null, 'UTF-8');
++
++        return mb_strtolower($first, 'UTF-8').$rest;
++    }
++
++    /**
++     * @param  array<int|string, mixed>  $context
++     * @param  array<int, string>  $variants
++     */
++    private function chooseVariant(string $group, array $context, array $variants): string
++    {
++        if ($variants === []) {
++            return '';
++        }
++        if (count($variants) === 1) {
++            return $variants[0];
++        }
++        $payload = json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
++        $hash = sha1($group.'|'.$payload);
++        $index = hexdec(substr($hash, 0, 6)) % count($variants);
++
++        return $variants[$index];
++    }
++
++    private function sameValue(mixed $left, mixed $right): bool
++    {
++        return json_encode($left) === json_encode($right);
++    }
++
++    private function isBlank(mixed $value): bool
++    {
++        if ($value === null) {
++            return true;
++        }
++        if (is_string($value)) {
++            return trim($value) === '';
++        }
++        if (is_array($value)) {
++            return $value === [];
++        }
++
++        return false;
++    }
++}
+diff --git a/tests/Feature/BookingFlowStateMachineTest.php b/tests/Feature/BookingFlowStateMachineTest.php
+new file mode 100644
+index 0000000..1027ca1
+--- /dev/null
++++ b/tests/Feature/BookingFlowStateMachineTest.php
+@@ -0,0 +1,136 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Enums\ConversationStatus;
++use App\Enums\MessageDirection;
++use App\Enums\SenderType;
++use App\Models\Conversation;
++use App\Models\ConversationMessage;
++use App\Models\Customer;
++use App\Services\Booking\BookingConversationStateService;
++use App\Services\Booking\BookingFlowStateMachine;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Tests\TestCase;
++
++class BookingFlowStateMachineTest extends TestCase
++{
++    use RefreshDatabase;
++
++    public function test_it_keeps_context_and_only_asks_missing_slots_after_route_is_completed(): void
++    {
++        [$customer, $conversation] = $this->makeConversation();
++        $flow = app(BookingFlowStateMachine::class);
++        $stateService = app(BookingConversationStateService::class);
++
++        $firstReply = $flow->handle(
++            conversation: $conversation,
++            customer: $customer,
++            message: $this->inboundMessage($conversation, 'saya mau ke pekanbaru apakah tersedia?'),
++            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
++            entityResult: [],
++            replyResult: ['text' => '', 'is_fallback' => true],
++        );
++
++        $this->assertStringContainsString('titik jemput', $firstReply['reply']['text']);
++        $this->assertStringContainsString('nama penumpang', $firstReply['reply']['text']);
++        $this->assertStringContainsString('jumlah penumpang', $firstReply['reply']['text']);
++        $this->assertSame('Pekanbaru', $stateService->load($conversation)['destination']);
++
++        $secondReply = $flow->handle(
++            conversation: $conversation->fresh(),
++            customer: $customer->fresh(),
++            message: $this->inboundMessage($conversation->fresh(), 'titik jemput di pasir pengaraian, nama Nerry, jumlah 2'),
++            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
++            entityResult: [],
++            replyResult: ['text' => '', 'is_fallback' => true],
++        );
++
++        $freshSlots = $stateService->load($conversation->fresh());
++
++        $this->assertStringContainsString('catat', $secondReply['reply']['text']);
++        $this->assertStringContainsString('Pasir Pengaraian ke Pekanbaru', $secondReply['reply']['text']);
++        $this->assertStringContainsString('tersedia', $secondReply['reply']['text']);
++        $this->assertStringContainsString('tanggal keberangkatan', $secondReply['reply']['text']);
++        $this->assertSame('Pasir Pengaraian', $freshSlots['pickup_location']);
++        $this->assertSame('Nerry', $freshSlots['passenger_name']);
++        $this->assertSame(2, $freshSlots['passenger_count']);
++    }
++
++    public function test_it_accepts_route_correction_without_restarting_booking(): void
++    {
++        [$customer, $conversation] = $this->makeConversation();
++        $flow = app(BookingFlowStateMachine::class);
++
++        $flow->handle(
++            conversation: $conversation,
++            customer: $customer,
++            message: $this->inboundMessage($conversation, 'saya mau ke pekanbaru apakah tersedia?'),
++            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
++            entityResult: [],
++            replyResult: ['text' => '', 'is_fallback' => true],
++        );
++
++        $unsupportedReply = $flow->handle(
++            conversation: $conversation->fresh(),
++            customer: $customer->fresh(),
++            message: $this->inboundMessage($conversation->fresh(), 'nama Nerry, jumlah 2, titik jemput di panam'),
++            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
++            entityResult: [],
++            replyResult: ['text' => '', 'is_fallback' => true],
++        );
++
++        $this->assertStringContainsString('Panam ke Pekanbaru saat ini belum tersedia', $unsupportedReply['reply']['text']);
++
++        $correctedReply = $flow->handle(
++            conversation: $conversation->fresh(),
++            customer: $customer->fresh(),
++            message: $this->inboundMessage($conversation->fresh(), 'titik jemput di pasir pengaraian'),
++            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
++            entityResult: [],
++            replyResult: ['text' => '', 'is_fallback' => true],
++        );
++
++        $this->assertStringContainsString('titik jemput', $correctedReply['reply']['text']);
++        $this->assertStringContainsString('Pasir Pengaraian', $correctedReply['reply']['text']);
++        $this->assertStringContainsString('tersedia', $correctedReply['reply']['text']);
++        $this->assertStringContainsString('tanggal keberangkatan', $correctedReply['reply']['text']);
++    }
++
++    /**
++     * @return array{0: Customer, 1: Conversation}
++     */
++    private function makeConversation(): array
++    {
++        $customer = Customer::create([
++            'name' => 'Nerry',
++            'phone_e164' => '+6281234567890',
++            'status' => 'active',
++        ]);
++
++        $conversation = Conversation::create([
++            'customer_id' => $customer->id,
++            'channel' => 'whatsapp',
++            'status' => ConversationStatus::Active,
++            'handoff_mode' => 'bot',
++            'started_at' => now(),
++            'last_message_at' => now(),
++        ]);
++
++        return [$customer, $conversation];
++    }
++
++    private function inboundMessage(Conversation $conversation, string $text): ConversationMessage
++    {
++        return ConversationMessage::create([
++            'conversation_id' => $conversation->id,
++            'direction' => MessageDirection::Inbound,
++            'sender_type' => SenderType::Customer,
++            'message_type' => 'text',
++            'message_text' => $text,
++            'raw_payload' => [],
++            'is_fallback' => false,
++            'sent_at' => now(),
++        ]);
++    }
++}
+diff --git a/tests/Unit/BookingReplyNaturalizerServiceTest.php b/tests/Unit/BookingReplyNaturalizerServiceTest.php
+new file mode 100644
+index 0000000..e26c63c
+--- /dev/null
++++ b/tests/Unit/BookingReplyNaturalizerServiceTest.php
+@@ -0,0 +1,64 @@
++<?php
++
++namespace Tests\Unit;
++
++use App\Models\BookingRequest;
++use App\Services\Booking\BookingReplyNaturalizerService;
++use Tests\TestCase;
++
++class BookingReplyNaturalizerServiceTest extends TestCase
++{
++    public function test_it_uses_natural_admin_tone_when_asking_basic_details(): void
++    {
++        $service = app(BookingReplyNaturalizerService::class);
++
++        $text = $service->askBasicDetails(
++            ['pickup_location', 'passenger_name', 'passenger_count'],
++            ['destination' => 'Pekanbaru'],
++        );
++
++        $this->assertMatchesRegularExpression('/^(Baik|Siap|Oke),/u', $text);
++        $this->assertStringContainsString('titik jemput', $text);
++        $this->assertStringContainsString('nama penumpang', $text);
++        $this->assertStringContainsString('jumlah penumpang', $text);
++        $this->assertStringNotContainsString('Bapak/Ibu', $text);
++    }
++
++    public function test_it_keeps_pending_acknowledgement_natural_and_not_repetitive(): void
++    {
++        $service = app(BookingReplyNaturalizerService::class);
++
++        $pendingPrompt = $service->askBasicDetails(
++            ['pickup_location', 'passenger_name'],
++            ['destination' => 'Pekanbaru'],
++        );
++
++        $text = $service->inProgressAcknowledgement($pendingPrompt);
++
++        $this->assertStringContainsString('kalau sudah siap', mb_strtolower($text, 'UTF-8'));
++        $this->assertStringNotContainsString('saya bantu ya. Supaya', $text);
++        $this->assertStringContainsString('titik jemput', $text);
++    }
++
++    public function test_it_builds_a_warm_review_summary_without_formal_wording(): void
++    {
++        $service = app(BookingReplyNaturalizerService::class);
++        $booking = BookingRequest::make([
++            'pickup_location' => 'Pasir Pengaraian',
++            'destination' => 'Pekanbaru',
++            'passenger_name' => 'Nerry',
++            'passenger_count' => 2,
++            'departure_date' => '2026-03-28',
++            'departure_time' => '08:00',
++            'payment_method' => 'transfer',
++            'price_estimate' => 300000,
++        ]);
++
++        $text = $service->reviewSummary($booking);
++
++        $this->assertStringContainsString('data perjalanannya', $text);
++        $this->assertStringContainsString('balas YA atau BENAR', $text);
++        $this->assertStringContainsString('kirim', $text);
++        $this->assertStringNotContainsString('Bapak/Ibu', $text);
++    }
++}

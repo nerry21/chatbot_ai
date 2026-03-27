@@ -2,6 +2,7 @@
 
 namespace App\Services\Chatbot;
 
+use App\Enums\BookingFlowState;
 use App\Jobs\EscalateConversationToAdminJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
@@ -16,8 +17,7 @@ class HumanEscalationService
         private readonly WhatsAppSenderService $senderService,
         private readonly BookingConfirmationService $confirmationService,
         private readonly ConversationStateService $stateService,
-    ) {
-    }
+    ) {}
 
     public function escalateQuestion(Conversation $conversation, Customer $customer, string $reason): void
     {
@@ -48,20 +48,20 @@ class HumanEscalationService
 
         $result = $this->senderService->sendText(
             $adminPhone,
-            'Bos, ini ada pertanyaan dari nomor ' . ltrim((string) $customer->phone_e164, '+') . ', bisa bantu jawab ya bos?',
+            'Bos, ini ada pertanyaan dari nomor '.ltrim((string) $customer->phone_e164, '+').', bisa bantu jawab ya bos?',
             [
                 'conversation_id' => $conversation->id,
-                'customer_id'     => $customer->id,
-                'context'         => 'question_escalation',
+                'customer_id' => $customer->id,
+                'context' => 'question_escalation',
             ],
         );
 
         WaLog::info('[HumanEscalation] escalation forwarded to admin', [
             'conversation_id' => $conversation->id,
-            'customer_id'     => $customer->id,
-            'admin_phone'     => WaLog::maskPhone($adminPhone),
-            'reason'          => $reason,
-            'status'          => $result['status'],
+            'customer_id' => $customer->id,
+            'admin_phone' => WaLog::maskPhone($adminPhone),
+            'reason' => $reason,
+            'status' => $result['status'],
         ]);
 
         if ($result['status'] !== 'sent') {
@@ -98,17 +98,17 @@ class HumanEscalationService
             $summary,
             [
                 'conversation_id' => $conversation->id,
-                'customer_id'     => $customer->id,
-                'booking_id'      => $booking->id,
-                'context'         => 'booking_forward',
+                'customer_id' => $customer->id,
+                'booking_id' => $booking->id,
+                'context' => 'booking_forward',
             ],
         );
 
         WaLog::info('[HumanEscalation] booking forwarded to admin', [
             'conversation_id' => $conversation->id,
-            'booking_id'      => $booking->id,
-            'admin_phone'     => WaLog::maskPhone($adminPhone),
-            'status'          => $result['status'],
+            'booking_id' => $booking->id,
+            'admin_phone' => WaLog::maskPhone($adminPhone),
+            'status' => $result['status'],
         ]);
     }
 
@@ -123,6 +123,6 @@ class HumanEscalationService
         $this->stateService->put($conversation, 'admin_takeover', true);
         $this->stateService->put($conversation, 'waiting_for', 'admin');
         $this->stateService->put($conversation, 'waiting_reason', $reason);
-        $this->stateService->put($conversation, 'booking_intent_status', 'needs_human');
+        $this->stateService->put($conversation, 'booking_intent_status', BookingFlowState::Closed->value);
     }
 }

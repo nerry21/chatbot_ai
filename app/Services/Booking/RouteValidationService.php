@@ -180,6 +180,40 @@ class RouteValidationService
     }
 
     /**
+     * @return array<int, string>
+     */
+    public function supportedPickupsForDestination(?string $destination): array
+    {
+        $target = $this->knownLocation($destination);
+
+        if ($target === null) {
+            return [];
+        }
+
+        $pickups = [];
+
+        foreach ($this->fareRules() as $rule) {
+            $a = array_filter(array_map([$this, 'knownLocation'], $rule['a'] ?? []));
+            $b = array_filter(array_map([$this, 'knownLocation'], $rule['b'] ?? []));
+
+            if (in_array($target, $b, true)) {
+                $pickups = array_merge($pickups, $a);
+            }
+
+            if (($rule['bidirectional'] ?? false) === true && in_array($target, $a, true)) {
+                $pickups = array_merge($pickups, $b);
+            }
+        }
+
+        return array_values(array_unique($pickups));
+    }
+
+    public function isKnownLocation(?string $value): bool
+    {
+        return $this->knownLocation($value) !== null;
+    }
+
+    /**
      * @return array<int, array<string, mixed>>
      */
     private function fareRules(): array

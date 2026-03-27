@@ -23,6 +23,7 @@ class ReplyOrchestratorService
         'passenger_count' => 'jumlah penumpang',
         'departure_date'  => 'tanggal keberangkatan',
         'departure_time'  => 'jam keberangkatan',
+        'payment_method'  => 'metode pembayaran',
     ];
 
     public function __construct(

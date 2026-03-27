@@ -18,7 +18,7 @@ class PromptBuilderService
     {
         $style = config('chatbot.prompts.style', 'sopan_ringkas');
 
-        $system = <<<SYSTEM
+        $system = <<<'SYSTEM'
         Kamu adalah classifier intent untuk layanan pemesanan transportasi antar kota di Indonesia.
         Tugasmu: mengklasifikasikan intent pesan pelanggan dengan TEPAT dan KONSISTEN.
 
@@ -66,7 +66,7 @@ class PromptBuilderService
      */
     public function buildExtractionPrompt(array $context): array
     {
-        $system = <<<SYSTEM
+        $system = <<<'SYSTEM'
         Kamu adalah extractor informasi perjalanan untuk layanan transportasi antar kota Indonesia.
         Tugasmu: mengekstrak data perjalanan dari pesan pelanggan secara akurat.
 
@@ -105,8 +105,8 @@ class PromptBuilderService
      */
     public function buildReplyPrompt(array $context): array
     {
-        $style       = config('chatbot.prompts.style', 'sopan_ringkas');
-        $styleGuide  = $this->styleInstruction($style);
+        $style = config('chatbot.prompts.style', 'sopan_ringkas');
+        $styleGuide = $this->styleInstruction($style);
         $intentLabel = $context['intent_result']['intent'] ?? 'unknown';
 
         $system = <<<SYSTEM
@@ -124,6 +124,9 @@ class PromptBuilderService
         7. JANGAN tambahkan emoji kecuali memang diperlukan.
         8. Jika ada knowledge base di bawah, PRIORITASKAN informasinya. Jangan mengarang aturan, harga, atau jadwal di luar knowledge/data sistem.
         9. Jika knowledge tidak memiliki jawaban yang tepat, jawab secara konservatif dan tawarkan untuk mengecek lebih lanjut.
+        10. Terdengar seperti admin travel WhatsApp di Indonesia: hangat, sopan, ringkas, dan profesional.
+        11. Hindari bahasa birokratis, kaku, terlalu formal, atau terasa seperti template sistem.
+        12. Hindari bullet/list kecuali memang perlu untuk merangkum data.
 
         INTENT SAAT INI: {$intentLabel}
 
@@ -154,7 +157,7 @@ class PromptBuilderService
      */
     public function buildSummaryPrompt(array $context): array
     {
-        $system = <<<SYSTEM
+        $system = <<<'SYSTEM'
         Kamu adalah pencatat ringkasan percakapan layanan transportasi.
         Buat ringkasan singkat percakapan berikut dalam 2-3 kalimat bahasa Indonesia.
         Fokus pada: intent utama pelanggan, informasi perjalanan yang sudah dikumpulkan, dan status percakapan saat ini.
@@ -189,7 +192,7 @@ class PromptBuilderService
         if (! empty($context['recent_messages'])) {
             $lines[] = '=== RIWAYAT PERCAKAPAN (terbaru terakhir) ===';
             foreach ($context['recent_messages'] as $msg) {
-                $dir  = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
+                $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
                 $text = $msg['text'] ?? '';
                 $lines[] = "[{$dir}]: {$text}";
             }
@@ -235,8 +238,8 @@ class PromptBuilderService
         if (! empty($context['recent_messages'])) {
             $lines[] = '=== RIWAYAT PERCAKAPAN ===';
             foreach ($context['recent_messages'] as $msg) {
-                $dir   = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
-                $lines[] = "[{$dir}]: " . ($msg['text'] ?? '');
+                $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
+                $lines[] = "[{$dir}]: ".($msg['text'] ?? '');
             }
             $lines[] = '';
         }
@@ -286,7 +289,7 @@ class PromptBuilderService
         }
 
         $memory = $context['customer_memory'] ?? [];
-        $name   = $memory['primary_name'] ?? null;
+        $name = $memory['primary_name'] ?? null;
 
         if ($name !== null) {
             $lines[] = "Nama pelanggan: {$name}";
@@ -340,9 +343,9 @@ class PromptBuilderService
 
         $lines[] = '=== PERCAKAPAN ===';
         foreach ($context['recent_messages'] as $msg) {
-            $dir   = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
-            $text  = $msg['text'] ?? '(kosong)';
-            $time  = $msg['sent_at'] ?? '';
+            $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
+            $text = $msg['text'] ?? '(kosong)';
+            $time = $msg['sent_at'] ?? '';
             $lines[] = "[{$dir}] {$time}: {$text}";
         }
 
@@ -351,11 +354,11 @@ class PromptBuilderService
 
     private function styleInstruction(string $style): string
     {
-        return match($style) {
-            'formal'        => 'Formal dan profesional. Gunakan "Anda" dan bahasa resmi.',
-            'casual'        => 'Santai dan akrab. Gunakan "kamu" dan bahasa sehari-hari.',
-            'sopan_ringkas' => 'Sopan dan ringkas. Gunakan "Anda", langsung ke poin, tidak bertele-tele.',
-            default         => 'Sopan dan ringkas dalam bahasa Indonesia.',
+        return match ($style) {
+            'formal' => 'Formal dan profesional. Gunakan "Anda" dan bahasa resmi.',
+            'casual' => 'Santai dan akrab. Gunakan "kamu" dan bahasa sehari-hari.',
+            'sopan_ringkas' => 'Sopan, hangat, ringkas, dan natural seperti admin customer service travel di WhatsApp Indonesia. Hindari bahasa birokratis, jangan terdengar seperti template atau mesin.',
+            default => 'Sopan, hangat, ringkas, dan natural dalam bahasa Indonesia.',
         };
     }
 }

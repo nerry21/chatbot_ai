@@ -69,6 +69,7 @@ return [
             'ok',
             'baik',
             'siap',
+            'sip',
             'tidak ada',
             'ga ada',
             'nggak ada',
@@ -120,6 +121,9 @@ return [
             'destination',
             'passenger_name',
             'passenger_count',
+            'departure_date',
+            'departure_time',
+            'payment_method',
         ],
 
         // Base price per seat in Indonesian Rupiah (IDR).
@@ -211,6 +215,24 @@ return [
             ],
         ],
 
+        'payment_methods' => [
+            [
+                'id' => 'transfer',
+                'label' => 'Transfer Bank',
+                'aliases' => ['transfer', 'tf', 'transfer bank', 'bank transfer'],
+            ],
+            [
+                'id' => 'qris',
+                'label' => 'QRIS',
+                'aliases' => ['qris', 'qr', 'scan qris'],
+            ],
+            [
+                'id' => 'cash',
+                'label' => 'Cash',
+                'aliases' => ['cash', 'tunai', 'bayar cash', 'bayar tunai'],
+            ],
+        ],
+
         'locations' => [
             ['order' => 1,  'label' => 'SKPD',             'menu' => true,  'aliases' => ['skpd']],
             ['order' => 2,  'label' => 'Simpang D',        'menu' => true,  'aliases' => ['simpang d', 'simpangd']],
@@ -218,7 +240,7 @@ return [
             ['order' => 4,  'label' => 'Simpang Kumu',     'menu' => true,  'aliases' => ['simpang kumu', 'simpangkumu']],
             ['order' => 5,  'label' => 'Muara Rumbai',     'menu' => true,  'aliases' => ['muara rumbai', 'muararumbai']],
             ['order' => 6,  'label' => 'Surau Tinggi',     'menu' => true,  'aliases' => ['surau tinggi', 'surautinggi']],
-            ['order' => 7,  'label' => 'Pasirpengaraian',  'menu' => true,  'aliases' => ['pasirpengaraian', 'pasir pengaraian']],
+            ['order' => 7,  'label' => 'Pasir Pengaraian', 'menu' => true,  'aliases' => ['pasirpengaraian', 'pasir pengaraian']],
             ['order' => 8,  'label' => 'Ujung Batu',       'menu' => true,  'aliases' => ['ujung batu', 'ujungbatu']],
             ['order' => 9,  'label' => 'Tandun',           'menu' => true,  'aliases' => ['tandun']],
             ['order' => 10, 'label' => 'Silam',            'menu' => true,  'aliases' => ['silam']],

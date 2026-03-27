@@ -119,6 +119,7 @@ Route::middleware(['auth', 'chatbot.admin'])
  * Validate the ?token= query param against DEBUG_TOKEN in .env.
  * Returns 403 JSON if token is missing, empty, or wrong.
  */
+if (! function_exists('checkDebugToken')) {
 function checkDebugToken(\Illuminate\Http\Request $request): ?\Illuminate\Http\JsonResponse
 {
     $expected = (string) env('DEBUG_TOKEN', '');
@@ -130,6 +131,7 @@ function checkDebugToken(\Illuminate\Http\Request $request): ?\Illuminate\Http\J
         return response()->json(['error' => 'Invalid or missing ?token='], 403);
     }
     return null;
+}
 }
 
 Route::prefix('debug')->name('debug.')->group(function (): void {
