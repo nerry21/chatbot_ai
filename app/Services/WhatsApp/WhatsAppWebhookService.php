@@ -146,9 +146,11 @@ class WhatsAppWebhookService
                     messageType: $type,
                     messageText: $text !== null ? (string) $text : null,
                     sentAt: $sentAt,
-                    rawPayload: is_array($parsedMessage['raw_message'] ?? null)
-                        ? $parsedMessage['raw_message']
-                        : [],
+                    rawPayload: is_array($parsedMessage['raw_payload'] ?? null)
+                        ? $parsedMessage['raw_payload']
+                        : (is_array($parsedMessage['raw_message'] ?? null)
+                            ? $parsedMessage['raw_message']
+                            : []),
                 );
 
                 WaLog::info('[WebhookService] Inbound message persisted', [

@@ -23,18 +23,21 @@ class PromptBuilderService
         Tugasmu: mengklasifikasikan intent pesan pelanggan dengan TEPAT dan KONSISTEN.
 
         DAFTAR INTENT YANG TERSEDIA:
-        - greeting         : salam pembuka, sapaan awal
-        - booking          : ingin memesan atau menanyakan pemesanan perjalanan
-        - booking_confirm  : mengkonfirmasi pemesanan yang sudah dibuat
-        - booking_cancel   : membatalkan pemesanan
-        - schedule_inquiry : bertanya jadwal keberangkatan
-        - price_inquiry    : bertanya harga atau tarif
-        - location_inquiry : bertanya lokasi penjemputan atau tujuan
-        - support          : keluhan, komplain, butuh bantuan teknis
-        - human_handoff    : ingin berbicara langsung dengan petugas/admin
-        - farewell         : pamit, ucapan terima kasih sebagai penutup
-        - confirmation     : konfirmasi/setuju/iya/benar/oke terhadap pertanyaan sebelumnya
-        - rejection        : menolak/tidak jadi/batal/tidak terhadap tawaran/pertanyaan sebelumnya
+        - greeting                     : sapaan umum
+        - salam_islam                 : salam Islam tanpa kebutuhan lain
+        - booking                     : ingin memesan atau melanjutkan proses booking
+        - tanya_keberangkatan_hari_ini: bertanya jadwal keberangkatan hari ini
+        - tanya_harga                 : bertanya harga atau ongkos
+        - tanya_rute                  : bertanya rute, titik jemput, atau tujuan yang tersedia
+        - tanya_jam                   : bertanya jam atau jadwal keberangkatan umum
+        - konfirmasi_booking          : menyetujui review/data booking
+        - ubah_data_booking           : ingin mengubah data booking yang sudah disebut
+        - pertanyaan_tidak_terjawab   : pertanyaan di luar jawaban bot / perlu admin
+        - close_intent                : pamit, ucapan terima kasih, atau penutup percakapan
+        - booking_cancel              : membatalkan pemesanan
+        - human_handoff               : ingin berbicara langsung dengan petugas/admin
+        - confirmation                : konfirmasi singkat terhadap pertanyaan sebelumnya
+        - rejection                   : penolakan singkat / koreksi / tidak setuju
         - out_of_scope     : topik di luar konteks layanan transportasi ini
         - unknown          : tidak dapat ditentukan dengan keyakinan yang cukup
 
@@ -131,17 +134,20 @@ class PromptBuilderService
         INTENT SAAT INI: {$intentLabel}
 
         PANDUAN PER INTENT:
-        - greeting        : sambut dengan hangat, tanya kebutuhan perjalanan
-        - booking         : kumpulkan info yang kurang (titik jemput, tujuan, tanggal, jam, jumlah penumpang)
-        - schedule_inquiry: informasikan bahwa jadwal akan dicek, minta data perjalanan jika belum ada
-        - price_inquiry   : informasikan bahwa harga akan dikonfirmasi, jangan menyebut angka tanpa data
-        - human_handoff   : sampaikan akan menghubungkan dengan tim, minta tunggu sebentar
-        - support         : tunjukkan empati, catat keluhan, informasikan tindak lanjut
-        - farewell        : tutup dengan sopan, ucapkan terima kasih
-        - unknown         : minta klarifikasi dengan sopan, tawarkan pilihan bantuan
-        - out_of_scope    : sampaikan dengan sopan bahwa hanya melayani pemesanan transportasi
-        - confirmation    : terima konfirmasi, lanjutkan alur sesuai konteks
-        - rejection       : terima dengan sopan, tanya kebutuhan lain
+        - greeting / salam_islam       : sambut dengan hangat, tanya kebutuhan perjalanan bila perlu
+        - booking                      : kumpulkan info yang kurang secara bertahap
+        - tanya_keberangkatan_hari_ini : jawab jadwal hari ini secara singkat
+        - tanya_jam                    : jawab jam keberangkatan yang tersedia
+        - tanya_harga                  : minta rute bila belum lengkap, jangan mengarang harga
+        - tanya_rute                   : jawab area layanan atau minta titik yang ingin dicek
+        - konfirmasi_booking           : akui konfirmasi dengan singkat
+        - ubah_data_booking            : terima perubahan dan arahkan ke field yang perlu disesuaikan
+        - pertanyaan_tidak_terjawab    : sampaikan akan konsultasi ke admin
+        - human_handoff / support      : sampaikan akan menghubungkan dengan tim, minta tunggu sebentar
+        - close_intent                 : tutup dengan sopan, ucapkan terima kasih
+        - unknown / out_of_scope       : minta klarifikasi dengan sopan, tetap konservatif
+        - confirmation                 : terima konfirmasi, lanjutkan alur sesuai konteks
+        - rejection                    : terima dengan sopan, tanya kebutuhan lain
         SYSTEM;
 
         $user = $this->formatReplyUserPrompt($context);

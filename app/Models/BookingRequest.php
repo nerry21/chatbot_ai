@@ -18,6 +18,7 @@ class BookingRequest extends Model
         'pickup_location',
         'pickup_full_address',
         'destination',
+        'trip_key',
         'departure_date',
         'departure_time',
         'passenger_count',
@@ -50,13 +51,15 @@ class BookingRequest extends Model
      * @var array<int, string>
      */
     private const REQUIRED_FOR_CONFIRMATION = [
-        'pickup_location',
-        'destination',
-        'passenger_name',
         'passenger_count',
         'departure_date',
         'departure_time',
-        'payment_method',
+        'selected_seats',
+        'pickup_location',
+        'pickup_full_address',
+        'destination',
+        'passenger_name',
+        'contact_number',
     ];
 
     // -------------------------------------------------------------------------
@@ -247,5 +250,10 @@ class BookingRequest extends Model
         }
 
         return [trim($this->passenger_name)];
+    }
+
+    public function hasSelectedSeats(): bool
+    {
+        return is_array($this->selected_seats) && $this->selected_seats !== [];
     }
 }

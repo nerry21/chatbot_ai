@@ -97,20 +97,49 @@ class IntentClassifierService
 
         // Fuzzy aliases the LLM might produce
         return match(true) {
-            str_contains($normalized, 'greet')    => IntentType::Greeting->value,
-            str_contains($normalized, 'book')     => IntentType::Booking->value,
-            str_contains($normalized, 'cancel')   => IntentType::BookingCancel->value,
-            str_contains($normalized, 'confirm')  => IntentType::BookingConfirm->value,
+            str_contains($normalized, 'salam') && str_contains($normalized, 'islam')
+                => IntentType::SalamIslam->value,
+            str_contains($normalized, 'greet')
+                => IntentType::Greeting->value,
+            str_contains($normalized, 'book')
+                => IntentType::Booking->value,
+            str_contains($normalized, 'cancel')
+                => IntentType::BookingCancel->value,
+            str_contains($normalized, 'konfirmasi booking')
+                || str_contains($normalized, 'booking confirm')
+                => IntentType::KonfirmasiBooking->value,
+            str_contains($normalized, 'confirm')
+                => IntentType::BookingConfirm->value,
+            str_contains($normalized, 'ubah')
+                || str_contains($normalized, 'change')
+                || str_contains($normalized, 'edit')
+                => IntentType::UbahDataBooking->value,
+            str_contains($normalized, 'today')
+                || str_contains($normalized, 'hari ini')
+                => IntentType::TanyaKeberangkatanHariIni->value,
             str_contains($normalized, 'price')
-                || str_contains($normalized, 'harga') => IntentType::PriceInquiry->value,
+                || str_contains($normalized, 'harga')
+                || str_contains($normalized, 'tarif')
+                => IntentType::TanyaHarga->value,
+            str_contains($normalized, 'route')
+                || str_contains($normalized, 'rute')
+                || str_contains($normalized, 'lokasi')
+                => IntentType::TanyaRute->value,
             str_contains($normalized, 'jadwal')
-                || str_contains($normalized, 'schedule') => IntentType::ScheduleInquiry->value,
+                || str_contains($normalized, 'schedule')
+                || str_contains($normalized, 'jam')
+                => IntentType::TanyaJam->value,
+            str_contains($normalized, 'close')
+                || str_contains($normalized, 'bye')
+                || str_contains($normalized, 'farewell')
+                || str_contains($normalized, 'terima kasih')
+                => IntentType::CloseIntent->value,
+            str_contains($normalized, 'tidak terjawab')
+                || str_contains($normalized, 'fallback')
+                => IntentType::PertanyaanTidakTerjawab->value,
             str_contains($normalized, 'human')
                 || str_contains($normalized, 'agent')
                 || str_contains($normalized, 'admin')  => IntentType::HumanHandoff->value,
-            str_contains($normalized, 'bye')
-                || str_contains($normalized, 'farewell')
-                || str_contains($normalized, 'terima kasih') => IntentType::Farewell->value,
             default => IntentType::Unknown->value,
         };
     }

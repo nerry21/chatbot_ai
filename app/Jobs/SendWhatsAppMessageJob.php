@@ -186,6 +186,11 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         if ($result['status'] === 'sent') {
             $waMessageId = $result['response']['messages'][0]['id'] ?? null;
+            $deliveryMeta = is_array($result['response']['_delivery'] ?? null)
+                ? $result['response']['_delivery']
+                : [];
+            $sentType = (string) ($deliveryMeta['sent_type'] ?? $message->message_type);
+            $fallbackUsed = (bool) ($deliveryMeta['interactive_text_fallback_used'] ?? false);
 
             $message->markSent($waMessageId, ['wa_send_result' => $result]);
 
@@ -198,6 +203,8 @@ class SendWhatsAppMessageJob implements ShouldQueue
                     'message_id'    => $message->id,
                     'wa_message_id' => $waMessageId,
                     'send_attempts' => $message->send_attempts,
+                    'sent_type'     => $sentType,
+                    'fallback_used' => $fallbackUsed,
                 ],
             ]);
 
@@ -205,8 +212,19 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 'message_id'    => $message->id,
                 'wa_message_id' => $waMessageId,
                 'send_attempts' => $message->send_attempts,
+                'sent_type'     => $sentType,
+                'fallback_used' => $fallbackUsed,
                 'duration_ms'   => (int) round(microtime(true) * 1000) - $jobStartMs,
             ]);
+
+            if ($fallbackUsed) {
+                WaLog::warning('[Job:SendWA] Interactive payload fell back to plain text', [
+                    'message_id' => $message->id,
+                    'requested_type' => $deliveryMeta['requested_type'] ?? $message->message_type,
+                    'sent_type' => $sentType,
+                    'error' => $deliveryMeta['interactive_error'] ?? null,
+                ]);
+            }
 
         } elseif ($result['status'] === 'skipped') {
             $message->markSkipped('sender_disabled', ['wa_send_result' => $result]);

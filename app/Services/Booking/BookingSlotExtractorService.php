@@ -2,38 +2,24 @@
 
 namespace App\Services\Booking;
 
+use App\Services\Chatbot\ConversationTextNormalizerService;
+use App\Services\Chatbot\GreetingDetectorService;
 use App\Services\Support\PhoneNumberService;
 use Illuminate\Support\Carbon;
 
 class BookingSlotExtractorService
 {
-    /**
-     * @var array<string, int>
-     */
     private const NUMBER_WORDS = [
-        'satu' => 1,
-        'dua' => 2,
-        'tiga' => 3,
-        'empat' => 4,
-        'lima' => 5,
-        'enam' => 6,
-        'tujuh' => 7,
-        'delapan' => 8,
-        'sembilan' => 9,
-        'sepuluh' => 10,
-    ];
-
-    private const AFFIRMATIONS = [
-        'ya', 'iya', 'benar', 'sudah', 'oke', 'ok', 'siap', 'sesuai', 'mantap', 'lanjut',
-    ];
-
-    private const REJECTIONS = [
-        'tidak', 'nggak', 'enggak', 'bukan', 'salah', 'ubah', 'ganti', 'koreksi', 'batal',
+        'satu' => 1, 'dua' => 2, 'tiga' => 3, 'empat' => 4, 'lima' => 5,
+        'enam' => 6, 'tujuh' => 7, 'delapan' => 8, 'sembilan' => 9, 'sepuluh' => 10,
     ];
 
     public function __construct(
         private readonly RouteValidationService $routeValidator,
         private readonly PhoneNumberService $phoneService,
+        private readonly SeatAvailabilityService $seatAvailability,
+        private readonly GreetingDetectorService $greetingDetector,
+        private readonly ConversationTextNormalizerService $textNormalizer,
     ) {}
 
     /**
@@ -50,212 +36,178 @@ class BookingSlotExtractorService
     ): array {
         $text = trim($messageText);
         $normalized = $this->normalizeText($text);
-
+        $greetingInspection = $this->greetingDetector->inspect($messageText);
+        $updates = [];
         $signals = [
-            'greeting_detected' => $this->isGreeting($normalized),
-            'salam_type' => $this->hasIslamicGreeting($normalized) ? 'islamic' : null,
-            'greeting_only' => $this->isGreetingOnly($normalized),
-            'booking_keyword' => (bool) preg_match('/\b(book|booking|pesan|travel|berangkat|keberangkatan|jemput|antar|tujuan|rute)\b/u', $normalized),
-            'schedule_keyword' => (bool) preg_match('/\b(jadwal|jam|slot|berangkat|keberangkatan|pagi|siang|sore|malam)\b/u', $normalized),
+            'greeting_detected' => $greetingInspection['has_general_greeting'],
+            'salam_type' => $greetingInspection['has_islamic_greeting'] ? 'islamic' : null,
+            'greeting_only' => $greetingInspection['greeting_only'],
+            'booking_keyword' => (bool) preg_match('/(?:\b(book|booking|pesan|reservasi)\b|\b(mau|ingin|nak)\s+(booking|pesan|travel|berangkat|naik)\b|\b(ikut|naik)\s+travel\b|\bpesan\s+travel\b)/u', $normalized),
+            'schedule_keyword' => (bool) preg_match('/\b(jadwal|jam|slot|berangkat|keberangkatan|pagi|siang|sore|malam|subuh)\b/u', $normalized),
             'price_keyword' => (bool) preg_match('/\b(harga|ongkos|tarif|biaya)\b/u', $normalized),
             'route_keyword' => (bool) preg_match('/\b(rute|trayek|tujuan|lokasi|jemput|antar)\b/u', $normalized),
             'human_keyword' => (bool) preg_match('/\b(admin|manusia|operator|cs|customer service)\b/u', $normalized),
-            'affirmation' => $this->matchesVocabulary($normalized, self::AFFIRMATIONS),
-            'rejection' => $this->matchesVocabulary($normalized, self::REJECTIONS),
+            'affirmation' => $this->textNormalizer->isAffirmative($messageText),
+            'rejection' => $this->textNormalizer->isNegative($messageText),
+            'change_request' => $this->textNormalizer->isNegative($messageText)
+                || (bool) preg_match('/\b(ubah|ganti|koreksi|revisi)\b/u', $normalized),
             'close_intent' => $this->isCloseIntent($normalized),
             'gratitude' => (bool) preg_match('/\b(makasih|terima kasih|thanks|thank you)\b/u', $normalized),
-            'acknowledgement' => (bool) preg_match('/\b(ok|oke|baik|siap|sip|noted)\b/u', $normalized),
+            'acknowledgement' => (bool) preg_match('/\b(ok|oke|baik|siap|sip|noted|mantap)\b/u', $normalized),
+            'today_schedule_keyword' => str_contains($normalized, 'hari ini')
+                && (bool) preg_match('/\b(jadwal|berangkat|keberangkatan|jam|slot)\b/u', $normalized),
             'time_ambiguous' => false,
         ];
 
-        $updates = [];
-
-        $routeUpdates = $this->extractRouteSlots($text, $normalized, $expectedInput, $entityResult);
-
-        if ($routeUpdates['pickup_location'] !== null) {
-            $updates['pickup_location'] = $routeUpdates['pickup_location'];
+        if (! in_array($expectedInput, ['pickup_full_address', 'contact_number'], true)) {
+            $route = $this->extractRouteSlots($text, $normalized, $expectedInput, $entityResult);
+            if ($route['pickup_location'] !== null) {
+                $updates['pickup_location'] = $route['pickup_location'];
+            }
+            if ($route['destination'] !== null) {
+                $updates['destination'] = $route['destination'];
+            }
         }
 
-        if ($routeUpdates['destination'] !== null) {
-            $updates['destination'] = $routeUpdates['destination'];
+        $nameUpdates = $this->extractPassengerNames($text, $expectedInput, $entityResult, $currentSlots);
+        if ($nameUpdates !== []) {
+            $updates = array_merge($updates, $nameUpdates);
         }
 
-        $passengerName = $this->extractPassengerName($text, $expectedInput, $entityResult);
-
-        if ($passengerName !== null) {
-            $updates['passenger_name'] = $passengerName;
-        }
-
-        $passengerCount = $this->extractPassengerCount($normalized, $expectedInput, $entityResult);
-
-        if ($passengerCount !== null) {
-            $updates['passenger_count'] = $passengerCount;
+        $count = $this->extractPassengerCount($normalized, $expectedInput, $entityResult);
+        if ($count !== null) {
+            $updates['passenger_count'] = $count;
         }
 
         $date = $this->extractDate($text, $entityResult);
-
         if ($date !== null) {
             $updates['travel_date'] = $date;
         }
 
-        $timeResult = $this->extractTime($normalized, $expectedInput, $entityResult);
+        $time = $this->extractTime($normalized, $expectedInput, $entityResult);
+        if ($time['time'] !== null) {
+            $updates['travel_time'] = $time['time'];
+        }
+        $signals['time_ambiguous'] = $time['ambiguous'];
 
-        if ($timeResult['time'] !== null) {
-            $updates['travel_time'] = $timeResult['time'];
+        $seats = $this->extractSeatSelection($text, $normalized, $expectedInput);
+        if ($seats !== []) {
+            $updates['selected_seats'] = $seats;
         }
 
-        $signals['time_ambiguous'] = $timeResult['ambiguous'];
-
-        $paymentMethod = $this->extractPaymentMethod($normalized, $expectedInput, $entityResult);
-
-        if ($paymentMethod !== null) {
-            $updates['payment_method'] = $paymentMethod;
+        $address = $this->extractPickupAddress($text, $normalized, $expectedInput);
+        if ($address !== null) {
+            $updates['pickup_full_address'] = $address;
         }
 
-        if (($currentSlots['contact_number'] ?? null) === null) {
-            $contactNumber = $this->extractPhoneNumber($text);
-
-            if ($contactNumber !== null && $contactNumber !== $senderPhone) {
-                $updates['contact_number'] = $contactNumber;
-                $updates['contact_same_as_sender'] = false;
-            }
+        $payment = $this->extractPaymentMethod($normalized, $expectedInput, $entityResult);
+        if ($payment !== null) {
+            $updates['payment_method'] = $payment;
         }
 
-        return [
-            'updates' => $updates,
-            'signals' => $signals,
-        ];
+        $contact = $this->extractContact($text, $normalized, $expectedInput, $senderPhone);
+        if ($contact !== []) {
+            $updates = array_merge($updates, $contact);
+        }
+
+        return ['updates' => $updates, 'signals' => $signals];
     }
 
     public function isCloseIntent(string $normalizedText): bool
     {
-        $closeWords = array_map(
-            fn (mixed $phrase) => $this->normalizeText((string) $phrase),
-            config('chatbot.guards.close_intents', []),
-        );
+        $phrases = array_map(fn (mixed $phrase) => $this->normalizeText((string) $phrase), config('chatbot.guards.close_intents', []));
 
-        return in_array($normalizedText, $closeWords, true);
+        return in_array($normalizedText, $phrases, true);
     }
 
     /**
      * @param  array<string, mixed>  $entityResult
      * @return array{pickup_location: string|null, destination: string|null}
      */
-    public function extractRouteSlots(
-        string $messageText,
-        string $normalizedText,
-        ?string $expectedInput,
-        array $entityResult = [],
-    ): array {
-        $pickup = $this->normalizeLocationValue($entityResult['pickup_location'] ?? null);
-        $destination = $this->normalizeLocationValue($entityResult['destination'] ?? null);
+    public function extractRouteSlots(string $messageText, string $normalizedText, ?string $expectedInput, array $entityResult = []): array
+    {
+        $pickup = $this->normalizeLocation($entityResult['pickup_location'] ?? null);
+        $destination = $this->normalizeLocation($entityResult['destination'] ?? null);
 
         $pickup ??= $this->extractLabeledLocation($messageText, [
-            '/\b(?:titik\s+jemput(?:nya)?|lokasi\s+jemput(?:nya)?|pickup(?:\s+location)?|penjemputan)\s*(?:di|=|:)?\s*(.+)$/ui',
-            '/\b(?:asal(?:nya)?|dari)\s+(.+?)\s+(?:ke|menuju)\b/ui',
-            '/\b(?:jemput(?:nya)?\s+di)\s+(.+)$/ui',
+            '/\b(?:titik\s+jemput|lokasi\s+jemput|pickup|penjemputan)\s*(?:di|=|:)?\s*(.+)$/ui',
+            '/\b(?:asal|dari)\s+(.+?)\s+(?:ke|menuju)\b/ui',
+            '/\bjemput(?:nya)?\s+di\s+(.+)$/ui',
         ]);
-
         $destination ??= $this->extractLabeledLocation($messageText, [
-            '/\b(?:tujuan(?:nya)?|destinasi|antar(?:nya)?)\s*(?:ke|=|:)?\s*(.+)$/ui',
+            '/\b(?:tujuan|destinasi|antar(?:nya)?)\s*(?:ke|=|:)?\s*(.+)$/ui',
             '/\b(?:ke|menuju)\s+(.+)$/ui',
         ]);
 
         if ($pickup === null || $destination === null) {
-            $routePair = $this->extractCompactRoutePair($messageText);
-            $pickup ??= $routePair['pickup_location'];
-            $destination ??= $routePair['destination'];
+            $pair = $this->extractCompactRoutePair($messageText);
+            $pickup ??= $pair['pickup_location'];
+            $destination ??= $pair['destination'];
         }
 
         if ($expectedInput === 'pickup_location' && $pickup === null) {
-            $pickup = $this->extractMenuLocation($normalizedText) ?? $this->extractLooseLocation($messageText);
+            $pickup = $this->menuLocation($normalizedText) ?? $this->normalizeLocation($messageText);
         }
 
         if ($expectedInput === 'destination' && $destination === null) {
-            $destination = $this->extractMenuLocation($normalizedText) ?? $this->extractLooseLocation($messageText);
+            $destination = $this->menuLocation($normalizedText) ?? $this->normalizeLocation($messageText);
         }
 
-        return [
-            'pickup_location' => $pickup,
-            'destination' => $destination,
-        ];
+        return ['pickup_location' => $pickup, 'destination' => $destination];
     }
 
-    private function extractPassengerName(string $messageText, ?string $expectedInput, array $entityResult): ?string
+    private function extractPassengerNames(string $messageText, ?string $expectedInput, array $entityResult, array $currentSlots): array
     {
-        $fromEntity = $entityResult['customer_name'] ?? null;
+        $expectedCount = max(1, (int) ($currentSlots['passenger_count'] ?? 1));
+        $raw = is_string($entityResult['customer_name'] ?? null) ? $entityResult['customer_name'] : null;
 
-        if (is_string($fromEntity) && trim($fromEntity) !== '') {
-            return $this->normalizePassengerName($fromEntity);
+        if ($raw === null && preg_match('/\b(?:nama(?:-nama)?(?:\s+penumpang)?|atas\s+nama|a\/n)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
+            $raw = (string) ($matches[1] ?? '');
         }
 
-        if (
-            preg_match(
-                '/\b(?:nama(?:\s+penumpang(?:nya)?)?|atas\s+nama|a\/n)\s*(?:adalah|=|:)?\s*([a-z][\p{L}\s\'.-]{1,60}?)(?=(?:\s*,|\s+jumlah\b|\s+\d+\s*(?:orang|penumpang)\b|\s+tanggal\b|\s+jam\b|\s+besok\b|\s+lusa\b|\s+hari\s+ini\b|\s+(?:metode|bayar)\b|$))/ui',
-                $messageText,
-                $matches,
-            )
-        ) {
-            return $this->normalizePassengerName($matches[1] ?? null);
+        if ($raw === null && $expectedInput === 'passenger_name') {
+            $raw = $messageText;
         }
 
-        if ($expectedInput === 'passenger_name') {
-            return $this->normalizePassengerName($messageText);
+        if ($raw === null) {
+            return [];
         }
 
-        return null;
+        $names = $this->splitNames($raw, $expectedCount);
+        if ($names === []) {
+            return [];
+        }
+
+        return ['passenger_name' => $names[0], 'passenger_names' => $names];
     }
 
     private function extractPassengerCount(string $normalizedText, ?string $expectedInput, array $entityResult): ?int
     {
         $entityCount = $entityResult['passenger_count'] ?? null;
-
         if (is_int($entityCount) && $entityCount > 0) {
             return $entityCount;
         }
 
-        if ($expectedInput === 'passenger_count' && preg_match('/^\d{1,2}$/', $normalizedText)) {
-            return (int) $normalizedText;
+        if ($expectedInput === 'passenger_count') {
+            if (preg_match('/^\d{1,2}$/', $normalizedText)) {
+                return (int) $normalizedText;
+            }
+            if (isset(self::NUMBER_WORDS[$normalizedText])) {
+                return self::NUMBER_WORDS[$normalizedText];
+            }
         }
 
-        if (
-            preg_match(
-                '/\b(?:jumlah(?:nya)?|penumpang(?:nya)?|orang(?:nya)?)\s*(?:adalah|=|:)?\s*(\d{1,2}|satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh)\b/u',
-                $normalizedText,
-                $matches,
-            )
-        ) {
+        if (preg_match('/\b(?:jumlah|penumpang|orang)\s*(?:nya)?\s*(?:=|:|adalah)?\s*(\d{1,2}|satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh)\b/u', $normalizedText, $matches)) {
             return $this->countFromToken($matches[1] ?? null);
         }
-
         if (preg_match('/\b(\d{1,2})\s*(orang|penumpang|org)\b/u', $normalizedText, $matches)) {
             return (int) $matches[1];
         }
-
-        if (preg_match('/\bsendiri\b/u', $normalizedText)) {
+        if (str_contains($normalizedText, 'sendiri')) {
             return 1;
         }
-
-        if (preg_match('/\bberdua\b/u', $normalizedText)) {
+        if (str_contains($normalizedText, 'berdua')) {
             return 2;
-        }
-
-        foreach (self::NUMBER_WORDS as $token => $count) {
-            if (preg_match('/\b'.preg_quote($token, '/').'\s*(orang|penumpang)\b/u', $normalizedText)) {
-                return $count;
-            }
-        }
-
-        if ($expectedInput === 'passenger_count') {
-            foreach (self::NUMBER_WORDS as $token => $count) {
-                if ($normalizedText === $token) {
-                    return $count;
-                }
-            }
-
-            if (preg_match('/^\d{1,2}\s*(orang|penumpang|org)?$/u', $normalizedText, $matches)) {
-                return (int) preg_replace('/\D/u', '', $matches[0]);
-            }
         }
 
         return null;
@@ -263,64 +215,35 @@ class BookingSlotExtractorService
 
     private function extractDate(string $messageText, array $entityResult): ?string
     {
-        $fromEntity = $entityResult['departure_date'] ?? null;
-
-        if (is_string($fromEntity) && trim($fromEntity) !== '') {
+        $raw = $entityResult['departure_date'] ?? null;
+        if (is_string($raw) && trim($raw) !== '') {
             try {
-                return Carbon::parse($fromEntity, $this->timezone())->toDateString();
+                return Carbon::parse($raw, $this->timezone())->toDateString();
             } catch (\Throwable) {
             }
         }
 
         $text = $this->normalizeText($messageText);
         $now = Carbon::now($this->timezone());
+        if (str_contains($text, 'hari ini')) return $now->toDateString();
+        if (str_contains($text, 'besok')) return $now->copy()->addDay()->toDateString();
+        if (str_contains($text, 'lusa')) return $now->copy()->addDays(2)->toDateString();
 
-        if (str_contains($text, 'hari ini')) {
-            return $now->toDateString();
-        }
-
-        if (str_contains($text, 'besok')) {
-            return $now->copy()->addDay()->toDateString();
-        }
-
-        if (str_contains($text, 'lusa')) {
-            return $now->copy()->addDays(2)->toDateString();
-        }
-
-        if (preg_match('/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/u', $text, $matches)) {
-            $year = isset($matches[3]) ? (int) $matches[3] : $now->year;
+        if (preg_match('/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/u', $text, $m)) {
+            $year = isset($m[3]) ? (int) $m[3] : $now->year;
             $year = $year < 100 ? 2000 + $year : $year;
-
             try {
-                return Carbon::createSafe($year, (int) $matches[2], (int) $matches[1], 0, 0, 0, $this->timezone())
-                    ->toDateString();
+                return Carbon::createSafe($year, (int) $m[2], (int) $m[1], 0, 0, 0, $this->timezone())->toDateString();
             } catch (\Throwable) {
                 return null;
             }
         }
 
-        if (preg_match('/\btanggal\s+(\d{1,2})(?:\s+([a-z]+))?(?:\s+(\d{4}))?\b/u', $text, $matches)) {
-            $day = (int) $matches[1];
-            $month = $this->monthFromText($matches[2] ?? '') ?? $now->month;
-            $year = isset($matches[3]) ? (int) $matches[3] : $now->year;
-
-            try {
-                return Carbon::createSafe($year, $month, $day, 0, 0, 0, $this->timezone())
-                    ->toDateString();
-            } catch (\Throwable) {
-                return null;
-            }
-        }
-
-        if (preg_match('/\b(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?\b/u', $text, $matches)) {
-            $day = (int) $matches[1];
-            $month = $this->monthFromText($matches[2] ?? '');
-            $year = isset($matches[3]) ? (int) $matches[3] : $now->year;
-
+        if (preg_match('/\b(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?\b/u', $text, $m)) {
+            $month = $this->monthFromText($m[2] ?? '');
             if ($month !== null) {
                 try {
-                    return Carbon::createSafe($year, $month, $day, 0, 0, 0, $this->timezone())
-                        ->toDateString();
+                    return Carbon::createSafe((int) ($m[3] ?? $now->year), $month, (int) $m[1], 0, 0, 0, $this->timezone())->toDateString();
                 } catch (\Throwable) {
                     return null;
                 }
@@ -336,31 +259,18 @@ class BookingSlotExtractorService
      */
     private function extractTime(string $normalizedText, ?string $expectedInput, array $entityResult): array
     {
-        $fromEntity = $entityResult['departure_time'] ?? null;
-
-        if (is_string($fromEntity) && trim($fromEntity) !== '') {
-            $resolved = $this->matchTimeToSlot($fromEntity);
-
-            if ($resolved !== null) {
-                return ['time' => $resolved, 'ambiguous' => false];
-            }
+        $raw = is_string($entityResult['departure_time'] ?? null) ? $entityResult['departure_time'] : null;
+        if ($raw !== null && ($time = $this->matchTimeToSlot($raw)) !== null) {
+            return ['time' => $time, 'ambiguous' => false];
         }
 
-        if ($expectedInput === 'travel_time' && ctype_digit($normalizedText)) {
-            $fromMenu = $this->departureTimeByOrder((int) $normalizedText);
-
-            if ($fromMenu !== null) {
-                return ['time' => $fromMenu, 'ambiguous' => false];
-            }
+        if ($expectedInput === 'travel_time' && ctype_digit($normalizedText) && ($time = $this->departureTimeByOrder((int) $normalizedText)) !== null) {
+            return ['time' => $time, 'ambiguous' => false];
         }
 
         foreach ($this->departureSlots() as $slot) {
-            foreach ($slot['aliases'] ?? [] as $alias) {
-                if (! is_string($alias) || $alias === '') {
-                    continue;
-                }
-
-                $normalizedAlias = $this->normalizeText($alias);
+            foreach ((array) ($slot['aliases'] ?? []) as $alias) {
+                $normalizedAlias = $this->normalizeText((string) $alias);
 
                 if (
                     ctype_digit($normalizedAlias)
@@ -371,112 +281,116 @@ class BookingSlotExtractorService
                 }
 
                 if (str_contains(' '.$normalizedText.' ', ' '.$normalizedAlias.' ')) {
-                    return ['time' => (string) ($slot['time'] ?? ''), 'ambiguous' => false];
+                    return ['time' => (string) $slot['time'], 'ambiguous' => false];
                 }
             }
         }
 
-        if (preg_match('/\bjam\s+([01]?\d|2[0-3])(?:(?:[:.])([0-5]\d))?\b/u', $normalizedText, $matches)) {
-            $minute = $matches[2] ?? '00';
-            $resolved = $this->matchTimeToSlot($matches[1].':'.$minute);
-
-            if ($resolved !== null) {
-                return ['time' => $resolved, 'ambiguous' => false];
+        if (preg_match('/\b(?:jam\s+)?([01]?\d|2[0-3])(?:[:.])([0-5]\d)\b/u', $normalizedText, $matches)) {
+            $time = $this->matchTimeToSlot($matches[1].':'.$matches[2]);
+            if ($time !== null) {
+                return ['time' => $time, 'ambiguous' => false];
             }
         }
 
-        if (preg_match('/\b([01]?\d|2[0-3])(?:[:.])([0-5]\d)\b/u', $normalizedText, $matches)) {
-            $resolved = $this->matchTimeToSlot($matches[1].':'.$matches[2]);
-
-            if ($resolved !== null) {
-                return ['time' => $resolved, 'ambiguous' => false];
-            }
-        }
-
-        if (preg_match('/\bsubuh\b/u', $normalizedText)) {
-            return ['time' => '05:00', 'ambiguous' => false];
-        }
-
-        if (preg_match('/\bsiang\b/u', $normalizedText)) {
-            return ['time' => '14:00', 'ambiguous' => false];
-        }
-
-        if (preg_match('/\bsore\b/u', $normalizedText)) {
-            return ['time' => '16:00', 'ambiguous' => false];
-        }
-
-        if (preg_match('/\bmalam\b/u', $normalizedText)) {
-            return ['time' => '19:00', 'ambiguous' => false];
-        }
-
-        if (preg_match('/\bpagi\b/u', $normalizedText)) {
-            return ['time' => null, 'ambiguous' => true];
-        }
+        if (str_contains($normalizedText, 'pagi')) return ['time' => null, 'ambiguous' => true];
+        if (str_contains($normalizedText, 'subuh')) return ['time' => '05:00', 'ambiguous' => false];
+        if (str_contains($normalizedText, 'siang')) return ['time' => '14:00', 'ambiguous' => false];
+        if (str_contains($normalizedText, 'sore')) return ['time' => '16:00', 'ambiguous' => false];
+        if (str_contains($normalizedText, 'malam')) return ['time' => '19:00', 'ambiguous' => false];
 
         return ['time' => null, 'ambiguous' => false];
     }
 
-    private function extractPaymentMethod(string $normalizedText, ?string $expectedInput, array $entityResult): ?string
+    /**
+     * @return array<int, string>
+     */
+    private function extractSeatSelection(string $messageText, string $normalizedText, ?string $expectedInput): array
     {
-        $fromEntity = $entityResult['payment_method'] ?? null;
+        $explicit = $expectedInput === 'selected_seats' || (bool) preg_match('/\b(seat|kursi)\b/u', $normalizedText);
+        $chunks = preg_split('/[\n,;\/]+/u', $messageText) ?: [$messageText];
+        $selection = [];
 
-        if (is_string($fromEntity)) {
-            $resolved = $this->normalizePaymentMethod($fromEntity);
-
-            if ($resolved !== null) {
-                return $resolved;
+        foreach ($chunks as $chunk) {
+            $candidate = trim((string) preg_replace('/\b(?:seat|kursi)\b\s*/ui', '', $chunk));
+            if ($candidate === '') {
+                continue;
+            }
+            if ($explicit || in_array($this->normalizeText($candidate), array_map(fn (string $label) => $this->normalizeText($label), $this->seatAvailability->allSeatLabels()), true)) {
+                $selection[] = $candidate;
             }
         }
 
+        return $this->seatAvailability->normalizeSeatSelection($selection);
+    }
+
+    private function extractPickupAddress(string $messageText, string $normalizedText, ?string $expectedInput): ?string
+    {
+        if (preg_match('/\b(?:alamat(?:\s+lengkap)?(?:\s+jemput)?|detail\s+alamat)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
+            return $this->normalizeAddress((string) ($matches[1] ?? ''));
+        }
+
+        if ($expectedInput !== 'pickup_full_address' || $this->isCloseIntent($normalizedText) || $this->isGreetingOnly($normalizedText)) {
+            return null;
+        }
+
+        return $this->normalizeAddress($messageText);
+    }
+
+    private function extractPaymentMethod(string $normalizedText, ?string $expectedInput, array $entityResult): ?string
+    {
+        $raw = is_string($entityResult['payment_method'] ?? null) ? $entityResult['payment_method'] : null;
+        if ($raw !== null && ($resolved = $this->normalizePaymentMethod($raw)) !== null) {
+            return $resolved;
+        }
+
         foreach ((array) config('chatbot.jet.payment_methods', []) as $index => $method) {
-            $aliases = array_merge(
-                [(string) ($method['id'] ?? '')],
-                is_array($method['aliases'] ?? null) ? $method['aliases'] : [],
-            );
-
+            $aliases = array_merge([(string) ($method['id'] ?? '')], is_array($method['aliases'] ?? null) ? $method['aliases'] : []);
             foreach ($aliases as $alias) {
-                if (! is_string($alias) || trim($alias) === '') {
-                    continue;
-                }
-
-                if (str_contains(' '.$normalizedText.' ', ' '.$this->normalizeText($alias).' ')) {
-                    return (string) ($method['id'] ?? null);
+                if (str_contains(' '.$normalizedText.' ', ' '.$this->normalizeText((string) $alias).' ')) {
+                    return (string) $method['id'];
                 }
             }
-
             if ($expectedInput === 'payment_method' && ctype_digit($normalizedText) && ((int) $normalizedText) === ($index + 1)) {
-                return (string) ($method['id'] ?? null);
+                return (string) $method['id'];
             }
         }
 
         return null;
     }
 
-    private function extractPhoneNumber(string $messageText): ?string
+    /**
+     * @return array<string, mixed>
+     */
+    private function extractContact(string $messageText, string $normalizedText, ?string $expectedInput, string $senderPhone): array
     {
-        if (! preg_match('/(?:\+?62|0)\d{8,15}/', $messageText, $matches)) {
-            return null;
+        if ($expectedInput === 'contact_number' && preg_match('/\b(sama|nomor ini|pakai nomor ini|sama nomor ini|sama dengan nomor ini)\b/u', $normalizedText)) {
+            return ['contact_number' => $senderPhone, 'contact_same_as_sender' => true];
         }
 
-        $normalized = $this->phoneService->toE164($matches[0]);
+        if (! preg_match('/(?:\+?62|0)\d{8,15}/', $messageText, $matches)) {
+            return [];
+        }
 
-        return $normalized !== '' ? $normalized : null;
+        $phone = $this->phoneService->toE164($matches[0]);
+        if ($phone === '') {
+            return [];
+        }
+
+        return ['contact_number' => $phone, 'contact_same_as_sender' => $phone === $senderPhone];
     }
 
-    /**
-     * @param  array<int, string>  $patterns
-     */
     private function extractLabeledLocation(string $messageText, array $patterns): ?string
     {
         foreach ($patterns as $pattern) {
-            if (! preg_match($pattern, $messageText, $matches)) {
-                continue;
-            }
+            if (preg_match($pattern, $messageText, $matches)) {
+                $candidate = trim((string) ($matches[1] ?? ''), " \t\n\r\0\x0B,.;:-");
+                $candidate = preg_replace('/(?:,|;)\s*(?:tujuan|destinasi|antar(?:nya)?|nama|jumlah|penumpang|tanggal|jam|alamat|metode|bayar)\b.*$/ui', '', $candidate) ?? $candidate;
+                $candidate = preg_replace('/\b(?:tujuan|destinasi|antar(?:nya)?|nama|jumlah|penumpang|tanggal|jam|alamat|metode|bayar)\b.*$/ui', '', $candidate) ?? $candidate;
+                $candidate = preg_replace('/\b(?:apakah|ada|tersedia|bisa|ya|dong|nih|tolong|mohon)\b.*$/ui', '', $candidate) ?? $candidate;
+                $candidate = trim($candidate, " \t\n\r\0\x0B,.;:-");
 
-            $candidate = $this->cleanLocationCapture((string) ($matches[1] ?? ''));
-
-            if ($candidate !== null) {
-                return $candidate;
+                return $candidate !== '' ? $this->normalizeLocation($candidate) : null;
             }
         }
 
@@ -490,37 +404,25 @@ class BookingSlotExtractorService
     {
         if (preg_match('/\bdari\s+(.+?)\s+ke\s+(.+)$/ui', $messageText, $matches)) {
             return [
-                'pickup_location' => $this->cleanLocationCapture((string) ($matches[1] ?? '')),
-                'destination' => $this->cleanLocationCapture((string) ($matches[2] ?? '')),
+                'pickup_location' => $this->normalizeLocation((string) ($matches[1] ?? '')),
+                'destination' => $this->normalizeLocation((string) ($matches[2] ?? '')),
             ];
         }
 
-        $knownLocations = [];
-
+        $found = [];
         foreach ($this->routeValidator->allKnownLocations() as $location) {
-            $needle = ' '.$this->normalizeText($location).' ';
-            $haystack = ' '.$this->normalizeText($messageText).' ';
-            $position = mb_strpos($haystack, $needle);
-
+            $position = mb_strpos(' '.$this->normalizeText($messageText).' ', ' '.$this->normalizeText($location).' ');
             if ($position !== false) {
-                $knownLocations[] = [
-                    'location' => $location,
-                    'position' => $position,
-                ];
+                $found[] = ['location' => $location, 'position' => $position];
             }
         }
-
-        usort($knownLocations, fn (array $left, array $right): int => $left['position'] <=> $right['position']);
-
-        $ordered = array_values(array_unique(array_map(
-            fn (array $item) => $item['location'],
-            $knownLocations,
-        )));
+        usort($found, fn (array $a, array $b): int => $a['position'] <=> $b['position']);
+        $ordered = array_values(array_unique(array_map(fn (array $item): string => $item['location'], $found)));
 
         if (count($ordered) >= 2) {
             return [
-                'pickup_location' => $this->routeValidator->normalizeLocation($ordered[0]),
-                'destination' => $this->routeValidator->normalizeLocation($ordered[1]),
+                'pickup_location' => $ordered[0],
+                'destination' => $ordered[1],
             ];
         }
 
@@ -530,95 +432,63 @@ class BookingSlotExtractorService
             $singleKey = $this->normalizeText($single);
 
             if (preg_match('/\bke\s+'.preg_quote($singleKey, '/').'\b/u', $normalized)) {
-                return [
-                    'pickup_location' => null,
-                    'destination' => $this->routeValidator->normalizeLocation($single),
-                ];
+                return ['pickup_location' => null, 'destination' => $single];
             }
 
             if (preg_match('/\b(dari|jemput di|asal)\s+'.preg_quote($singleKey, '/').'\b/u', $normalized)) {
-                return [
-                    'pickup_location' => $this->routeValidator->normalizeLocation($single),
-                    'destination' => null,
-                ];
+                return ['pickup_location' => $single, 'destination' => null];
             }
         }
 
-        return [
-            'pickup_location' => null,
-            'destination' => null,
-        ];
+        return ['pickup_location' => null, 'destination' => null];
     }
 
-    private function extractLooseLocation(string $messageText): ?string
+    private function splitNames(string $value, int $expectedCount): array
     {
-        $candidate = trim($messageText);
+        $parts = preg_split('/[\n,;\/]+/u', $value) ?: [$value];
+        $names = [];
 
-        if ($candidate === '' || mb_strlen($candidate) > 60) {
-            return null;
+        foreach ($parts as $part) {
+            $name = $this->normalizeName((string) $part);
+            if ($name !== null) {
+                $names[] = $name;
+            }
         }
 
-        if (preg_match('/\b(nama|jumlah|tanggal|jam|metode|bayar|penumpang)\b/ui', $candidate)) {
-            return null;
-        }
-
-        return $this->normalizeLocationValue($candidate);
+        return array_slice(array_values(array_unique($names)), 0, $expectedCount);
     }
 
-    private function cleanLocationCapture(string $value): ?string
+    private function normalizeName(string $value): ?string
     {
-        $clean = trim($value, " \t\n\r\0\x0B,.;:-");
-        $clean = preg_replace('/(?:,|;)\s*(?:tujuan(?:nya)?|destinasi|antar(?:nya)?|nama|jumlah|penumpang|tanggal|jam|metode|bayar)\b.*$/ui', '', $clean) ?? $clean;
-        $clean = preg_replace('/\s+(?:ke|menuju)\s+[a-z][\p{L}\s.-]*$/ui', '', $clean) ?? $clean;
-        $clean = preg_replace('/\b(apakah|ada|tersedia|ya|kak|admin|min|dong|nih|untuk|tanggal|jam|jumlah|nama|metode|bayar|besok|lusa|hari ini|pagi|siang|sore|malam)\b.*$/ui', '', $clean) ?? $clean;
+        $clean = trim(preg_replace('/^(?:nama(?:\s+saya)?|nama(?:\s+penumpang)?(?:nya)?|atas\s+nama|a\/n|saya|sy|aku)\s*/ui', '', $value) ?? $value, " \t\n\r\0\x0B,.;:-");
+        $clean = preg_replace('/^nya\s+/ui', '', $clean) ?? $clean;
+        $clean = preg_replace('/\b(?:jumlah|tanggal|jam|alamat|metode|bayar)\b.*$/ui', '', $clean) ?? $clean;
         $clean = trim($clean, " \t\n\r\0\x0B,.;:-");
 
-        if ($clean === '' || mb_strlen($clean) < 3) {
-            return null;
-        }
-
-        return $this->normalizeLocationValue($clean);
-    }
-
-    private function normalizeLocationValue(?string $value): ?string
-    {
-        if ($value === null || trim($value) === '') {
-            return null;
-        }
-
-        return $this->routeValidator->normalizeLocation($value);
-    }
-
-    private function normalizePassengerName(?string $value): ?string
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        $clean = trim($value);
-        $clean = preg_replace('/^(?:nama(?:\s+saya)?|atas\s+nama|a\/n)\s*/ui', '', $clean) ?? $clean;
-        $clean = preg_replace('/^(?:saya|sy|aku)\s+/ui', '', $clean) ?? $clean;
-        $clean = preg_replace('/\b(jumlah|tanggal|jam|metode|bayar)\b.*$/ui', '', $clean) ?? $clean;
-        $clean = trim($clean, " \t\n\r\0\x0B,.;:-");
-
-        if ($clean === '' || mb_strlen($clean) > 60) {
-            return null;
-        }
-
-        if (preg_match('/\d/', $clean)) {
+        if ($clean === '' || preg_match('/\d/u', $clean)) {
             return null;
         }
 
         return mb_convert_case($clean, MB_CASE_TITLE, 'UTF-8');
     }
 
-    private function extractMenuLocation(string $normalizedText): ?string
+    private function normalizeAddress(string $value): ?string
     {
-        if (! ctype_digit($normalizedText)) {
-            return null;
-        }
+        $clean = trim(preg_replace('/\s+/u', ' ', $value) ?? $value, " \t\n\r\0\x0B,;");
 
-        return $this->routeValidator->menuLocationByOrder((int) $normalizedText);
+        return mb_strlen($clean) >= 5 ? $clean : null;
+    }
+
+    private function menuLocation(string $normalizedText): ?string
+    {
+        return ctype_digit($normalizedText)
+            ? $this->routeValidator->menuLocationByOrder((int) $normalizedText)
+            : null;
+    }
+
+    private function normalizeLocation(?string $value): ?string
+    {
+        return blank($value) ? null : $this->routeValidator->normalizeLocation((string) $value);
     }
 
     private function countFromToken(mixed $token): ?int
@@ -633,20 +503,10 @@ class BookingSlotExtractorService
     private function normalizePaymentMethod(string $value): ?string
     {
         $normalized = $this->normalizeText($value);
-
         foreach ((array) config('chatbot.jet.payment_methods', []) as $method) {
-            $aliases = array_merge(
-                [(string) ($method['id'] ?? '')],
-                is_array($method['aliases'] ?? null) ? $method['aliases'] : [],
-            );
-
-            foreach ($aliases as $alias) {
-                if (! is_string($alias) || trim($alias) === '') {
-                    continue;
-                }
-
-                if ($normalized === $this->normalizeText($alias)) {
-                    return (string) ($method['id'] ?? null);
+            foreach (array_merge([(string) ($method['id'] ?? '')], (array) ($method['aliases'] ?? [])) as $alias) {
+                if ($normalized === $this->normalizeText((string) $alias)) {
+                    return (string) $method['id'];
                 }
             }
         }
@@ -654,46 +514,14 @@ class BookingSlotExtractorService
         return null;
     }
 
-    private function hasIslamicGreeting(string $normalizedText): bool
+    private function isGreetingOnly(string $messageText): bool
     {
-        return (bool) preg_match('/\b(assalamualaikum|assalamu alaikum|ass wr wb|ass wr\. wb|salam)\b/u', $normalizedText);
+        return $this->greetingDetector->inspect($messageText)['greeting_only'];
     }
 
-    private function isGreeting(string $normalizedText): bool
-    {
-        return $this->hasIslamicGreeting($normalizedText)
-            || (bool) preg_match('/\b(halo|hai|hello|selamat pagi|selamat siang|selamat sore|selamat malam)\b/u', $normalizedText);
-    }
-
-    private function isGreetingOnly(string $normalizedText): bool
-    {
-        return $this->isGreeting($normalizedText)
-            && ! preg_match('/\b(harga|ongkos|jadwal|pesan|booking|berangkat|jemput|antar|rute|tujuan)\b/u', $normalizedText);
-    }
-
-    /**
-     * @param  array<int, string>  $vocabulary
-     */
-    private function matchesVocabulary(string $normalizedText, array $vocabulary): bool
-    {
-        foreach ($vocabulary as $word) {
-            if ($normalizedText === $word || preg_match('/\b'.preg_quote($word, '/').'\b/u', $normalizedText)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
     private function departureSlots(): array
     {
-        /** @var array<int, array<string, mixed>> $slots */
-        $slots = config('chatbot.jet.departure_slots', []);
-
-        return $slots;
+        return (array) config('chatbot.jet.departure_slots', []);
     }
 
     private function departureTimeByOrder(int $order): ?string
@@ -710,7 +538,6 @@ class BookingSlotExtractorService
     private function matchTimeToSlot(string $candidate): ?string
     {
         $clean = str_replace('.', ':', trim($candidate));
-
         if (preg_match('/^\d{1,2}$/', $clean)) {
             $clean .= ':00';
         }
@@ -726,40 +553,19 @@ class BookingSlotExtractorService
 
     private function monthFromText(string $month): ?int
     {
-        $months = [
-            'jan' => 1,
-            'januari' => 1,
-            'feb' => 2,
-            'februari' => 2,
-            'mar' => 3,
-            'maret' => 3,
-            'apr' => 4,
-            'april' => 4,
-            'mei' => 5,
-            'jun' => 6,
-            'juni' => 6,
-            'jul' => 7,
-            'juli' => 7,
-            'agu' => 8,
-            'agustus' => 8,
-            'sep' => 9,
-            'september' => 9,
-            'okt' => 10,
-            'oktober' => 10,
-            'nov' => 11,
-            'november' => 11,
-            'des' => 12,
-            'desember' => 12,
-        ];
-
-        return $months[$this->normalizeText($month)] ?? null;
+        return [
+            'jan' => 1, 'januari' => 1, 'feb' => 2, 'februari' => 2, 'mar' => 3, 'maret' => 3,
+            'apr' => 4, 'april' => 4, 'mei' => 5, 'jun' => 6, 'juni' => 6, 'jul' => 7, 'juli' => 7,
+            'agu' => 8, 'agustus' => 8, 'sep' => 9, 'september' => 9, 'okt' => 10, 'oktober' => 10,
+            'nov' => 11, 'november' => 11, 'des' => 12, 'desember' => 12,
+        ][$this->normalizeText($month)] ?? null;
     }
 
     private function normalizeText(string $value): string
     {
         $normalized = mb_strtolower(trim($value), 'UTF-8');
         $normalized = str_replace(["\u{2019}", "'"], '', $normalized);
-        $normalized = preg_replace('/[^\p{L}\p{N}\s:\/.-]/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/[^\p{L}\p{N}\s:\/.,-]/u', ' ', $normalized) ?? $normalized;
         $normalized = preg_replace('/\s+/u', ' ', trim($normalized)) ?? trim($normalized);
 
         return $normalized;

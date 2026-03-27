@@ -3,8 +3,8 @@
 namespace App\Services\Chatbot;
 
 use App\Models\Conversation;
-use App\Support\WaLog;
 use App\Services\Booking\TimeGreetingService;
+use App\Support\WaLog;
 
 class GreetingService
 {
@@ -16,55 +16,41 @@ class GreetingService
         'booking_expected_input',
         'waiting_for',
         'waiting_reason',
+        'waiting_admin_takeover',
         'pickup_location',
+        'pickup_full_address',
         'destination',
         'passenger_name',
-        'payment_method',
-        'pickup_point',
-        'destination_point',
+        'passenger_names',
+        'passenger_count',
         'travel_date',
         'travel_time',
-        'passenger_count',
         'selected_seats',
-        'route_unavailable_context',
+        'contact_number',
+        'route_status',
+        'review_sent',
     ];
 
     public function __construct(
         private readonly TimeGreetingService $timeGreetingService,
-    ) {
-    }
+        private readonly GreetingDetectorService $greetingDetector,
+        private readonly GreetingFormatterService $greetingFormatter,
+    ) {}
 
     /**
      * @return array{
      *     has_islamic_greeting: bool,
      *     has_general_greeting: bool,
      *     greeting_only: bool,
-     *     time_greeting: array{key: string, label: string, opening: string}
+     *     time_greeting: array{key: string, label: string}
      * }
      */
     public function inspect(string $messageText): array
     {
-        $normalized = $this->normalize($messageText);
-        $hasIslamicGreeting = (bool) preg_match(
-            '/\b(assalamualaikum|assalamu alaikum|ass wr wb|ass wr\. wb|salam)\b/u',
-            $normalized,
+        return array_merge(
+            $this->greetingDetector->inspect($messageText),
+            ['time_greeting' => $this->timeGreetingService->resolve()],
         );
-
-        $hasGeneralGreeting = $hasIslamicGreeting
-            || (bool) preg_match(
-                '/\b(halo|hai|hello|selamat pagi|selamat siang|selamat sore|selamat malam|pagi|siang|sore|malam)\b/u',
-                $normalized,
-            );
-
-        $greetingOnly = $hasGeneralGreeting
-            && ! preg_match('/\b(harga|ongkos|jadwal|pesan|booking|berangkat|keberangkatan|jemput|antar|seat|kursi|rute|mobil)\b/u', $normalized);
-
-        return [
-            'has_islamic_greeting' => $hasIslamicGreeting,
-            'has_general_greeting' => $hasGeneralGreeting,
-            'greeting_only'        => $greetingOnly,
-            'time_greeting'        => $this->timeGreetingService->resolve(),
-        ];
     }
 
     /**
@@ -74,11 +60,31 @@ class GreetingService
     {
         $inboundCount = $conversation->messages()->inbound()->count();
 
-        if ($inboundCount <= 1) {
-            return true;
+        if ($inboundCount !== 1) {
+            return false;
         }
 
         return ! $this->hasStrongContext($conversation, $activeStates);
+    }
+
+    /**
+     * @param  array<string, mixed>  $activeStates
+     */
+    public function buildGreetingReply(
+        Conversation $conversation,
+        string $messageText,
+        array $activeStates = [],
+    ): ?string {
+        $inspection = $this->inspect($messageText);
+
+        if (! $inspection['has_general_greeting']) {
+            return null;
+        }
+
+        $seed = $conversation->id.'|greeting_follow_up|'.$messageText;
+
+        return $this->buildOpeningGreeting($conversation, $messageText, $activeStates)
+            ?? $this->greetingFormatter->followUp($inspection['has_islamic_greeting'], $seed);
     }
 
     /**
@@ -96,47 +102,33 @@ class GreetingService
         }
 
         if (! $this->shouldUseOpeningGreeting($conversation, $activeStates)) {
-            WaLog::debug('[Greeting] Opening greeting suppressed because context already exists', [
+            WaLog::debug('[Greeting] Opening greeting suppressed for this conversation state', [
                 'conversation_id' => $conversation->id,
-                'current_intent'  => $conversation->current_intent,
-                'has_summary'     => filled($conversation->summary),
+                'current_intent' => $conversation->current_intent,
             ]);
 
             return null;
         }
 
-        $text = $inspection['time_greeting']['opening'];
-
-        if ($inspection['has_islamic_greeting']) {
-            $text = "Waalaikumsalam Warahmatullahi Wabarakatuh\n\n" . $text;
-        }
-
-        WaLog::info('[Greeting] Opening greeting emitted', [
-            'conversation_id'       => $conversation->id,
-            'has_islamic_greeting'  => $inspection['has_islamic_greeting'],
-            'time_greeting'         => $inspection['time_greeting']['key'],
-        ]);
-
-        return $text;
+        return $this->greetingFormatter->opening(
+            $inspection['time_greeting']['label'],
+            $inspection['has_islamic_greeting'],
+            $conversation->id.'|greeting_opening|'.$messageText,
+        );
     }
 
     public function prependIslamicGreeting(string $messageText, string $replyText): string
     {
-        $inspection = $this->inspect($messageText);
-
-        if (! $inspection['has_islamic_greeting']) {
+        if (! $this->greetingDetector->hasIslamicGreeting($messageText)) {
             return $replyText;
         }
 
-        $normalizedReply = $this->normalize($replyText);
-
-        if (str_starts_with($normalizedReply, 'waalaikumsalam warahmatullahi wabarakatuh')) {
-            return $replyText;
-        }
-
-        return "Waalaikumsalam Warahmatullahi Wabarakatuh\n\n" . $replyText;
+        return $this->greetingFormatter->prependIslamicGreeting($replyText);
     }
 
+    /**
+     * @param  array<string, mixed>  $activeStates
+     */
     private function hasStrongContext(Conversation $conversation, array $activeStates): bool
     {
         if (filled($conversation->summary)) {
@@ -145,7 +137,7 @@ class GreetingService
 
         if (
             filled($conversation->current_intent)
-            && ! in_array($conversation->current_intent, ['greeting', 'farewell', 'unknown'], true)
+            && ! in_array($conversation->current_intent, ['greeting', 'salam_islam', 'farewell', 'close_intent', 'unknown'], true)
         ) {
             return true;
         }
@@ -179,16 +171,6 @@ class GreetingService
             return $value !== [];
         }
 
-        return true;
-    }
-
-    private function normalize(string $text): string
-    {
-        $normalized = mb_strtolower(trim($text), 'UTF-8');
-        $normalized = str_replace(['’', "'"], '', $normalized);
-        $normalized = preg_replace('/[^\p{L}\p{N}\s.]/u', ' ', $normalized) ?? $normalized;
-        $normalized = preg_replace('/\s+/u', ' ', trim($normalized)) ?? trim($normalized);
-
-        return $normalized;
+        return $value !== false;
     }
 }

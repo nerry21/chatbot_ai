@@ -130,6 +130,18 @@ class RouteValidationService
         return null;
     }
 
+    public function tripKey(?string $pickup, ?string $destination): ?string
+    {
+        $origin = $this->knownLocation($pickup) ?? $this->normalizeLocation($pickup);
+        $target = $this->knownLocation($destination) ?? $this->normalizeLocation($destination);
+
+        if ($origin === null || $target === null) {
+            return null;
+        }
+
+        return $this->normalizeLookupKey($origin).'__'.$this->normalizeLookupKey($target);
+    }
+
     /**
      * @return array<int, string>
      */

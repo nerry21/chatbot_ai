@@ -15,12 +15,21 @@ class ResponseGeneratorService
      */
     private const FALLBACK_REPLIES = [
         'greeting' => 'Halo, saya bantu ya. Mau cek jadwal, harga, atau lanjut booking travel?',
+        'salam_islam' => 'Waalaikumsalam warahmatullahi wabarakatuh. Ada yang bisa kami bantu, Bapak/Ibu?',
         'booking' => 'Baik, saya bantu bookingnya ya. Mohon kirim titik jemput, tujuan, tanggal, dan jam keberangkatannya.',
         'booking_confirm' => 'Baik, konfirmasinya sudah masuk ya. Kami lanjut proses bookingnya.',
         'booking_cancel' => 'Baik, permintaan pembatalannya sudah kami catat ya. Nanti kami bantu tindak lanjuti.',
         'schedule_inquiry' => 'Siap, saya bantu cek jadwal ya. Boleh kirim rute dan tanggal keberangkatannya dulu?',
         'price_inquiry' => 'Baik, saya bantu cek harganya ya. Mohon kirim titik jemput dan tujuan dulu.',
         'location_inquiry' => 'Untuk lokasi yang ingin dicek, boleh kirim titik jemput atau tujuan perjalanannya ya?',
+        'tanya_keberangkatan_hari_ini' => 'Baik, saya bantu info keberangkatan hari ini ya. Mohon tunggu sebentar.',
+        'tanya_harga' => 'Baik, saya bantu cek ongkosnya ya. Mohon kirim lokasi jemput dan tujuan dulu.',
+        'tanya_rute' => 'Baik, saya bantu cek rutenya ya. Boleh kirim titik jemput atau tujuan yang ingin dicek?',
+        'tanya_jam' => 'Baik, saya bantu info jam keberangkatannya ya.',
+        'konfirmasi_booking' => 'Baik, konfirmasi bookingnya sudah kami terima ya.',
+        'ubah_data_booking' => 'Baik, data bookingnya bisa disesuaikan. Silakan kirim bagian yang ingin diubah ya.',
+        'pertanyaan_tidak_terjawab' => 'Izin Bapak/Ibu, pertanyaannya akan kami konsultasikan dulu ke admin ya.',
+        'close_intent' => 'Baik, terima kasih ya. Kalau ingin cek jadwal atau lanjut booking, silakan chat lagi.',
         'support' => 'Mohon maaf ya atas kendalanya. Boleh ceritakan singkat masalahnya, nanti kami bantu lanjutkan.',
         'human_handoff' => 'Baik, saya teruskan ke admin ya. Mohon tunggu sebentar.',
         'farewell' => 'Baik, terima kasih ya. Kalau nanti mau cek jadwal atau lanjut booking, tinggal chat lagi.',
@@ -49,7 +58,13 @@ class ResponseGeneratorService
      *
      * @var array<int, string>
      */
-    private const BOOKING_INTENTS = ['booking', 'booking_confirm', 'booking_cancel'];
+    private const BOOKING_INTENTS = [
+        'booking',
+        'booking_confirm',
+        'booking_cancel',
+        'konfirmasi_booking',
+        'ubah_data_booking',
+    ];
 
     public function __construct(
         private readonly LlmClientService $llmClient,

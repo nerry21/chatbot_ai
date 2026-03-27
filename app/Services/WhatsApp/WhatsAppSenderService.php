@@ -43,7 +43,7 @@ class WhatsAppSenderService
     /**
      * @param  array<string, mixed>  $providerPayload
      * @param  array<string, mixed>  $meta
-     * @return array{status: string, provider: string, response: array|null, error: string|null}
+     * @return array{status: string, provider: string, response: array|null, error: string|null, requested_type?: string, sent_type?: string, fallback_used?: bool}
      */
     public function sendMessage(
         string $toPhoneE164,
@@ -105,6 +105,40 @@ class WhatsAppSenderService
             }
 
             $errorMsg = $response->json('error.message') ?? $response->body();
+
+            if ($this->shouldFallbackInteractiveToText($resolvedType, $response->status(), (string) $errorMsg)) {
+                WaLog::warning('[Sender] Interactive send rejected, retrying as text fallback', array_merge([
+                    'to' => WaLog::maskPhone($normalizedE164),
+                    'http_status' => $response->status(),
+                    'error_msg' => mb_substr((string) $errorMsg, 0, 300),
+                    'duration_ms' => $durationMs,
+                ], $meta));
+
+                $fallbackResult = $this->sendMessage(
+                    toPhoneE164: $toPhoneE164,
+                    text: $text,
+                    messageType: 'text',
+                    providerPayload: [],
+                    meta: array_merge($meta, ['fallback_from' => 'interactive']),
+                );
+
+                $fallbackResponse = is_array($fallbackResult['response'] ?? null)
+                    ? $fallbackResult['response']
+                    : [];
+                $fallbackResponse['_delivery'] = [
+                    'requested_type' => 'interactive',
+                    'sent_type' => $fallbackResult['status'] === 'sent' ? 'text' : ($fallbackResult['sent_type'] ?? 'text'),
+                    'interactive_text_fallback_used' => true,
+                    'interactive_http_status' => $response->status(),
+                    'interactive_error' => (string) $errorMsg,
+                ];
+                $fallbackResult['response'] = $fallbackResponse;
+                $fallbackResult['requested_type'] = 'interactive';
+                $fallbackResult['sent_type'] = $fallbackResult['status'] === 'sent' ? 'text' : ($fallbackResult['sent_type'] ?? 'text');
+                $fallbackResult['fallback_used'] = true;
+
+                return $fallbackResult;
+            }
 
             WaLog::warning('[Sender] Send failed', array_merge([
                 'to' => WaLog::maskPhone($normalizedE164),
@@ -175,5 +209,42 @@ class WhatsAppSenderService
         }
 
         return 'text';
+    }
+
+    private function shouldFallbackInteractiveToText(string $resolvedType, int $httpStatus, string $errorMessage): bool
+    {
+        if ($resolvedType !== 'interactive') {
+            return false;
+        }
+
+        if (! (bool) config('chatbot.whatsapp.interactive_text_fallback_enabled', true)) {
+            return false;
+        }
+
+        if (! in_array($httpStatus, [400, 422], true)) {
+            return false;
+        }
+
+        $normalized = mb_strtolower(trim($errorMessage), 'UTF-8');
+
+        if ($normalized === '') {
+            return true;
+        }
+
+        foreach ([
+            'interactive',
+            'button',
+            'list',
+            'unsupported',
+            'not supported',
+            'invalid',
+            'parameter',
+        ] as $keyword) {
+            if (str_contains($normalized, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

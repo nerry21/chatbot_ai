@@ -14,6 +14,7 @@ class BookingSeatReservation extends Model
         'booking_request_id',
         'departure_date',
         'departure_time',
+        'trip_key',
         'seat_code',
         'expires_at',
     ];

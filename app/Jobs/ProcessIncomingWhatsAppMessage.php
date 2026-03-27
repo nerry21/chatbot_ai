@@ -254,7 +254,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
             if ($guardResult['close_intent_detected']) {
                 $intentResult = array_merge($intentResult, [
-                    'intent'          => IntentType::Farewell->value,
+                    'intent'          => IntentType::CloseIntent->value,
                     'confidence'      => max((float) ($intentResult['confidence'] ?? 0), 0.99),
                     'reasoning_short' => 'Close intent detected after unavailable route.',
                 ]);
@@ -272,6 +272,15 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                     'message_id'      => $message->id,
                     'booking_action'  => $bookingDecision['action'] ?? null,
                     'text_preview'    => $message->textPreview(80),
+                ]);
+            }
+
+            if ($guardResult['state_repeat_rewritten'] ?? false) {
+                WaLog::info('[Job:ProcessIncoming] Booking prompt rewritten to short reminder', [
+                    'conversation_id' => $conversation->id,
+                    'message_id'      => $message->id,
+                    'reply_action'    => $finalReply['meta']['action'] ?? null,
+                    'text_preview'    => mb_substr((string) ($finalReply['text'] ?? ''), 0, 80),
                 ]);
             }
 
@@ -631,8 +640,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         );
 
         $latestOutbound = $conversation->latestOutboundMessage();
+        $replyIdentity = is_array($guardResult['reply_identity'] ?? null)
+            ? $guardResult['reply_identity']
+            : $replyGuard->buildReplyIdentity($conversation, $finalReply);
 
-        if ($replyGuard->shouldSkipRepeat($latestOutbound, $finalReply['text'])) {
+        if ($replyGuard->shouldSkipRepeat($conversation, $latestOutbound, $finalReply, $replyIdentity)) {
             WaLog::info('[Job:ProcessIncoming] Anti-repeat skip — outbound identical to latest reply', [
                 'conversation_id'    => $conversation->id,
                 'message_id'         => $message->id,
@@ -641,7 +653,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'candidate_preview'  => mb_substr((string) $finalReply['text'], 0, 80),
                 'reply_source'       => $finalReply['meta']['source'] ?? null,
                 'reply_action'       => $finalReply['meta']['action'] ?? null,
+                'outbound_fingerprint' => $replyIdentity['outbound_fingerprint'] ?? null,
+                'state_response_hash' => $replyIdentity['state_response_hash'] ?? null,
             ]);
+
+            $replyGuard->rememberReplyIdentity($conversation, $replyIdentity);
 
             $this->syncUnavailableContext(
                 conversation : $conversation,
@@ -660,8 +676,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             conversationManager : $conversationManager,
             intentResult        : $intentResult,
             finalReply          : $finalReply,
+            replyIdentity       : $replyIdentity,
             bookingDecision     : $bookingDecision,
         );
+
+        $replyGuard->rememberReplyIdentity($conversation, $replyIdentity);
 
         $this->syncUnavailableContext(
             conversation : $conversation,
@@ -680,6 +699,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
      *
      * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
      * @param  array{text: string, is_fallback: bool, meta: array<string, mixed>}  $finalReply
+     * @param  array<string, mixed>                                                $replyIdentity
      * @param  array<string, mixed>|null                                           $bookingDecision
      */
     private function persistOutboundReply(
@@ -687,6 +707,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ConversationManagerService $conversationManager,
         array $intentResult,
         array $finalReply,
+        array $replyIdentity,
         ?array $bookingDecision,
     ): ConversationMessage {
         $rawPayload = array_filter([
@@ -695,6 +716,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             'is_fallback'   => $finalReply['is_fallback'],
             'intent'        => $intentResult['intent'],
             'booking_action' => $bookingDecision['action'] ?? null,
+            'outbound_fingerprint' => $replyIdentity['outbound_fingerprint'] ?? null,
+            'response_hash' => $replyIdentity['response_hash'] ?? null,
+            'state_response_hash' => $replyIdentity['state_response_hash'] ?? null,
+            'reply_state' => $replyIdentity['booking_state'] ?? null,
+            'reply_expected_input' => $replyIdentity['expected_input'] ?? null,
             'outbound_payload' => is_array($finalReply['outbound_payload'] ?? null)
                 ? $finalReply['outbound_payload']
                 : null,

@@ -14,33 +14,52 @@ class BookingConversationStateService
     public const EXPECTED_INPUT_KEY = 'booking_expected_input';
 
     /**
-     * Minimal booking slots that must survive across messages.
-     *
      * @var array<int, string>
      */
-    private const TRACKED_SLOT_KEYS = [
-        'pickup_location',
-        'destination',
-        'passenger_name',
+    private const EXPECTED_INPUTS = [
         'passenger_count',
         'travel_date',
         'travel_time',
-        'payment_method',
+        'selected_seats',
+        'pickup_location',
+        'pickup_full_address',
+        'destination',
+        'passenger_name',
+        'contact_number',
     ];
 
     /**
-     * Compact state snapshot kept in logs for easier debugging.
-     *
+     * @var array<int, string>
+     */
+    private const TRACKED_SLOT_KEYS = [
+        'passenger_count',
+        'travel_date',
+        'travel_time',
+        'selected_seats',
+        'pickup_location',
+        'pickup_full_address',
+        'destination',
+        'passenger_name',
+        'passenger_names',
+        'contact_number',
+    ];
+
+    /**
      * @var array<int, string>
      */
     private const SNAPSHOT_KEYS = [
         'pickup_location',
+        'pickup_full_address',
         'destination',
         'passenger_name',
+        'passenger_names',
         'passenger_count',
         'travel_date',
         'travel_time',
-        'payment_method',
+        'selected_seats',
+        'seat_choices_available',
+        'contact_number',
+        'contact_same_as_sender',
         'booking_intent_status',
         'route_status',
         'route_issue',
@@ -49,10 +68,13 @@ class BookingConversationStateService
         'booking_confirmed',
         'needs_human_escalation',
         'admin_takeover',
+        'waiting_admin_takeover',
+        'needs_manual_confirmation',
     ];
 
     public function __construct(
         private readonly ConversationStateService $stateService,
+        private readonly RouteValidationService $routeValidator,
     ) {}
 
     /**
@@ -68,27 +90,31 @@ class BookingConversationStateService
             'pickup_location' => null,
             'destination' => null,
             'passenger_name' => null,
+            'passenger_names' => [],
             'passenger_count' => null,
             'travel_date' => null,
             'travel_time' => null,
             'payment_method' => null,
+            'pickup_full_address' => null,
+            'selected_seats' => [],
+            'seat_choices_available' => [],
+            'contact_number' => null,
+            'contact_same_as_sender' => null,
             'route_status' => null,
             'route_issue' => null,
             'fare_amount' => null,
             'admin_takeover' => false,
             'needs_human_escalation' => false,
+            'waiting_admin_takeover' => false,
+            'needs_manual_confirmation' => false,
             'review_sent' => false,
             'booking_confirmed' => false,
 
-            // Legacy mirrors retained for backward compatibility with older states.
+            // Legacy mirrors retained for backward compatibility.
             'pickup_point' => null,
             'destination_point' => null,
-            'pickup_full_address' => null,
-            'passenger_names' => [],
-            'selected_seats' => [],
-            'seat_choices_available' => [],
-            'contact_number' => null,
-            'contact_same_as_sender' => null,
+            'waiting_for' => null,
+            'waiting_reason' => null,
         ];
     }
 
@@ -106,9 +132,16 @@ class BookingConversationStateService
 
         $slots['pickup_location'] ??= $slots['pickup_point'];
         $slots['destination'] ??= $slots['destination_point'];
+        $slots['passenger_names'] = $this->normalizeNames($slots['passenger_names'] ?? []);
+        $slots['selected_seats'] = $this->normalizeStringArray($slots['selected_seats'] ?? []);
+        $slots['seat_choices_available'] = $this->normalizeStringArray($slots['seat_choices_available'] ?? []);
 
-        if ($slots['passenger_name'] === null && is_array($slots['passenger_names']) && $slots['passenger_names'] !== []) {
+        if ($slots['passenger_name'] === null && $slots['passenger_names'] !== []) {
             $slots['passenger_name'] = $this->primaryPassengerName($slots['passenger_names']);
+        }
+
+        if ($slots['passenger_names'] === [] && filled($slots['passenger_name'])) {
+            $slots['passenger_names'] = [$slots['passenger_name']];
         }
 
         $slots['booking_intent_status'] = $this->normalizeFlowState(
@@ -123,8 +156,6 @@ class BookingConversationStateService
     }
 
     /**
-     * Hydrate missing slot memory from an existing booking draft.
-     *
      * @return array<string, mixed>
      */
     public function hydrateFromBooking(Conversation $conversation, ?BookingRequest $booking): array
@@ -161,7 +192,7 @@ class BookingConversationStateService
         $changes = $this->putMany($conversation, $updates, 'booking_draft_hydration');
         $hydrated = array_replace(
             $slots,
-            array_map(fn (array $change) => $change['new'], $changes),
+            array_map(fn (array $change): mixed => $change['new'], $changes),
         );
 
         WaLog::info('[BookingState] hydrated from booking draft', [
@@ -211,17 +242,36 @@ class BookingConversationStateService
     {
         return match (trim((string) $state)) {
             BookingFlowState::Idle->value => BookingFlowState::Idle->value,
-            BookingFlowState::CollectingRoute->value => BookingFlowState::CollectingRoute->value,
-            BookingFlowState::CollectingPassenger->value => BookingFlowState::CollectingPassenger->value,
-            BookingFlowState::CollectingSchedule->value => BookingFlowState::CollectingSchedule->value,
-            BookingFlowState::RouteUnavailable->value => BookingFlowState::RouteUnavailable->value,
+            BookingFlowState::AskingPassengerCount->value => BookingFlowState::AskingPassengerCount->value,
+            BookingFlowState::AskingDepartureDate->value => BookingFlowState::AskingDepartureDate->value,
+            BookingFlowState::AskingDepartureTime->value => BookingFlowState::AskingDepartureTime->value,
+            BookingFlowState::ShowingAvailableSeats->value => BookingFlowState::ShowingAvailableSeats->value,
+            BookingFlowState::AskingPickupPoint->value => BookingFlowState::AskingPickupPoint->value,
+            BookingFlowState::AskingPickupAddress->value => BookingFlowState::AskingPickupAddress->value,
+            BookingFlowState::AskingDropoffPoint->value => BookingFlowState::AskingDropoffPoint->value,
+            BookingFlowState::AskingPassengerNames->value => BookingFlowState::AskingPassengerNames->value,
+            BookingFlowState::AskingContactConfirmation->value => BookingFlowState::AskingContactConfirmation->value,
+            BookingFlowState::ShowingReview->value => BookingFlowState::ShowingReview->value,
+            BookingFlowState::AwaitingFinalConfirmation->value,
             BookingFlowState::ReadyToConfirm->value,
-            BookingStatus::AwaitingConfirmation->value => BookingFlowState::ReadyToConfirm->value,
-            BookingFlowState::Confirmed->value => BookingFlowState::Confirmed->value,
-            BookingFlowState::Closed->value,
-            'needs_human' => BookingFlowState::Closed->value,
+            BookingStatus::AwaitingConfirmation->value => BookingFlowState::AwaitingFinalConfirmation->value,
+            BookingFlowState::WaitingAdminTakeover->value => BookingFlowState::WaitingAdminTakeover->value,
+            BookingFlowState::Completed->value,
+            BookingFlowState::Confirmed->value => BookingFlowState::Completed->value,
+            BookingFlowState::CollectingRoute->value,
+            BookingFlowState::CollectingPassenger->value,
+            BookingFlowState::CollectingSchedule->value,
             'collecting' => $this->inferOpenStateFromSlots($slots),
-            default => BookingFlowState::Idle->value,
+            BookingFlowState::RouteUnavailable->value => $this->unsupportedState($slots),
+            BookingFlowState::Closed->value,
+            'needs_human' => ($slots['waiting_admin_takeover'] ?? false) === true
+                ? BookingFlowState::WaitingAdminTakeover->value
+                : (($slots['booking_confirmed'] ?? false) === true
+                    ? BookingFlowState::Completed->value
+                    : BookingFlowState::Idle->value),
+            default => $this->hasAnyFilledTrackedSlot($slots)
+                ? $this->inferOpenStateFromSlots($slots)
+                : BookingFlowState::Idle->value,
         };
     }
 
@@ -310,17 +360,31 @@ class BookingConversationStateService
      */
     public function syncBooking(BookingRequest $booking, array $slots, string $senderPhone): BookingRequest
     {
+        $passengerNames = $this->normalizeNames($slots['passenger_names'] ?? []);
+
+        if ($passengerNames === [] && filled($slots['passenger_name'] ?? null)) {
+            $passengerNames = [(string) $slots['passenger_name']];
+        }
+
         $booking->pickup_location = $slots['pickup_location'];
         $booking->pickup_full_address = $slots['pickup_full_address'] ?? $booking->pickup_full_address;
         $booking->destination = $slots['destination'];
+        $booking->trip_key = $this->routeValidator->tripKey(
+            $booking->pickup_location,
+            $booking->destination,
+        );
         $booking->departure_date = $slots['travel_date'];
         $booking->departure_time = $slots['travel_time'];
         $booking->passenger_count = $slots['passenger_count'];
-        $booking->passenger_name = $slots['passenger_name'];
-        $booking->passenger_names = $slots['passenger_name'] ? [$slots['passenger_name']] : null;
-        $booking->payment_method = $slots['payment_method'];
+        $booking->selected_seats = $this->normalizeStringArray($slots['selected_seats'] ?? []);
+        $booking->passenger_names = $passengerNames !== [] ? $passengerNames : null;
+        $booking->passenger_name = $passengerNames !== []
+            ? $this->primaryPassengerName($passengerNames)
+            : ($slots['passenger_name'] ?? null);
+        $booking->payment_method = $slots['payment_method'] ?? $booking->payment_method;
         $booking->price_estimate = $slots['fare_amount'];
-        $booking->contact_number = $slots['contact_number'] ?: ($booking->contact_number ?: ($senderPhone !== '' ? $senderPhone : null));
+        $booking->contact_number = $slots['contact_number']
+            ?: ($booking->contact_number ?: ($senderPhone !== '' ? $senderPhone : null));
         $booking->contact_same_as_sender = $senderPhone !== '' && $booking->contact_number === $senderPhone;
 
         $dirty = $booking->getDirty();
@@ -342,8 +406,6 @@ class BookingConversationStateService
     }
 
     /**
-     * Public snapshot helper for support/debug tooling.
-     *
      * @return array<string, mixed>
      */
     public function snapshot(Conversation $conversation): array
@@ -352,8 +414,85 @@ class BookingConversationStateService
     }
 
     /**
-     * Split tracked slot changes into fresh captures vs overwrites.
+     * Recompute a safe flow checkpoint when persisted state becomes inconsistent.
+     * This keeps the bot moving instead of getting stuck on a stale or invalid state.
      *
+     * @return array<string, mixed>
+     */
+    public function repairCorruptedState(Conversation $conversation): array
+    {
+        if (! (bool) config('chatbot.guards.repair_corrupted_state', true)) {
+            return $this->load($conversation);
+        }
+
+        $slots = $this->load($conversation);
+        $expectedInput = $this->expectedInput($conversation);
+        $updates = [];
+        $reasons = [];
+        $nextRequiredInput = $this->nextRequiredInput($slots);
+
+        if (($slots['review_sent'] ?? false) === true && $nextRequiredInput !== null) {
+            $updates['review_sent'] = false;
+            $updates['booking_confirmed'] = false;
+            $reasons[] = 'review_sent_before_slots_complete';
+        }
+
+        if (($slots['booking_confirmed'] ?? false) === true && $nextRequiredInput !== null) {
+            $updates['booking_confirmed'] = false;
+            $reasons[] = 'booking_confirmed_before_slots_complete';
+        }
+
+        if (($slots['route_status'] ?? null) === 'unsupported' && ! in_array((string) ($slots['route_issue'] ?? ''), ['pickup_location', 'destination'], true)) {
+            $updates['route_issue'] = 'destination';
+            $reasons[] = 'route_issue_invalid';
+        }
+
+        if (($slots['fare_amount'] ?? null) !== null && ! is_numeric($slots['fare_amount'])) {
+            $updates['fare_amount'] = null;
+            $reasons[] = 'fare_amount_invalid';
+        }
+
+        $normalizedExpectedInput = is_string($expectedInput) && in_array(trim($expectedInput), self::EXPECTED_INPUTS, true)
+            ? trim($expectedInput)
+            : null;
+
+        if ($expectedInput !== $normalizedExpectedInput) {
+            $reasons[] = 'expected_input_invalid';
+        }
+
+        if ($updates !== []) {
+            $this->putMany($conversation, $updates, 'corrupted_state_repair');
+            $slots = $this->load($conversation);
+        }
+
+        $nextRequiredInput = $this->nextRequiredInput($slots);
+        $targetExpectedInput = $this->targetExpectedInput($slots, $nextRequiredInput);
+        $targetState = $this->targetStateForSnapshot($slots, $nextRequiredInput);
+        $currentState = $this->normalizeFlowState((string) ($slots['booking_intent_status'] ?? null), $slots);
+
+        if ($currentState !== $targetState || $normalizedExpectedInput !== $targetExpectedInput) {
+            $this->transitionFlowState(
+                $conversation,
+                $targetState,
+                $targetExpectedInput,
+                'corrupted_state_repair',
+                ['reasons' => $reasons],
+            );
+            $reasons[] = 'state_realigned';
+        }
+
+        if ($reasons !== []) {
+            WaLog::warning('[BookingState] repaired inconsistent conversation state', [
+                'conversation_id' => $conversation->id,
+                'reasons' => $reasons,
+                'snapshot' => $this->snapshot($conversation),
+            ]);
+        }
+
+        return $this->load($conversation);
+    }
+
+    /**
      * @param  array<string, array{old: mixed, new: mixed}>  $changes
      * @return array{
      *     created: array<string, array{old: mixed, new: mixed}>,
@@ -397,6 +536,72 @@ class BookingConversationStateService
     }
 
     /**
+     * @param  array<string, mixed>  $slots
+     */
+    public function nextRequiredInput(array $slots): ?string
+    {
+        if (($slots['route_status'] ?? null) === 'unsupported') {
+            return (string) ($slots['route_issue'] ?? 'destination');
+        }
+
+        if ($this->isBlank($slots['passenger_count'] ?? null)) {
+            return 'passenger_count';
+        }
+
+        if ($this->isBlank($slots['travel_date'] ?? null)) {
+            return 'travel_date';
+        }
+
+        if ($this->isBlank($slots['travel_time'] ?? null)) {
+            return 'travel_time';
+        }
+
+        $passengerCount = max(1, (int) ($slots['passenger_count'] ?? 1));
+        $selectedSeats = $this->normalizeStringArray($slots['selected_seats'] ?? []);
+
+        if (count($selectedSeats) < min($passengerCount, count(config('chatbot.jet.seat_labels', [])))) {
+            return 'selected_seats';
+        }
+
+        if ($this->isBlank($slots['pickup_location'] ?? null)) {
+            return 'pickup_location';
+        }
+
+        if ($this->isBlank($slots['pickup_full_address'] ?? null)) {
+            return 'pickup_full_address';
+        }
+
+        if ($this->isBlank($slots['destination'] ?? null)) {
+            return 'destination';
+        }
+
+        if ($this->missingPassengerNames($slots) > 0) {
+            return 'passenger_name';
+        }
+
+        if ($this->isBlank($slots['contact_number'] ?? null)) {
+            return 'contact_number';
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    public function missingPassengerNames(array $slots): int
+    {
+        $required = max(1, (int) ($slots['passenger_count'] ?? 1));
+        $names = $this->normalizeNames($slots['passenger_names'] ?? []);
+
+        if ($names === [] && filled($slots['passenger_name'] ?? null)) {
+            $names = [(string) $slots['passenger_name']];
+        }
+
+        return max(0, $required - count($names));
+    }
+
+    /**
      * @param  array<string, mixed>  $current
      * @param  array<string, mixed>  $updates
      * @return array<string, mixed>
@@ -417,6 +622,19 @@ class BookingConversationStateService
                 : [];
         }
 
+        if (array_key_exists('passenger_names', $updates)) {
+            $updates['passenger_names'] = $this->normalizeNames((array) $updates['passenger_names']);
+            $updates['passenger_name'] = $this->primaryPassengerName($updates['passenger_names']);
+        }
+
+        if (array_key_exists('selected_seats', $updates)) {
+            $updates['selected_seats'] = $this->normalizeStringArray((array) $updates['selected_seats']);
+        }
+
+        if (array_key_exists('seat_choices_available', $updates)) {
+            $updates['seat_choices_available'] = $this->normalizeStringArray((array) $updates['seat_choices_available']);
+        }
+
         if (array_key_exists('route_status', $updates) && $updates['route_status'] !== 'supported') {
             $updates['fare_amount'] = null;
         }
@@ -428,6 +646,7 @@ class BookingConversationStateService
         if ($this->hasTrackedSlotChange($updates)) {
             $updates['review_sent'] = $updates['review_sent'] ?? false;
             $updates['booking_confirmed'] = $updates['booking_confirmed'] ?? false;
+            $updates['waiting_admin_takeover'] = $updates['waiting_admin_takeover'] ?? false;
         }
 
         if (array_key_exists('contact_number', $updates) && blank($updates['contact_number'])) {
@@ -461,7 +680,7 @@ class BookingConversationStateService
 
         $merged = array_replace(
             $current,
-            array_map(fn (array $change) => $change['new'], $changes),
+            array_map(fn (array $change): mixed => $change['new'], $changes),
         );
 
         WaLog::debug('[BookingState] conversation state updated', [
@@ -470,7 +689,7 @@ class BookingConversationStateService
             'changes' => $loggableChanges,
             'tracked_slot_changes' => [
                 'created' => array_keys($trackedSlotChanges['created']),
-                'overwritten' => $trackedSlotChanges['overwritten'],
+                'overwritten' => array_keys($trackedSlotChanges['overwritten']),
             ],
             'snapshot' => $this->snapshotFromSlots($merged, $this->expectedInput($conversation)),
         ]);
@@ -500,18 +719,20 @@ class BookingConversationStateService
     {
         return [
             'pickup_location' => $booking->pickup_location,
+            'pickup_full_address' => $booking->pickup_full_address,
             'destination' => $booking->destination,
             'passenger_name' => $booking->passenger_name ?? $this->primaryPassengerName($booking->passenger_names),
+            'passenger_names' => $this->normalizeNames($booking->passenger_names ?? []),
             'passenger_count' => $booking->passenger_count,
             'travel_date' => $booking->departure_date?->format('Y-m-d'),
             'travel_time' => $booking->departure_time,
-            'payment_method' => $booking->payment_method,
+            'selected_seats' => $this->normalizeStringArray($booking->selected_seats ?? []),
             'fare_amount' => $booking->price_estimate !== null
                 ? (int) round((float) $booking->price_estimate)
                 : null,
-            'pickup_full_address' => $booking->pickup_full_address,
             'contact_number' => $booking->contact_number,
             'contact_same_as_sender' => $booking->contact_same_as_sender,
+            'needs_manual_confirmation' => (int) ($booking->passenger_count ?? 0) === (int) config('chatbot.jet.passenger.manual_confirm_max', 6),
         ];
     }
 
@@ -525,48 +746,31 @@ class BookingConversationStateService
         $updates = [];
         $currentStatus = $this->normalizeFlowState((string) ($current['booking_intent_status'] ?? null), $current);
 
-        if ($currentStatus === BookingFlowState::Closed->value) {
+        if (in_array($currentStatus, [
+            BookingFlowState::WaitingAdminTakeover->value,
+            BookingFlowState::Completed->value,
+        ], true)) {
             return $updates;
         }
 
         if ($booking->booking_status === BookingStatus::AwaitingConfirmation) {
-            if (! in_array($currentStatus, [BookingFlowState::ReadyToConfirm->value, BookingFlowState::Confirmed->value], true)) {
-                $updates['booking_intent_status'] = BookingFlowState::ReadyToConfirm->value;
-            }
-
-            if (($current['review_sent'] ?? false) !== true) {
-                $updates['review_sent'] = true;
-            }
-
-            if (($current['booking_confirmed'] ?? false) !== false) {
-                $updates['booking_confirmed'] = false;
-            }
+            $updates['booking_intent_status'] = BookingFlowState::AwaitingFinalConfirmation->value;
+            $updates['review_sent'] = true;
+            $updates['booking_confirmed'] = false;
 
             return $updates;
         }
 
         if (in_array($booking->booking_status, [BookingStatus::Confirmed, BookingStatus::Paid, BookingStatus::Completed], true)) {
-            if ($currentStatus !== BookingFlowState::Confirmed->value) {
-                $updates['booking_intent_status'] = BookingFlowState::Confirmed->value;
-            }
-
-            if (($current['review_sent'] ?? false) !== true) {
-                $updates['review_sent'] = true;
-            }
-
-            if (($current['booking_confirmed'] ?? false) !== true) {
-                $updates['booking_confirmed'] = true;
-            }
+            $updates['booking_intent_status'] = BookingFlowState::Completed->value;
+            $updates['review_sent'] = true;
+            $updates['booking_confirmed'] = true;
 
             return $updates;
         }
 
         if ($this->hasAnyFilledTrackedSlot($bookingSlots)) {
-            $inferredState = $this->inferOpenStateFromSlots($bookingSlots);
-
-            if ($currentStatus !== $inferredState) {
-                $updates['booking_intent_status'] = $inferredState;
-            }
+            $updates['booking_intent_status'] = $this->inferOpenStateFromSlots($bookingSlots);
         }
 
         return $updates;
@@ -577,27 +781,109 @@ class BookingConversationStateService
      */
     private function inferOpenStateFromSlots(array $slots): string
     {
+        if (($slots['waiting_admin_takeover'] ?? false) === true) {
+            return BookingFlowState::WaitingAdminTakeover->value;
+        }
+
+        if (($slots['booking_confirmed'] ?? false) === true) {
+            return BookingFlowState::Completed->value;
+        }
+
         if (($slots['route_status'] ?? null) === 'unsupported') {
-            return BookingFlowState::RouteUnavailable->value;
+            return $this->unsupportedState($slots);
         }
 
-        if ($this->isBlank($slots['pickup_location'] ?? null) || $this->isBlank($slots['destination'] ?? null)) {
-            return BookingFlowState::CollectingRoute->value;
-        }
+        return $this->stateForInput($this->nextRequiredInput($slots), $slots);
+    }
 
-        if ($this->isBlank($slots['passenger_name'] ?? null) || $this->isBlank($slots['passenger_count'] ?? null)) {
-            return BookingFlowState::CollectingPassenger->value;
-        }
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function stateForInput(?string $input, array $slots = []): string
+    {
+        return match ($input) {
+            'passenger_count' => BookingFlowState::AskingPassengerCount->value,
+            'travel_date' => BookingFlowState::AskingDepartureDate->value,
+            'travel_time' => BookingFlowState::AskingDepartureTime->value,
+            'selected_seats' => BookingFlowState::ShowingAvailableSeats->value,
+            'pickup_location' => BookingFlowState::AskingPickupPoint->value,
+            'pickup_full_address' => BookingFlowState::AskingPickupAddress->value,
+            'destination' => BookingFlowState::AskingDropoffPoint->value,
+            'passenger_name' => BookingFlowState::AskingPassengerNames->value,
+            'contact_number' => BookingFlowState::AskingContactConfirmation->value,
+            null => ($slots['review_sent'] ?? false) === true
+                ? BookingFlowState::AwaitingFinalConfirmation->value
+                : BookingFlowState::ShowingReview->value,
+            default => BookingFlowState::Idle->value,
+        };
+    }
 
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function unsupportedState(array $slots): string
+    {
+        return ($slots['route_issue'] ?? 'destination') === 'pickup_location'
+            ? BookingFlowState::AskingPickupPoint->value
+            : BookingFlowState::AskingDropoffPoint->value;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function targetStateForSnapshot(array $slots, ?string $nextRequiredInput): string
+    {
         if (
-            $this->isBlank($slots['travel_date'] ?? null)
-            || $this->isBlank($slots['travel_time'] ?? null)
-            || $this->isBlank($slots['payment_method'] ?? null)
+            ! $this->hasAnyFilledTrackedSlot($slots)
+            && ($slots['review_sent'] ?? false) !== true
+            && ($slots['booking_confirmed'] ?? false) !== true
+            && ($slots['waiting_admin_takeover'] ?? false) !== true
         ) {
-            return BookingFlowState::CollectingSchedule->value;
+            return BookingFlowState::Idle->value;
         }
 
-        return BookingFlowState::ReadyToConfirm->value;
+        if (($slots['waiting_admin_takeover'] ?? false) === true) {
+            return BookingFlowState::WaitingAdminTakeover->value;
+        }
+
+        if (($slots['booking_confirmed'] ?? false) === true && $nextRequiredInput === null) {
+            return BookingFlowState::Completed->value;
+        }
+
+        if (($slots['review_sent'] ?? false) === true && $nextRequiredInput === null) {
+            return BookingFlowState::AwaitingFinalConfirmation->value;
+        }
+
+        return $this->stateForInput($nextRequiredInput, $slots);
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function targetExpectedInput(array $slots, ?string $nextRequiredInput): ?string
+    {
+        if (
+            ! $this->hasAnyFilledTrackedSlot($slots)
+            && ($slots['review_sent'] ?? false) !== true
+            && ($slots['booking_confirmed'] ?? false) !== true
+            && ($slots['waiting_admin_takeover'] ?? false) !== true
+        ) {
+            return null;
+        }
+
+        if (($slots['waiting_admin_takeover'] ?? false) === true) {
+            return null;
+        }
+
+        if (($slots['booking_confirmed'] ?? false) === true && $nextRequiredInput === null) {
+            return null;
+        }
+
+        if (($slots['review_sent'] ?? false) === true && $nextRequiredInput === null) {
+            return null;
+        }
+
+        return $nextRequiredInput;
     }
 
     /**
@@ -612,6 +898,38 @@ class BookingConversationStateService
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<int, mixed>  $values
+     * @return array<int, string>
+     */
+    private function normalizeStringArray(array $values): array
+    {
+        return array_values(array_filter(array_map(
+            fn (mixed $value): ?string => is_string($value) && trim($value) !== ''
+                ? trim($value)
+                : null,
+            $values,
+        )));
+    }
+
+    /**
+     * @param  array<int, mixed>  $values
+     * @return array<int, string>
+     */
+    private function normalizeNames(array $values): array
+    {
+        return array_values(array_filter(array_map(
+            function (mixed $value): ?string {
+                if (! is_string($value) || trim($value) === '') {
+                    return null;
+                }
+
+                return mb_convert_case(trim($value), MB_CASE_TITLE, 'UTF-8');
+            },
+            $values,
+        )));
     }
 
     private function sameValue(mixed $left, mixed $right): bool

@@ -60,6 +60,9 @@ return [
     |                                provided any new relevant booking data.
     | - unavailable_close_reply    — sent when a close intent is detected while
     |                                unavailable state is active.
+    | - repair_corrupted_state     — if conversation state becomes inconsistent,
+    |                                recompute the most sensible next step
+    |                                instead of letting the bot get stuck.
     |
     */
 
@@ -70,6 +73,11 @@ return [
             'baik',
             'siap',
             'sip',
+            'mantap',
+            'sudah',
+            'benar',
+            'iya',
+            'ya',
             'tidak ada',
             'ga ada',
             'nggak ada',
@@ -96,6 +104,7 @@ return [
         'unavailable_state_ttl_hours' => (int) env('CHATBOT_UNAVAILABLE_STATE_TTL_HOURS', 24),
         'unavailable_followup_reply'  => 'Baik, kalau ingin saya cek lagi, silakan kirim rute atau detail perjalanan baru yang ingin dicoba.',
         'unavailable_close_reply'     => 'Baik, terima kasih. Jika nanti Anda ingin cek rute atau jadwal lain, silakan kirim detail barunya ya.',
+        'repair_corrupted_state'      => (bool) env('CHATBOT_REPAIR_CORRUPTED_STATE', true),
     ],
 
     /*
@@ -556,6 +565,9 @@ return [
     | access_token        — Permanent or temporary access token from Meta dashboard.
     | default_country_code — E.g. "62" for Indonesia; used for phone normalisation.
     | send_timeout_seconds — HTTP timeout for each send request.
+    | interactive_text_fallback_enabled — if provider rejects an interactive
+    |                                     payload, retry once as plain text
+    |                                     using the built-in numbered fallback.
     |
     | If phone_number_id or access_token is empty, isEnabled() returns false and
     | all sends are skipped gracefully — no fatal errors.
@@ -573,6 +585,7 @@ return [
         'default_country_code' => env('WHATSAPP_DEFAULT_COUNTRY_CODE', '62'),
         'send_timeout_seconds' => (int) env('WHATSAPP_SEND_TIMEOUT_SECONDS', 15),
         'interactive_enabled'  => (bool) env('WHATSAPP_INTERACTIVE_ENABLED', true),
+        'interactive_text_fallback_enabled' => (bool) env('WHATSAPP_INTERACTIVE_TEXT_FALLBACK_ENABLED', true),
 
     ],
 

@@ -143,6 +143,7 @@ class ConversationReplyGuardServiceTest extends TestCase
     public function test_it_skips_repeat_when_latest_outbound_has_same_normalized_text(): void
     {
         $service = $this->makeServiceWithState(null);
+        $conversation = new Conversation();
 
         $latestOutbound = new ConversationMessage([
             'direction' => MessageDirection::Outbound,
@@ -151,16 +152,78 @@ class ConversationReplyGuardServiceTest extends TestCase
             'message_text' => 'Baik, kalau ingin saya cek lagi, silakan kirim rute baru.',
         ]);
 
+        $reply = [
+            'text' => 'baik kalau ingin saya cek lagi silakan kirim rute baru',
+            'is_fallback' => false,
+            'message_type' => 'text',
+            'meta' => [
+                'source' => 'guard.unavailable_followup',
+                'action' => 'request_new_booking_data',
+            ],
+        ];
+
         $this->assertTrue($service->shouldSkipRepeat(
+            $conversation,
             $latestOutbound,
-            'baik kalau ingin saya cek lagi silakan kirim rute baru',
+            $reply,
+            $service->buildReplyIdentity($conversation, $reply),
         ));
     }
 
-    private function makeServiceWithState(?array $state): ConversationReplyGuardService
+    public function test_it_rewrites_repeated_booking_prompt_in_same_state_to_short_reminder(): void
+    {
+        $bootstrapService = $this->makeServiceWithState(null);
+        $conversation = new Conversation();
+        $repeatReply = [
+            'text' => 'Izin Bapak/Ibu, untuk keberangkatan ini ada berapa orang penumpangnya?',
+            'is_fallback' => false,
+            'message_type' => 'interactive',
+            'outbound_payload' => ['interactive' => ['type' => 'list']],
+            'meta' => [
+                'source' => 'booking_engine',
+                'action' => 'collect_passenger_count',
+            ],
+        ];
+        $recentIdentity = $bootstrapService->buildReplyIdentity($conversation, $repeatReply);
+
+        $service = $this->makeServiceWithState(
+            unavailableState: null,
+            recentReplyIdentity: $recentIdentity,
+        );
+
+        $result = $service->guardReply(
+            conversation: $conversation,
+            messageText: 'oke',
+            entityResult: [],
+            reply: $repeatReply,
+        );
+
+        $this->assertTrue($result['state_repeat_rewritten']);
+        $this->assertSame('guard.state_repeat', $result['reply']['meta']['source']);
+        $this->assertSame('short_pending_reminder', $result['reply']['meta']['action']);
+        $this->assertStringContainsString('jumlah penumpangnya', mb_strtolower($result['reply']['text'], 'UTF-8'));
+        $this->assertStringNotContainsString('untuk keberangkatan ini ada berapa orang penumpangnya', mb_strtolower($result['reply']['text'], 'UTF-8'));
+    }
+
+    private function makeServiceWithState(
+        ?array $unavailableState,
+        ?array $recentReplyIdentity = null,
+        string $bookingState = 'asking_passenger_count',
+        ?string $expectedInput = 'passenger_count',
+    ): ConversationReplyGuardService
     {
         $stateService = $this->createMock(ConversationStateService::class);
-        $stateService->method('get')->willReturn($state);
+        $stateService->method('get')->willReturnCallback(
+            function (Conversation $conversation, string $key, mixed $default = null) use ($unavailableState, $recentReplyIdentity, $bookingState, $expectedInput) {
+                return match ($key) {
+                    'route_unavailable_context' => $unavailableState,
+                    'recent_bot_reply_identity' => $recentReplyIdentity,
+                    'booking_intent_status' => $bookingState,
+                    'booking_expected_input' => $expectedInput,
+                    default => $default,
+                };
+            }
+        );
 
         return new ConversationReplyGuardService($stateService);
     }

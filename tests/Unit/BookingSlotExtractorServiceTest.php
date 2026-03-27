@@ -102,4 +102,68 @@ class BookingSlotExtractorServiceTest extends TestCase
         $this->assertSame('08:00', $result['updates']['travel_time']);
         $this->assertArrayNotHasKey('passenger_count', $result['updates']);
     }
+
+    public function test_it_detects_islamic_greeting_variants_without_treating_specific_question_as_greeting_only(): void
+    {
+        $extractor = app(BookingSlotExtractorService::class);
+
+        $result = $extractor->extract(
+            messageText: "Assalamu'alaikum wr wb jadwal hari ini ada?",
+            currentSlots: [],
+            entityResult: [],
+            expectedInput: null,
+            senderPhone: '+6281234567890',
+        );
+
+        $this->assertTrue($result['signals']['greeting_detected']);
+        $this->assertSame('islamic', $result['signals']['salam_type']);
+        $this->assertFalse($result['signals']['greeting_only']);
+        $this->assertTrue($result['signals']['today_schedule_keyword']);
+    }
+
+    public function test_it_uses_sender_phone_when_customer_answers_sama_for_contact_confirmation(): void
+    {
+        $extractor = app(BookingSlotExtractorService::class);
+
+        $result = $extractor->extract(
+            messageText: 'sama',
+            currentSlots: [],
+            entityResult: [],
+            expectedInput: 'contact_number',
+            senderPhone: '+6281234567890',
+        );
+
+        $this->assertSame('+6281234567890', $result['updates']['contact_number']);
+        $this->assertTrue($result['updates']['contact_same_as_sender']);
+    }
+
+    public function test_it_reads_departure_time_from_numbered_fallback_menu(): void
+    {
+        $extractor = app(BookingSlotExtractorService::class);
+
+        $result = $extractor->extract(
+            messageText: '2',
+            currentSlots: [],
+            entityResult: [],
+            expectedInput: 'travel_time',
+            senderPhone: '+6281234567890',
+        );
+
+        $this->assertSame('08:00', $result['updates']['travel_time']);
+    }
+
+    public function test_it_reads_pickup_location_from_numbered_fallback_menu(): void
+    {
+        $extractor = app(BookingSlotExtractorService::class);
+
+        $result = $extractor->extract(
+            messageText: '7',
+            currentSlots: [],
+            entityResult: [],
+            expectedInput: 'pickup_location',
+            senderPhone: '+6281234567890',
+        );
+
+        $this->assertSame('Pasir Pengaraian', $result['updates']['pickup_location']);
+    }
 }
