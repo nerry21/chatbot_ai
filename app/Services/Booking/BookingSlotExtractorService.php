@@ -108,6 +108,12 @@ class BookingSlotExtractorService
             $updates['pickup_full_address'] = $text;
         }
 
+        $explicitPickupAddress = $this->extractExplicitPickupAddress($text);
+
+        if ($explicitPickupAddress !== null) {
+            $updates['pickup_full_address'] = $explicitPickupAddress;
+        }
+
         if ($expectedInput === 'contact_number') {
             if ($normalized === 'sama' || str_contains($normalized, 'nomor ini')) {
                 $updates['contact_same_as_sender'] = true;
@@ -128,6 +134,12 @@ class BookingSlotExtractorService
             if ($names !== []) {
                 $updates['passenger_names'] = $names;
             }
+        }
+
+        $explicitNames = $this->extractExplicitPassengerNames($text);
+
+        if ($explicitNames !== []) {
+            $updates['passenger_names'] = $explicitNames;
         }
 
         if ($expectedInput === 'selected_seats') {
@@ -279,6 +291,31 @@ class BookingSlotExtractorService
     public function extractSingleLocation(string $messageText): ?string
     {
         return $this->routeValidator->findLocationInText($messageText);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function extractExplicitPassengerNames(string $messageText): array
+    {
+        if (! preg_match('/\bnama(?:-nama)?(?:\s+penumpang)?\s*[:\-]?\s*(.+)$/ui', trim($messageText), $matches)) {
+            return [];
+        }
+
+        $value = trim((string) ($matches[1] ?? ''));
+
+        return $value !== '' ? $this->extractPassengerNames($value) : [];
+    }
+
+    private function extractExplicitPickupAddress(string $messageText): ?string
+    {
+        if (! preg_match('/\balamat(?:\s+lengkap)?(?:\s+(?:jemput|penjemputan))?\s*[:\-]?\s*(.+)$/ui', trim($messageText), $matches)) {
+            return null;
+        }
+
+        $value = trim((string) ($matches[1] ?? ''), " \t\n\r\0\x0B,");
+
+        return $value !== '' ? $value : null;
     }
 
     private function extractMenuLocation(string $normalizedText): ?string

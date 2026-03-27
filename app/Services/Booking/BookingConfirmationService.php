@@ -26,7 +26,7 @@ class BookingConfirmationService
             );
 
         $lines = [
-            'Izin Bapak/Ibu, berikut kami kirimkan ringkasan perjalanan Anda. Mohon dicek kembali, apakah data ini sudah benar ya?',
+            'Izin Bapak/Ibu, berikut kami kirimkan ringkasan perjalanan Anda.',
             '',
             'Jumlah penumpang : ' . (($booking->passenger_count ?? 0) > 0 ? $booking->passenger_count . ' orang' : '-'),
             'Tanggal          : ' . ($booking->departure_date?->translatedFormat('d F Y') ?? '-'),
@@ -39,7 +39,8 @@ class BookingConfirmationService
             'Nomor kontak     : ' . ($booking->contact_number ?? '-'),
             'Total ongkos     : ' . $this->fareCalculator->formatRupiah($fare),
             '',
-            'Balas YA / BENAR / SUDAH jika datanya sudah sesuai ya.',
+            'Apakah data ini sudah benar ya Bapak/Ibu?',
+            'Jika sudah sesuai, silakan balas YA / BENAR / SUDAH / OKE ya.',
         ];
 
         return implode("\n", $lines);
@@ -50,7 +51,7 @@ class BookingConfirmationService
         $names = $booking->passengerNamesList();
 
         return implode("\n", [
-            'Booking baru JET siap ditindaklanjuti.',
+            'Forward booking baru JET dari WhatsApp AI.',
             'No customer      : ' . $customerPhone,
             'Jumlah penumpang : ' . (($booking->passenger_count ?? 0) > 0 ? $booking->passenger_count . ' orang' : '-'),
             'Tanggal          : ' . ($booking->departure_date?->format('Y-m-d') ?? '-'),

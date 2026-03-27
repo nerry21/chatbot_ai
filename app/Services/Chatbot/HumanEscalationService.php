@@ -15,6 +15,7 @@ class HumanEscalationService
     public function __construct(
         private readonly WhatsAppSenderService $senderService,
         private readonly BookingConfirmationService $confirmationService,
+        private readonly ConversationStateService $stateService,
     ) {
     }
 
@@ -23,7 +24,9 @@ class HumanEscalationService
         $conversation->takeoverBy(null);
         $conversation->update([
             'needs_human' => true,
+            'escalation_reason' => $reason,
         ]);
+        $this->syncEscalationState($conversation, $reason);
 
         EscalateConversationToAdminJob::dispatch(
             $conversation->id,
@@ -34,6 +37,12 @@ class HumanEscalationService
         $adminPhone = $this->adminPhone();
 
         if ($adminPhone === '') {
+            WaLog::warning('[HumanEscalation] escalation not forwarded because admin phone is missing', [
+                'conversation_id' => $conversation->id,
+                'customer_id' => $customer->id,
+                'reason' => $reason,
+            ]);
+
             return;
         }
 
@@ -50,8 +59,20 @@ class HumanEscalationService
         WaLog::info('[HumanEscalation] escalation forwarded to admin', [
             'conversation_id' => $conversation->id,
             'customer_id'     => $customer->id,
+            'admin_phone'     => WaLog::maskPhone($adminPhone),
+            'reason'          => $reason,
             'status'          => $result['status'],
         ]);
+
+        if ($result['status'] !== 'sent') {
+            WaLog::warning('[HumanEscalation] escalation forward did not send successfully', [
+                'conversation_id' => $conversation->id,
+                'customer_id' => $customer->id,
+                'admin_phone' => WaLog::maskPhone($adminPhone),
+                'status' => $result['status'],
+                'error' => $result['error'],
+            ]);
+        }
     }
 
     public function forwardBooking(Conversation $conversation, Customer $customer, BookingRequest $booking): void
@@ -59,6 +80,11 @@ class HumanEscalationService
         $adminPhone = $this->adminPhone();
 
         if ($adminPhone === '') {
+            WaLog::warning('[HumanEscalation] booking not forwarded because admin phone is missing', [
+                'conversation_id' => $conversation->id,
+                'booking_id' => $booking->id,
+            ]);
+
             return;
         }
 
@@ -81,6 +107,7 @@ class HumanEscalationService
         WaLog::info('[HumanEscalation] booking forwarded to admin', [
             'conversation_id' => $conversation->id,
             'booking_id'      => $booking->id,
+            'admin_phone'     => WaLog::maskPhone($adminPhone),
             'status'          => $result['status'],
         ]);
     }
@@ -88,5 +115,14 @@ class HumanEscalationService
     private function adminPhone(): string
     {
         return trim((string) config('chatbot.jet.admin_phone', ''));
+    }
+
+    private function syncEscalationState(Conversation $conversation, string $reason): void
+    {
+        $this->stateService->put($conversation, 'needs_human_escalation', true);
+        $this->stateService->put($conversation, 'admin_takeover', true);
+        $this->stateService->put($conversation, 'waiting_for', 'admin');
+        $this->stateService->put($conversation, 'waiting_reason', $reason);
+        $this->stateService->put($conversation, 'booking_intent_status', 'needs_human');
     }
 }

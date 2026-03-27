@@ -30,7 +30,7 @@ class FareCalculatorService
     public function formatRupiah(int|float|null $amount): string
     {
         if ($amount === null) {
-            return 'Belum tersedia';
+            return 'Not available';
         }
 
         return 'Rp ' . number_format((int) round($amount), 0, ',', '.');

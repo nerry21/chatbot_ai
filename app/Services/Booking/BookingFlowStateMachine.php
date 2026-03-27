@@ -10,6 +10,7 @@ use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\Chatbot\GreetingService;
 use App\Services\Chatbot\HumanEscalationService;
+use App\Support\WaLog;
 
 class BookingFlowStateMachine
 {
@@ -291,6 +292,7 @@ class BookingFlowStateMachine
         array $timeGreeting,
     ): array {
         $updates = $this->applyDerivedStateUpdates($slots, $updates);
+        $this->logSlotUpdates($conversation, $slots, $updates);
         $seatSensitiveChanged = $this->hasAnyKey($updates, ['passenger_count', 'travel_date', 'travel_time']);
 
         if ($seatSensitiveChanged) {
@@ -319,6 +321,10 @@ class BookingFlowStateMachine
             ]);
             $this->stateService->setExpectedInput($conversation, null);
             $this->humanEscalationService->forwardBooking($conversation, $customer, $booking);
+            WaLog::info('[BookingFlow] booking confirmed', [
+                'conversation_id' => $conversation->id,
+                'booking_id' => $booking->id,
+            ]);
 
             return $this->decision(
                 booking: $booking->fresh(),
@@ -475,9 +481,13 @@ class BookingFlowStateMachine
             return $this->decision(
                 booking: $booking,
                 action: 'ask_pickup_point',
-                reply: $this->reply(
-                    text: $this->prependNotes($prefixLines, "Izin Bapak/Ibu, untuk penjemputannya di mana ya?\n\n" . $this->locationMenuText()),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_pickup_point'],
+                reply: $this->buildLocationSelectionReply(
+                    notes: $prefixLines,
+                    text: 'Izin Bapak/Ibu, untuk penjemputannya di mana ya?',
+                    action: 'ask_pickup_point',
+                    buttonText: 'Pilih Jemput',
+                    bodyText: 'Silakan pilih titik jemput yang sesuai ya.',
+                    rowDescription: 'Pilih lokasi jemput ini',
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
             );
@@ -503,9 +513,13 @@ class BookingFlowStateMachine
             return $this->decision(
                 booking: $booking,
                 action: 'ask_destination',
-                reply: $this->reply(
-                    text: $this->prependNotes($prefixLines, "Baik Bapak/Ibu, lalu untuk pengantarannya ke mana ya?\n\n" . $this->locationMenuText()),
-                    meta: ['source' => 'jet_flow', 'action' => 'ask_destination'],
+                reply: $this->buildLocationSelectionReply(
+                    notes: $prefixLines,
+                    text: 'Baik Bapak/Ibu, lalu untuk pengantarannya ke mana ya?',
+                    action: 'ask_destination',
+                    buttonText: 'Pilih Tujuan',
+                    bodyText: 'Silakan pilih titik tujuan pengantaran yang sesuai ya.',
+                    rowDescription: 'Pilih lokasi tujuan ini',
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
             );
@@ -589,6 +603,10 @@ class BookingFlowStateMachine
                 'booking_intent_status' => 'awaiting_confirmation',
             ]);
             $this->stateService->setExpectedInput($conversation, 'final_confirmation');
+            WaLog::info('[BookingFlow] review sent', [
+                'conversation_id' => $conversation->id,
+                'booking_id' => $booking->id,
+            ]);
 
             return $this->decision(
                 booking: $booking->fresh(),
@@ -883,6 +901,39 @@ class BookingFlowStateMachine
     }
 
     /**
+     * @param  array<int, string>  $notes
+     */
+    private function buildLocationSelectionReply(
+        array $notes,
+        string $text,
+        string $action,
+        string $buttonText,
+        string $bodyText,
+        string $rowDescription,
+    ): array {
+        if (! $this->interactiveEnabled()) {
+            return $this->reply(
+                text: $this->prependNotes($notes, $text . "\n\n" . $this->locationMenuText()),
+                meta: ['source' => 'jet_flow', 'action' => $action],
+            );
+        }
+
+        return $this->reply(
+            text: $this->prependNotes($notes, $text),
+            meta: ['source' => 'jet_flow', 'action' => $action],
+            messageType: 'interactive',
+            outboundPayload: [
+                'type' => 'interactive',
+                'interactive' => $this->locationInteractivePayload(
+                    bodyText: $bodyText,
+                    buttonText: $buttonText,
+                    rowDescription: $rowDescription,
+                ),
+            ],
+        );
+    }
+
+    /**
      * @param  array<string, mixed>  $intentResult
      * @return array<string, mixed>
      */
@@ -1005,6 +1056,41 @@ class BookingFlowStateMachine
     }
 
     /**
+     * @param  array<string, mixed>  $currentSlots
+     * @param  array<string, mixed>  $updates
+     */
+    private function logSlotUpdates(Conversation $conversation, array $currentSlots, array $updates): void
+    {
+        if ($updates === []) {
+            return;
+        }
+
+        $changes = [];
+
+        foreach ($updates as $key => $value) {
+            $before = $currentSlots[$key] ?? null;
+
+            if (json_encode($before) === json_encode($value)) {
+                continue;
+            }
+
+            $changes[$key] = [
+                'old' => $before,
+                'new' => $value,
+            ];
+        }
+
+        if ($changes === []) {
+            return;
+        }
+
+        WaLog::debug('[BookingFlow] slot updates detected', [
+            'conversation_id' => $conversation->id,
+            'changes' => $changes,
+        ]);
+    }
+
+    /**
      * @param  array<string, mixed>  $slots
      */
     private function seatSelectionPrompt(array $slots): string
@@ -1108,6 +1194,46 @@ class BookingFlowStateMachine
                         'rows' => $rows,
                     ],
                 ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function locationInteractivePayload(string $bodyText, string $buttonText, string $rowDescription): array
+    {
+        $sections = [];
+        $locations = $this->routeValidator->menuLocations();
+        $chunks = array_chunk($locations, 8, true);
+
+        foreach ($chunks as $chunkIndex => $chunk) {
+            $rows = [];
+            $firstNumber = ($chunkIndex * 8) + 1;
+            $lastNumber = $firstNumber + count($chunk) - 1;
+
+            foreach ($chunk as $index => $label) {
+                $rows[] = [
+                    'id' => 'jet_location_' . ($index + 1),
+                    'title' => $label,
+                    'description' => $rowDescription,
+                ];
+            }
+
+            $sections[] = [
+                'title' => 'Daftar ' . $firstNumber . '-' . $lastNumber,
+                'rows' => $rows,
+            ];
+        }
+
+        return [
+            'type' => 'list',
+            'header' => ['type' => 'text', 'text' => 'Lokasi JET'],
+            'body' => ['text' => $bodyText],
+            'footer' => ['text' => 'JET (Jasa Executive Travel)'],
+            'action' => [
+                'button' => $buttonText,
+                'sections' => $sections,
             ],
         ];
     }
