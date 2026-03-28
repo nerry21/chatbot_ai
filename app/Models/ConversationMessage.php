@@ -215,7 +215,7 @@ class ConversationMessage extends Model
             return false;
         }
 
-        if (! in_array($this->sender_type, [SenderType::Bot, SenderType::Agent], true)) {
+        if (! in_array($this->sender_type, [SenderType::Bot, SenderType::Admin, SenderType::Agent], true)) {
             return false;
         }
 

@@ -230,6 +230,13 @@
 
         input::placeholder { color: rgba(148,163,184,0.5); }
 
+        input[readonly] {
+            cursor: default;
+            color: rgba(241,245,249,0.9);
+            background: rgba(108,99,255,0.08);
+            border-color: rgba(108,99,255,0.35);
+        }
+
         input:focus {
             border-color: var(--primary);
             background: rgba(108,99,255,0.06);
@@ -275,6 +282,12 @@
         }
 
         .pw-hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        .field-caption {
             font-size: 11px;
             color: var(--text-muted);
             margin-top: 6px;
@@ -385,6 +398,7 @@
     </style>
 </head>
 <body>
+    @php($adminEmail = config('chatbot.security.console_login.email'))
 
     <!-- Background -->
     <div class="bg-scene"></div>
@@ -447,13 +461,13 @@
                             id="email"
                             type="email"
                             name="email"
-                            value="{{ old('email') }}"
-                            placeholder="admin@example.com"
+                            value="{{ old('email', $adminEmail) }}"
                             required
-                            autofocus
+                            readonly
                             autocomplete="username"
                         >
                     </div>
+                    <div class="field-caption">Login admin dashboard dikunci ke akun utama.</div>
                     @error('email')
                         <div class="field-error">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -475,14 +489,15 @@
                             name="password"
                             placeholder="Masukkan password"
                             required
+                            autofocus
                             autocomplete="current-password"
-                            maxlength="8"
+                            maxlength="255"
                         >
                         <button type="button" class="toggle-password" onclick="togglePw()" aria-label="Tampilkan password">
                             <svg id="eyeIcon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                         </button>
                     </div>
-                    <div class="pw-hint">Maksimal 8 karakter</div>
+                    <div class="pw-hint">Gunakan password admin utama untuk masuk ke console.</div>
                     @error('password')
                         <div class="field-error">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>

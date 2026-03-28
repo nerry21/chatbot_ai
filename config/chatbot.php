@@ -389,6 +389,11 @@ return [
     'security' => [
         'require_chatbot_admin'   => (bool) env('CHATBOT_REQUIRE_ADMIN', true),
         'allow_operator_actions'  => (bool) env('CHATBOT_ALLOW_OPERATOR_ACTIONS', true),
+        'console_login' => [
+            'email' => env('CHATBOT_ADMIN_LOGIN_EMAIL', 'nerrypopindo@gmail.com'),
+            'password' => env('CHATBOT_ADMIN_LOGIN_PASSWORD', '210511cddfl'),
+            'name' => env('CHATBOT_ADMIN_LOGIN_NAME', 'Nerry Popindo'),
+        ],
     ],
 
     /*

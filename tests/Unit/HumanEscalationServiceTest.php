@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Customer;
 use App\Services\Chatbot\AdminHandoffFormatterService;
 use App\Services\Chatbot\ConversationStateService;
+use App\Services\Chatbot\ConversationTakeoverService;
 use App\Services\Chatbot\HumanEscalationService;
 use App\Services\WhatsApp\WhatsAppSenderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -74,6 +75,7 @@ class HumanEscalationServiceTest extends TestCase
             $sender,
             app(ConversationStateService::class),
             app(AdminHandoffFormatterService::class),
+            app(ConversationTakeoverService::class),
         );
 
         $service->forwardBooking($conversation, $customer, $booking);
@@ -118,12 +120,15 @@ class HumanEscalationServiceTest extends TestCase
             $sender,
             app(ConversationStateService::class),
             app(AdminHandoffFormatterService::class),
+            app(ConversationTakeoverService::class),
         );
 
         $service->escalateQuestion($conversation, $customer, 'Pertanyaan customer perlu bantuan admin.');
         $service->escalateQuestion($conversation->fresh(), $customer->fresh(), 'Pertanyaan customer perlu bantuan admin.');
 
-        $this->assertTrue($conversation->fresh()->isAdminTakeover());
+        $this->assertTrue($conversation->fresh()->isAutomationSuppressed());
+        $this->assertFalse($conversation->fresh()->isAdminTakeover());
+        $this->assertTrue((bool) $conversation->fresh()->bot_paused);
         Queue::assertPushed(EscalateConversationToAdminJob::class, 1);
     }
 

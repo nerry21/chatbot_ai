@@ -10,12 +10,18 @@ class AdminUserSeeder extends Seeder
 {
     public function run(): void
     {
-        User::firstOrCreate(
-            ['email' => 'admin@chatbot.ai'],
+        $email = (string) config('chatbot.security.console_login.email', 'nerrypopindo@gmail.com');
+        $password = (string) config('chatbot.security.console_login.password', '210511cddfl');
+        $name = (string) config('chatbot.security.console_login.name', 'Nerry Popindo');
+
+        User::updateOrCreate(
+            ['email' => $email],
             [
-                'name'              => 'Admin',
+                'name'              => $name,
                 'email_verified_at' => now(),
-                'password'          => Hash::make(env('LOGIN_PASSWORD', 'admin123')),
+                'password'          => Hash::make($password),
+                'is_chatbot_admin'  => true,
+                'is_chatbot_operator' => false,
             ]
         );
     }

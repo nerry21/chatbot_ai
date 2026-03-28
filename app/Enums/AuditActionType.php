@@ -6,6 +6,14 @@ enum AuditActionType: string
 {
     case ConversationTakeover     = 'conversation_takeover';
     case ConversationRelease      = 'conversation_release';
+    case ConversationMarkedEscalated = 'conversation_marked_escalated';
+    case ConversationMarkedUrgent = 'conversation_marked_urgent';
+    case ConversationUrgencyCleared = 'conversation_urgency_cleared';
+    case ConversationClosed = 'conversation_closed';
+    case ConversationReopened = 'conversation_reopened';
+    case ConversationTagged = 'conversation_tagged';
+    case CustomerTagged = 'customer_tagged';
+    case InternalNoteCreated = 'internal_note_created';
     case AdminReplySent           = 'admin_reply_sent';
     case EscalationAssigned       = 'escalation_assigned';
     case EscalationResolved       = 'escalation_resolved';
@@ -30,6 +38,14 @@ enum AuditActionType: string
         return match ($this) {
             self::ConversationTakeover    => 'Admin mengambil alih percakapan',
             self::ConversationRelease     => 'Admin melepas percakapan ke bot',
+            self::ConversationMarkedEscalated => 'Percakapan ditandai escalated',
+            self::ConversationMarkedUrgent => 'Percakapan ditandai urgent',
+            self::ConversationUrgencyCleared => 'Tanda urgent pada percakapan dibersihkan',
+            self::ConversationClosed => 'Percakapan ditutup',
+            self::ConversationReopened => 'Percakapan dibuka kembali',
+            self::ConversationTagged => 'Tag ditambahkan ke percakapan',
+            self::CustomerTagged => 'Tag ditambahkan ke customer',
+            self::InternalNoteCreated => 'Catatan internal dibuat',
             self::AdminReplySent          => 'Admin mengirim balasan manual',
             self::EscalationAssigned      => 'Eskalasi di-assign ke admin',
             self::EscalationResolved      => 'Eskalasi diselesaikan',

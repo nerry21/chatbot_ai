@@ -1,82 +1,124 @@
 @extends('admin.chatbot.layouts.app')
-@section('title', 'Percakapan')
+
+@section('title', 'Live Chats')
+@section('page-subtitle', 'Daftar percakapan WhatsApp yang diproses bot maupun yang sedang diambil alih admin.')
 
 @section('content')
+<div class="space-y-6">
+    <x-admin.chatbot.section-heading
+        kicker="Monitoring"
+        title="Conversation Queue"
+        description="Pantau seluruh thread customer, filter kebutuhan human takeover, dan buka detail percakapan untuk reply, takeover, atau release ke bot."
+    />
 
-{{-- Filter Bar --}}
-<form method="GET" class="bg-white rounded-lg border border-gray-200 p-4 mb-5 flex flex-wrap gap-3 items-end">
-    <div>
-        <label class="block text-xs text-gray-500 mb-1">Cari customer</label>
-        <input type="text" name="search" value="{{ request('search') }}"
-               placeholder="Nama / nomor HP"
-               class="border border-gray-300 rounded-md px-3 py-1.5 text-sm w-52 focus:outline-none focus:ring-2 focus:ring-indigo-300">
-    </div>
-    <div>
-        <label class="block text-xs text-gray-500 mb-1">Status</label>
-        <select name="status" class="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300">
-            <option value="">Semua</option>
-            @foreach ($statusOptions as $s)
-                <option value="{{ $s }}" @selected(request('status') === $s)>{{ ucfirst($s) }}</option>
-            @endforeach
-        </select>
-    </div>
-    <div class="flex items-center gap-2 pb-0.5">
-        <input type="checkbox" name="needs_human" value="1" id="needs_human" @checked(request('needs_human'))
-               class="rounded border-gray-300 text-indigo-600">
-        <label for="needs_human" class="text-sm text-gray-600">Butuh admin</label>
-    </div>
-    <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-1.5 rounded-md transition-colors">Filter</button>
-    <a href="{{ route('admin.chatbot.conversations.index') }}" class="text-sm text-gray-500 hover:text-gray-700 py-1.5">Reset</a>
-</form>
+    <x-admin.chatbot.panel title="Filter conversations" description="Gunakan filter untuk mempersempit percakapan aktif, butuh human, atau berdasarkan status operasional.">
+        <form method="GET" class="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto_auto]">
+            <label class="block">
+                <span class="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Cari customer</span>
+                <input
+                    type="text"
+                    name="search"
+                    value="{{ request('search') }}"
+                    placeholder="Nama atau nomor WhatsApp"
+                    class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                >
+            </label>
 
-{{-- Table --}}
-<div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
-    <table class="w-full text-sm">
-        <thead class="bg-gray-50 border-b border-gray-200 text-xs text-gray-500 uppercase tracking-wide">
-            <tr>
-                <th class="px-4 py-3 text-left">Customer</th>
-                <th class="px-4 py-3 text-left">Status</th>
-                <th class="px-4 py-3 text-left">Intent</th>
-                <th class="px-4 py-3 text-left">Pesan Terakhir</th>
-                <th class="px-4 py-3 text-left">Flag</th>
-                <th class="px-4 py-3 text-left">Aksi</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-            @forelse ($conversations as $conv)
-                <tr class="hover:bg-gray-50 transition-colors">
-                    <td class="px-4 py-3">
-                        <div class="font-medium text-gray-800">{{ $conv->customer?->name ?? '—' }}</div>
-                        <div class="text-xs text-gray-400">{{ $conv->customer?->phone_e164 }}</div>
-                    </td>
-                    <td class="px-4 py-3">
+            <label class="block">
+                <span class="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Status</span>
+                <select name="status" class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60">
+                    <option value="">Semua status</option>
+                    @foreach ($statusOptions as $status)
+                        <option value="{{ $status }}" @selected(request('status') === $status)>{{ ucfirst($status) }}</option>
+                    @endforeach
+                </select>
+            </label>
+
+            <label class="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 lg:self-end">
+                <input type="checkbox" name="needs_human" value="1" @checked(request('needs_human')) class="rounded border-slate-300 text-slate-900 focus:ring-slate-300">
+                <span class="text-sm font-medium text-slate-700">Butuh human</span>
+            </label>
+
+            <div class="flex items-end gap-3">
+                <button type="submit" class="inline-flex items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800">
+                    Terapkan
+                </button>
+                <a href="{{ route('admin.chatbot.live-chats.index') }}" class="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900">
+                    Reset
+                </a>
+            </div>
+        </form>
+    </x-admin.chatbot.panel>
+
+    <x-admin.chatbot.table-shell title="Daftar percakapan" description="Data live chats terbaru dengan status operasional, intent aktif, dan sinyal kebutuhan human.">
+        @if ($conversations->isEmpty())
+            <div class="p-6">
+                <x-admin.chatbot.empty-state
+                    title="Belum ada percakapan"
+                    description="Percakapan customer akan tampil di sini setelah webhook WhatsApp menyimpan thread baru."
+                    icon="chat"
+                />
+            </div>
+        @else
+            <table class="min-w-full divide-y divide-slate-100 text-sm">
+                <thead class="bg-slate-50/80">
+                    <tr class="text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        <th class="px-6 py-4">Customer</th>
+                        <th class="px-6 py-4">Status</th>
+                        <th class="px-6 py-4">Intent</th>
+                        <th class="px-6 py-4">Takeover</th>
+                        <th class="px-6 py-4">Last activity</th>
+                        <th class="px-6 py-4 text-right">Aksi</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    @foreach ($conversations as $conversation)
                         @php
-                            $sBadge = ['active' => 'bg-green-100 text-green-700', 'closed' => 'bg-gray-100 text-gray-600', 'escalated' => 'bg-red-100 text-red-700', 'archived' => 'bg-yellow-100 text-yellow-700'];
-                            $sv = is_string($conv->status) ? $conv->status : $conv->status->value;
+                            $status = is_string($conversation->status) ? $conversation->status : $conversation->status?->value;
                         @endphp
-                        <span class="text-xs px-2 py-0.5 rounded {{ $sBadge[$sv] ?? 'bg-gray-100 text-gray-600' }}">{{ $sv }}</span>
-                    </td>
-                    <td class="px-4 py-3 text-gray-600 text-xs">{{ $conv->current_intent ?? '—' }}</td>
-                    <td class="px-4 py-3 text-xs text-gray-400">{{ $conv->last_message_at?->diffForHumans() ?? '—' }}</td>
-                    <td class="px-4 py-3">
-                        @if ($conv->needs_human)
-                            <span class="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded">Human</span>
-                        @endif
-                    </td>
-                    <td class="px-4 py-3">
-                        <a href="{{ route('admin.chatbot.conversations.show', $conv) }}"
-                           class="text-indigo-600 hover:underline text-xs">Detail →</a>
-                    </td>
-                </tr>
-            @empty
-                <tr>
-                    <td colspan="6" class="px-4 py-8 text-center text-gray-400 text-sm">Tidak ada percakapan.</td>
-                </tr>
-            @endforelse
-        </tbody>
-    </table>
+                        <tr class="transition hover:bg-slate-50/70">
+                            <td class="px-6 py-4">
+                                <div class="font-semibold text-slate-900">{{ $conversation->customer?->name ?? 'Unknown customer' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">{{ $conversation->customer?->phone_e164 ?? '-' }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <x-admin.chatbot.status-badge :value="$status" />
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm text-slate-700">{{ $conversation->current_intent ?? 'no_intent' }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <x-admin.chatbot.status-badge :value="$conversation->currentOperationalModeLabel()" :palette="$conversation->currentOperationalModePalette()" />
+
+                                    @if ($conversation->assignedAdmin?->name)
+                                        <x-admin.chatbot.status-badge :value="'Owner: '.$conversation->assignedAdmin->name" palette="indigo" />
+                                    @endif
+
+                                    @if ($conversation->needs_human && $conversation->currentOperationalMode() !== 'human_takeover')
+                                        <x-admin.chatbot.status-badge value="needs_human" palette="red" />
+                                    @endif
+                                </div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm text-slate-700">{{ $conversation->last_message_at?->diffForHumans() ?? '-' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">{{ $conversation->last_message_at?->format('d M Y H:i') ?? '-' }}</div>
+                            </td>
+                            <td class="px-6 py-4 text-right">
+                                <a href="{{ route('admin.chatbot.live-chats.show', $conversation) }}" class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-900">
+                                    Detail
+                                    <x-admin.chatbot.icon name="arrow-up-right" class="h-4 w-4" />
+                                </a>
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        @endif
+
+        <x-slot:footer>
+            {{ $conversations->links() }}
+        </x-slot:footer>
+    </x-admin.chatbot.table-shell>
 </div>
-
-<div class="mt-4">{{ $conversations->links() }}</div>
-
 @endsection

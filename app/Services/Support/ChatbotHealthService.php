@@ -265,7 +265,7 @@ class ChatbotHealthService
     private function checkActiveTakeovers(): array
     {
         try {
-            $count = Conversation::where('handoff_mode', 'admin')->count();
+            $count = Conversation::humanTakeoverActive()->count();
         } catch (\Throwable $e) {
             Log::warning('[ChatbotHealthService] Could not count active takeovers', ['error' => $e->getMessage()]);
             $count = 0;

@@ -2,10 +2,12 @@
 
 namespace App\Http\Requests\Auth;
 
+use App\Models\User;
 use Illuminate\Auth\Events\Lockout;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -28,14 +30,13 @@ class LoginRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'email'    => ['required', 'string'],
-            'password' => ['required', 'string', 'min:1', 'max:8'],
+            'email'    => ['required', 'string', 'email', 'max:255'],
+            'password' => ['required', 'string', 'min:1', 'max:255'],
         ];
     }
 
     /**
      * Attempt to authenticate the request's credentials.
-     * Any email and password is accepted; logs in as the first admin user.
      *
      * @throws ValidationException
      */
@@ -43,14 +44,39 @@ class LoginRequest extends FormRequest
     {
         $this->ensureIsNotRateLimited();
 
-        // Log in as the first admin user
-        $user = \App\Models\User::first();
+        $configuredEmail = Str::lower(trim((string) config('chatbot.security.console_login.email')));
+        $configuredPassword = (string) config('chatbot.security.console_login.password');
+        $configuredName = trim((string) config('chatbot.security.console_login.name', 'Chatbot Admin'));
+        $submittedEmail = Str::lower(trim((string) $this->input('email')));
+        $submittedPassword = (string) $this->input('password');
 
-        if (! $user) {
+        if ($configuredEmail === '' || $configuredPassword === '') {
             throw ValidationException::withMessages([
-                'email' => 'Tidak ada akun admin yang tersedia.',
+                'email' => 'Kredensial login admin belum dikonfigurasi.',
             ]);
         }
+
+        if (
+            $submittedEmail !== $configuredEmail
+            || ! hash_equals($configuredPassword, $submittedPassword)
+        ) {
+            RateLimiter::hit($this->throttleKey());
+
+            throw ValidationException::withMessages([
+                'email' => 'Email atau password admin tidak sesuai.',
+            ]);
+        }
+
+        $user = User::updateOrCreate(
+            ['email' => $configuredEmail],
+            [
+                'name' => $configuredName !== '' ? $configuredName : 'Chatbot Admin',
+                'email_verified_at' => now(),
+                'password' => Hash::make($configuredPassword),
+                'is_chatbot_admin' => true,
+                'is_chatbot_operator' => false,
+            ]
+        );
 
         Auth::login($user, $this->boolean('remember'));
 

@@ -1,81 +1,113 @@
 @extends('admin.chatbot.layouts.app')
-@section('title', 'Booking Lead')
+
+@section('title', 'Bookings / Leads')
+@section('page-subtitle', 'Daftar booking request dan lead yang dikumpulkan chatbot dari percakapan customer WhatsApp.')
 
 @section('content')
+<div class="space-y-6">
+    <x-admin.chatbot.section-heading
+        kicker="Sales Pipeline"
+        title="Booking requests"
+        description="Pantau lead, status booking, route, jumlah penumpang, dan nilai estimasi dari percakapan chatbot."
+    />
 
-<form method="GET" class="bg-white rounded-lg border border-gray-200 p-4 mb-5 flex flex-wrap gap-3 items-end">
-    <div>
-        <label class="block text-xs text-gray-500 mb-1">Cari customer</label>
-        <input type="text" name="search" value="{{ request('search') }}"
-               placeholder="Nama / nomor HP"
-               class="border border-gray-300 rounded-md px-3 py-1.5 text-sm w-52 focus:outline-none focus:ring-2 focus:ring-indigo-300">
-    </div>
-    <div>
-        <label class="block text-xs text-gray-500 mb-1">Status Booking</label>
-        <select name="status" class="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300">
-            <option value="">Semua</option>
-            @foreach ($statusOptions as $s)
-                <option value="{{ $s }}" @selected(request('status') === $s)>{{ ucwords(str_replace('_', ' ', $s)) }}</option>
-            @endforeach
-        </select>
-    </div>
-    <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-4 py-1.5 rounded-md">Filter</button>
-    <a href="{{ route('admin.chatbot.bookings.index') }}" class="text-sm text-gray-500 hover:text-gray-700 py-1.5">Reset</a>
-</form>
+    <x-admin.chatbot.panel title="Filter bookings" description="Saring booking berdasarkan status atau customer untuk memudahkan monitoring lead.">
+        <form method="GET" class="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_260px_auto_auto]">
+            <label class="block">
+                <span class="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Cari customer</span>
+                <input
+                    type="text"
+                    name="search"
+                    value="{{ request('search') }}"
+                    placeholder="Nama atau nomor WhatsApp"
+                    class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60"
+                >
+            </label>
 
-@php
-    $statusColors = [
-        'draft'                  => 'bg-gray-100 text-gray-600',
-        'awaiting_confirmation'  => 'bg-yellow-100 text-yellow-700',
-        'confirmed'              => 'bg-green-100 text-green-700',
-        'paid'                   => 'bg-blue-100 text-blue-700',
-        'cancelled'              => 'bg-red-100 text-red-600',
-        'completed'              => 'bg-teal-100 text-teal-700',
-    ];
-@endphp
+            <label class="block">
+                <span class="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Status booking</span>
+                <select name="status" class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition focus:border-slate-300 focus:ring-4 focus:ring-slate-200/60">
+                    <option value="">Semua status</option>
+                    @foreach ($statusOptions as $status)
+                        <option value="{{ $status }}" @selected(request('status') === $status)>{{ ucwords(str_replace('_', ' ', $status)) }}</option>
+                    @endforeach
+                </select>
+            </label>
 
-<div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
-    <table class="w-full text-sm">
-        <thead class="bg-gray-50 border-b border-gray-200 text-xs text-gray-500 uppercase tracking-wide">
-            <tr>
-                <th class="px-4 py-3 text-left">Customer</th>
-                <th class="px-4 py-3 text-left">Pickup</th>
-                <th class="px-4 py-3 text-left">Tujuan</th>
-                <th class="px-4 py-3 text-left">Penumpang</th>
-                <th class="px-4 py-3 text-left">Harga</th>
-                <th class="px-4 py-3 text-left">Status</th>
-                <th class="px-4 py-3 text-left">Diperbarui</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-            @forelse ($bookings as $bk)
-                @php $bs = is_string($bk->booking_status) ? $bk->booking_status : $bk->booking_status->value; @endphp
-                <tr class="hover:bg-gray-50">
-                    <td class="px-4 py-3">
-                        <div class="font-medium text-gray-800">{{ $bk->customer?->name ?? '—' }}</div>
-                        <div class="text-xs text-gray-400">{{ $bk->customer?->phone_e164 }}</div>
-                    </td>
-                    <td class="px-4 py-3 text-gray-700">{{ $bk->pickup_location ?? '—' }}</td>
-                    <td class="px-4 py-3 text-gray-700">{{ $bk->destination ?? '—' }}</td>
-                    <td class="px-4 py-3">
-                        <div class="text-gray-700">{{ $bk->passenger_name ?? '—' }}</div>
-                        <div class="text-xs text-gray-400">{{ $bk->passenger_count ?? '?' }} orang</div>
-                    </td>
-                    <td class="px-4 py-3 text-gray-700">{{ $bk->price_estimate ? 'Rp '.number_format($bk->price_estimate, 0, ',', '.') : '—' }}</td>
-                    <td class="px-4 py-3">
-                        <span class="text-xs px-2 py-0.5 rounded {{ $statusColors[$bs] ?? 'bg-gray-100 text-gray-600' }}">
-                            {{ ucwords(str_replace('_', ' ', $bs)) }}
-                        </span>
-                    </td>
-                    <td class="px-4 py-3 text-xs text-gray-400">{{ $bk->updated_at->format('d M Y H:i') }}</td>
-                </tr>
-            @empty
-                <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">Tidak ada booking.</td></tr>
-            @endforelse
-        </tbody>
-    </table>
+            <div class="flex items-end gap-3">
+                <button type="submit" class="inline-flex items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800">
+                    Terapkan
+                </button>
+                <a href="{{ route('admin.chatbot.bookings.index') }}" class="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900">
+                    Reset
+                </a>
+            </div>
+        </form>
+    </x-admin.chatbot.panel>
+
+    <x-admin.chatbot.table-shell title="Booking lead list" description="Lead booking aktual yang tercatat dari flow percakapan chatbot.">
+        @if ($bookings->isEmpty())
+            <div class="p-6">
+                <x-admin.chatbot.empty-state
+                    title="Belum ada booking request"
+                    description="Booking yang berhasil dikumpulkan chatbot akan muncul di sini setelah customer mengisi flow booking."
+                    icon="briefcase"
+                />
+            </div>
+        @else
+            <table class="min-w-full divide-y divide-slate-100 text-sm">
+                <thead class="bg-slate-50/80">
+                    <tr class="text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        <th class="px-6 py-4">Customer</th>
+                        <th class="px-6 py-4">Route</th>
+                        <th class="px-6 py-4">Schedule</th>
+                        <th class="px-6 py-4">Passenger</th>
+                        <th class="px-6 py-4">Price</th>
+                        <th class="px-6 py-4">Status</th>
+                        <th class="px-6 py-4">Updated</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    @foreach ($bookings as $booking)
+                        @php
+                            $bookingStatus = is_string($booking->booking_status) ? $booking->booking_status : $booking->booking_status?->value;
+                        @endphp
+                        <tr class="transition hover:bg-slate-50/70">
+                            <td class="px-6 py-4">
+                                <div class="font-semibold text-slate-900">{{ $booking->customer?->name ?? $booking->passenger_name ?? 'Lead tanpa nama' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">{{ $booking->customer?->phone_e164 ?? $booking->contact_number ?? '-' }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm text-slate-700">{{ $booking->pickup_location ?? '-' }} -> {{ $booking->destination ?? '-' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">Trip key: {{ $booking->trip_key ?? '-' }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm text-slate-700">{{ $booking->departure_date?->format('d M Y') ?? '-' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">{{ $booking->departure_time ?? '-' }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm text-slate-700">{{ $booking->passenger_name ?? '-' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">{{ $booking->passenger_count ?? 0 }} penumpang</div>
+                            </td>
+                            <td class="px-6 py-4 text-slate-700">
+                                {{ $booking->price_estimate ? 'Rp ' . number_format((float) $booking->price_estimate, 0, ',', '.') : '-' }}
+                            </td>
+                            <td class="px-6 py-4">
+                                <x-admin.chatbot.status-badge :value="$bookingStatus" />
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm text-slate-700">{{ $booking->updated_at?->diffForHumans() ?? '-' }}</div>
+                                <div class="mt-1 text-xs text-slate-500">{{ $booking->updated_at?->format('d M Y H:i') ?? '-' }}</div>
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        @endif
+
+        <x-slot:footer>
+            {{ $bookings->links() }}
+        </x-slot:footer>
+    </x-admin.chatbot.table-shell>
 </div>
-
-<div class="mt-4">{{ $bookings->links() }}</div>
-
 @endsection

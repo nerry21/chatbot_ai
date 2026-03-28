@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\AssignEscalationRequest;
 use App\Http\Requests\Admin\ResolveEscalationRequest;
 use App\Models\Escalation;
+use App\Services\Chatbot\ConversationTakeoverService;
 use App\Services\Support\AuditLogService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -56,6 +57,7 @@ class EscalationController extends Controller
     public function assign(
         AssignEscalationRequest $request,
         Escalation $escalation,
+        ConversationTakeoverService $takeoverService,
     ): RedirectResponse {
         $adminId = auth()->id();
 
@@ -63,7 +65,11 @@ class EscalationController extends Controller
 
         // Sync conversation handoff if the escalation is linked to one
         if ($escalation->conversation !== null) {
-            $escalation->conversation->takeoverBy($adminId);
+            $takeoverService->takeOver(
+                conversation: $escalation->conversation,
+                adminId: $adminId,
+                reason: 'escalation_assignment',
+            );
         }
 
         $this->audit->record(AuditActionType::EscalationAssigned, [

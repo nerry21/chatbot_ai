@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class Conversation extends Model
 {
@@ -28,14 +29,37 @@ class Conversation extends Model
         'handoff_mode',
         'handoff_admin_id',
         'handoff_at',
+        'human_takeover_at',
+        'human_takeover_by',
+        'bot_paused',
+        'bot_paused_reason',
+        'assigned_admin_id',
+        'released_to_bot_at',
+        'last_admin_intervention_at',
+        'is_urgent',
+        'urgent_marked_at',
+        'urgent_marked_by',
+        'closed_at',
+        'closed_by',
+        'close_reason',
+        'reopened_at',
+        'reopened_by',
     ];
 
     protected $casts = [
         'started_at'      => 'datetime',
         'last_message_at' => 'datetime',
         'needs_human'     => 'boolean',
+        'bot_paused'      => 'boolean',
         'status'          => ConversationStatus::class,
         'handoff_at'      => 'datetime',
+        'human_takeover_at' => 'datetime',
+        'released_to_bot_at' => 'datetime',
+        'last_admin_intervention_at' => 'datetime',
+        'is_urgent' => 'boolean',
+        'urgent_marked_at' => 'datetime',
+        'closed_at' => 'datetime',
+        'reopened_at' => 'datetime',
     ];
 
     // -------------------------------------------------------------------------
@@ -45,6 +69,36 @@ class Conversation extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function assignedAdmin(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'assigned_admin_id');
+    }
+
+    public function handoffAdmin(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'handoff_admin_id');
+    }
+
+    public function urgentMarkedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'urgent_marked_by');
+    }
+
+    public function closedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'closed_by');
+    }
+
+    public function reopenedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reopened_by');
+    }
+
+    public function humanTakeoverByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'human_takeover_by');
     }
 
     public function messages(): HasMany
@@ -70,6 +124,26 @@ class Conversation extends Model
     public function leadPipelines(): HasMany
     {
         return $this->hasMany(LeadPipeline::class);
+    }
+
+    public function handoffs(): HasMany
+    {
+        return $this->hasMany(ConversationHandoff::class)->latest('happened_at');
+    }
+
+    public function tags(): HasMany
+    {
+        return $this->hasMany(ConversationTag::class)->latest('created_at');
+    }
+
+    public function adminNotes(): MorphMany
+    {
+        return $this->morphMany(AdminNote::class, 'noteable')->latest('created_at');
+    }
+
+    public function userReads(): HasMany
+    {
+        return $this->hasMany(ConversationUserRead::class);
     }
 
     // -------------------------------------------------------------------------
@@ -101,6 +175,26 @@ class Conversation extends Model
         return $query->where('handoff_mode', 'admin');
     }
 
+    public function scopeHumanTakeoverActive(Builder $query): Builder
+    {
+        return $query
+            ->where('handoff_mode', 'admin')
+            ->where('bot_paused', true);
+    }
+
+    public function scopeAutomationSuppressed(Builder $query): Builder
+    {
+        return $query->where(function (Builder $builder): void {
+            $builder->where('handoff_mode', 'admin')
+                ->orWhere('bot_paused', true);
+        });
+    }
+
+    public function scopeUrgent(Builder $query): Builder
+    {
+        return $query->where('is_urgent', true);
+    }
+
     // -------------------------------------------------------------------------
     // Status helpers
     // -------------------------------------------------------------------------
@@ -118,6 +212,53 @@ class Conversation extends Model
     public function isEscalated(): bool
     {
         return $this->status === ConversationStatus::Escalated;
+    }
+
+    public function isBotPaused(): bool
+    {
+        return (bool) $this->bot_paused;
+    }
+
+    public function isAutomationSuppressed(): bool
+    {
+        return $this->isAdminTakeover() || $this->isBotPaused();
+    }
+
+    public function currentOperationalMode(): string
+    {
+        if ($this->isTerminal()) {
+            return 'closed';
+        }
+
+        if ($this->isAdminTakeover()) {
+            return 'human_takeover';
+        }
+
+        if ($this->isBotPaused() || $this->needs_human || $this->isEscalated()) {
+            return 'escalated';
+        }
+
+        return 'bot_active';
+    }
+
+    public function currentOperationalModeLabel(): string
+    {
+        return match ($this->currentOperationalMode()) {
+            'human_takeover' => 'Human Takeover',
+            'escalated' => 'Escalated',
+            'closed' => 'Closed',
+            default => 'Bot Active',
+        };
+    }
+
+    public function currentOperationalModePalette(): string
+    {
+        return match ($this->currentOperationalMode()) {
+            'human_takeover' => 'orange',
+            'escalated' => 'red',
+            'closed' => 'slate',
+            default => 'green',
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -139,12 +280,19 @@ class Conversation extends Model
      *
      * @param  int|null  $adminId  The authenticated user ID performing the takeover.
      */
-    public function takeoverBy(?int $adminId = null): void
+    public function takeoverBy(?int $adminId = null, ?string $reason = null): void
     {
         $this->update([
             'handoff_mode'     => 'admin',
             'handoff_admin_id' => $adminId,
             'handoff_at'       => now(),
+            'human_takeover_at' => now(),
+            'human_takeover_by' => $adminId,
+            'bot_paused' => true,
+            'bot_paused_reason' => 'human_takeover',
+            'assigned_admin_id' => $adminId,
+            'released_to_bot_at' => null,
+            'last_admin_intervention_at' => now(),
             'needs_human'      => true,
         ]);
     }
@@ -153,14 +301,25 @@ class Conversation extends Model
      * Release the conversation back to the bot.
      * Does NOT change conversation status or close it.
      */
-    public function releaseToBot(): void
+    public function releaseToBot(?int $adminId = null): void
     {
-        $this->update([
+        $updates = [
             'handoff_mode'     => 'bot',
             'handoff_admin_id' => null,
             'handoff_at'       => now(),
+            'bot_paused' => false,
+            'bot_paused_reason' => null,
+            'assigned_admin_id' => null,
+            'released_to_bot_at' => now(),
+            'last_admin_intervention_at' => now(),
             'needs_human'      => false,
-        ]);
+        ];
+
+        if ($this->status === ConversationStatus::Escalated) {
+            $updates['status'] = ConversationStatus::Active;
+        }
+
+        $this->update($updates);
     }
 
     // -------------------------------------------------------------------------
@@ -179,6 +338,7 @@ class Conversation extends Model
     {
         return $this->messages()
             ->outbound()
+            ->where('sender_type', '!=', \App\Enums\SenderType::System->value)
             ->orderByDesc('sent_at')
             ->first();
     }

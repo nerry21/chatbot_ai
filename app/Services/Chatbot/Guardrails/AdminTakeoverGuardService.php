@@ -8,11 +8,20 @@ class AdminTakeoverGuardService
 {
     public function shouldSuppressAutomation(Conversation $conversation): bool
     {
-        return $conversation->isAdminTakeover();
+        return $conversation->isAutomationSuppressed();
     }
 
     /**
-     * @return array{admin_takeover: bool, handoff_admin_id: int|null, handoff_at: string|null}
+     * @return array{
+     *     admin_takeover: bool,
+     *     handoff_admin_id: int|null,
+     *     handoff_at: string|null,
+     *     bot_paused: bool,
+     *     bot_paused_reason: string|null,
+     *     assigned_admin_id: int|null,
+     *     last_admin_intervention_at: string|null,
+     *     operational_mode: string
+     * }
      */
     public function context(Conversation $conversation): array
     {
@@ -20,6 +29,11 @@ class AdminTakeoverGuardService
             'admin_takeover' => $this->shouldSuppressAutomation($conversation),
             'handoff_admin_id' => $conversation->handoff_admin_id,
             'handoff_at' => $conversation->handoff_at?->toDateTimeString(),
+            'bot_paused' => (bool) $conversation->bot_paused,
+            'bot_paused_reason' => $conversation->bot_paused_reason,
+            'assigned_admin_id' => $conversation->assigned_admin_id,
+            'last_admin_intervention_at' => $conversation->last_admin_intervention_at?->toDateTimeString(),
+            'operational_mode' => $conversation->currentOperationalMode(),
         ];
     }
 }

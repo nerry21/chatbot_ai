@@ -21,15 +21,16 @@ class HumanEscalationService
         private readonly WhatsAppSenderService $senderService,
         private readonly ConversationStateService $stateService,
         private readonly AdminHandoffFormatterService $formatter,
+        private readonly ConversationTakeoverService $takeoverService,
     ) {}
 
     public function escalateQuestion(Conversation $conversation, Customer $customer, string $reason): void
     {
-        $wasAdminTakeover = $conversation->isAdminTakeover();
+        $wasAdminTakeover = $conversation->isAutomationSuppressed();
         $alreadyEscalated = $wasAdminTakeover && $this->questionEscalationAlreadySent($conversation);
 
         if (! $wasAdminTakeover) {
-            $conversation->takeoverBy(null);
+            $conversation = $this->takeoverService->pauseForEscalation($conversation, $reason);
         }
 
         $conversation->update([

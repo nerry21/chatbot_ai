@@ -1,319 +1,331 @@
 @extends('admin.chatbot.layouts.app')
-@section('title', 'Detail Percakapan #' . $conversation->id)
+
+@section('title', 'Conversation #' . $conversation->id)
+@section('page-subtitle', 'Thread percakapan customer, state aktif, booking context, dan kontrol manual admin takeover.')
 
 @section('content')
+@php
+    $conversationStatus = is_string($conversation->status) ? $conversation->status : $conversation->status?->value;
+    $modeLabel = $conversation->currentOperationalModeLabel();
+    $modePalette = $conversation->currentOperationalModePalette();
+@endphp
 
-<div class="mb-4 flex items-center justify-between">
-    <a href="{{ route('admin.chatbot.conversations.index') }}" class="text-sm text-indigo-600 hover:underline">← Kembali ke daftar</a>
-    @if ($conversation->isAdminTakeover())
-        <span class="inline-flex items-center gap-1.5 bg-orange-100 text-orange-700 text-xs font-semibold px-3 py-1 rounded-full">
-            🔒 Bot Nonaktif — Admin Takeover Aktif
-        </span>
-    @else
-        <span class="inline-flex items-center gap-1.5 bg-green-50 text-green-600 text-xs px-3 py-1 rounded-full">
-            🤖 Bot Aktif
-        </span>
-    @endif
-</div>
+<div class="space-y-6">
+    <x-admin.chatbot.section-heading
+        kicker="Conversation Detail"
+        :title="'Thread #' . $conversation->id"
+        description="Pantau isi percakapan, state aktif, booking context, takeover, dan kirim balasan manual langsung dari console."
+        :href="route('admin.chatbot.live-chats.index')"
+        link-label="Kembali ke Live Chats"
+    >
+        <x-slot:actions>
+            <div class="flex flex-wrap items-center gap-2">
+                <x-admin.chatbot.status-badge :value="$conversationStatus" />
+                <x-admin.chatbot.status-badge :value="$modeLabel" :palette="$modePalette" />
+                @if ($conversation->assignedAdmin?->name)
+                    <x-admin.chatbot.status-badge :value="'Assigned: '.$conversation->assignedAdmin->name" palette="indigo" />
+                @endif
+            </div>
+        </x-slot:actions>
+    </x-admin.chatbot.section-heading>
 
-{{-- Flash messages --}}
-@if (session('success'))
-    <div class="mb-4 bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-3 rounded-lg">
-        {{ session('success') }}
-    </div>
-@endif
-@if (session('error'))
-    <div class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
-        {{ session('error') }}
-    </div>
-@endif
+    <div class="grid gap-6 xl:grid-cols-[0.95fr_1.45fr_0.85fr]">
+        <div class="space-y-6">
+            <x-admin.chatbot.panel title="Customer" description="Profil dasar customer yang terhubung ke percakapan ini.">
+                @if ($conversation->customer)
+                    <div class="space-y-4">
+                        <div>
+                            <div class="text-lg font-semibold text-slate-900">{{ $conversation->customer->name ?? 'Unnamed customer' }}</div>
+                            <div class="mt-1 text-sm text-slate-500">{{ $conversation->customer->phone_e164 ?? '-' }}</div>
+                        </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <dl class="space-y-3 text-sm">
+                            <div class="flex items-center justify-between gap-4">
+                                <dt class="text-slate-500">Status</dt>
+                                <dd class="font-medium text-slate-900">{{ $conversation->customer->status ?? '-' }}</dd>
+                            </div>
+                            <div class="flex items-center justify-between gap-4">
+                                <dt class="text-slate-500">Total booking</dt>
+                                <dd class="font-medium text-slate-900">{{ number_format((int) ($conversation->customer->total_bookings ?? 0)) }}</dd>
+                            </div>
+                        </dl>
 
-    {{-- ── Left column: Customer + Conversation Info ──────────────────────── --}}
-    <div class="space-y-4">
+                        @if ($conversation->customer->tags->isNotEmpty())
+                            <div class="flex flex-wrap gap-2">
+                                @foreach ($conversation->customer->tags as $tag)
+                                    <x-admin.chatbot.status-badge :value="$tag->tag" palette="indigo" size="sm" />
+                                @endforeach
+                            </div>
+                        @endif
 
-        {{-- Customer Card --}}
-        <div class="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">👤 Customer</h3>
-            @if ($conversation->customer)
-                <div class="space-y-1.5 text-sm">
-                    <div><span class="text-gray-400 w-20 inline-block">Nama</span> <span class="text-gray-800 font-medium">{{ $conversation->customer->name ?? '—' }}</span></div>
-                    <div><span class="text-gray-400 w-20 inline-block">Nomor</span> <span class="text-gray-800">{{ $conversation->customer->phone_e164 }}</span></div>
-                    <div><span class="text-gray-400 w-20 inline-block">Status</span> <span class="text-gray-800">{{ $conversation->customer->status }}</span></div>
-                    <div><span class="text-gray-400 w-20 inline-block">Booking</span> <span class="text-gray-800">{{ $conversation->customer->total_bookings }} kali</span></div>
+                        <a href="{{ route('admin.chatbot.customers.show', $conversation->customer) }}" class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-900">
+                            Profil customer
+                            <x-admin.chatbot.icon name="arrow-up-right" class="h-4 w-4" />
+                        </a>
+                    </div>
+                @else
+                    <x-admin.chatbot.empty-state
+                        title="Customer tidak ditemukan"
+                        description="Relasi customer untuk conversation ini tidak tersedia."
+                        icon="users"
+                    />
+                @endif
+            </x-admin.chatbot.panel>
+
+            <x-admin.chatbot.panel title="Conversation Summary" description="Status operasional dan ringkasan singkat thread.">
+                <div class="space-y-4 text-sm">
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Status</span>
+                        <x-admin.chatbot.status-badge :value="$conversationStatus" size="sm" />
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Current intent</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->current_intent ?? '-' }}</span>
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Started at</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->started_at?->format('d M Y H:i') ?? '-' }}</span>
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Last message</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->last_message_at?->format('d M Y H:i') ?? '-' }}</span>
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Needs human</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->needs_human ? 'Ya' : 'Tidak' }}</span>
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Bot paused</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->bot_paused ? 'Ya' : 'Tidak' }}</span>
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Pause reason</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->bot_paused_reason ?? '-' }}</span>
+                    </div>
+                    <div class="flex items-center justify-between gap-4">
+                        <span class="text-slate-500">Assigned admin</span>
+                        <span class="font-medium text-slate-900">{{ $conversation->assignedAdmin?->name ?? ($conversation->assigned_admin_id ? 'Admin #' . $conversation->assigned_admin_id : '-') }}</span>
+                    </div>
                 </div>
-                @if ($conversation->customer->tags->isNotEmpty())
-                    <div class="mt-3 flex flex-wrap gap-1">
-                        @foreach ($conversation->customer->tags as $tag)
-                            <span class="bg-indigo-50 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{{ $tag->tag }}</span>
+
+                @if ($conversation->summary)
+                    <div class="mt-5 rounded-[22px] border border-slate-100 bg-slate-50 p-4">
+                        <div class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">AI Summary</div>
+                        <p class="mt-3 text-sm leading-7 text-slate-600">{{ $conversation->summary }}</p>
+                    </div>
+                @endif
+            </x-admin.chatbot.panel>
+
+            <x-admin.chatbot.panel title="Bot Control" description="Take over percakapan untuk menonaktifkan auto-reply atau release kembali ke bot.">
+                @if ($conversation->isAdminTakeover())
+                    <div class="rounded-[22px] border border-orange-200 bg-orange-50 px-4 py-4 text-sm text-orange-700">
+                        Bot sedang nonaktif. Conversation dipegang admin sejak {{ $conversation->handoff_at?->format('d M Y H:i') ?? '-' }}.
+                    </div>
+
+                    <form method="POST" action="{{ route('admin.chatbot.conversations.release', $conversation) }}" class="mt-4" x-data="{ busy: false }" @submit="busy = true">
+                        @csrf
+                        <button type="submit" :disabled="busy" class="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70">
+                            <span x-show="!busy">Release ke Bot</span>
+                            <span x-show="busy">Melepas...</span>
+                        </button>
+                    </form>
+                @else
+                    <div class="rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-600">
+                        Bot masih aktif dan dapat membalas otomatis. Gunakan takeover jika admin perlu mengendalikan thread ini secara manual.
+                    </div>
+
+                    <form method="POST" action="{{ route('admin.chatbot.conversations.takeover', $conversation) }}" class="mt-4" x-data="{ busy: false }" @submit="busy = true">
+                        @csrf
+                        <button type="submit" :disabled="busy" class="inline-flex w-full items-center justify-center rounded-2xl bg-orange-500 px-4 py-3 text-sm font-medium text-white transition hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-70">
+                            <span x-show="!busy">Takeover Conversation</span>
+                            <span x-show="busy">Mengambil alih...</span>
+                        </button>
+                    </form>
+                @endif
+            </x-admin.chatbot.panel>
+        </div>
+
+        <div class="space-y-6">
+            <x-admin.chatbot.panel title="Chat Thread" :description="'Riwayat pesan customer, bot, dan admin. Total ' . $conversation->messages->count() . ' message(s).'">
+                @if ($conversation->messages->isEmpty())
+                    <x-admin.chatbot.empty-state
+                        title="Belum ada pesan"
+                        description="Belum ada message yang tercatat pada percakapan ini."
+                        icon="chat"
+                    />
+                @else
+                    <div class="console-scrollbar max-h-[820px] space-y-4 overflow-y-auto pr-1">
+                        @foreach ($conversation->messages as $message)
+                            @php
+                                $direction = is_string($message->direction) ? $message->direction : $message->direction?->value;
+                                $senderType = is_string($message->sender_type) ? $message->sender_type : $message->sender_type?->value;
+                                $deliveryStatus = is_string($message->delivery_status) ? $message->delivery_status : $message->delivery_status?->value;
+                                $isInbound = $direction === 'inbound';
+                                $isAgent = in_array($senderType, ['agent', 'admin'], true);
+                                $canResend = ! $isInbound
+                                    && $message->isResendable()
+                                    && ($message->send_attempts < config('chatbot.reliability.max_send_attempts', 3));
+                            @endphp
+
+                            <div class="flex {{ $isInbound ? 'justify-start' : 'justify-end' }}">
+                                <div class="max-w-xl">
+                                    <div class="rounded-[24px] px-4 py-3 shadow-sm ring-1 {{ $isInbound ? 'bg-slate-100 text-slate-800 ring-slate-200' : ($isAgent ? 'bg-teal-600 text-white ring-teal-500/30' : 'bg-slate-900 text-white ring-slate-800/20') }}">
+                                        <div class="text-sm leading-7">{{ $message->message_text ?? '[non-text]' }}</div>
+                                    </div>
+
+                                    <div class="mt-2 flex flex-wrap items-center gap-2 text-xs {{ $isInbound ? 'text-slate-400' : 'justify-end text-slate-400' }}">
+                                        <span>{{ $message->sent_at?->format('d M H:i') ?? '-' }}</span>
+                                        @if ($isInbound)
+                                            <x-admin.chatbot.status-badge value="customer" palette="slate" size="sm" />
+                                        @elseif ($isAgent)
+                                            <x-admin.chatbot.status-badge value="admin" palette="teal" size="sm" />
+                                        @else
+                                            <x-admin.chatbot.status-badge value="bot" palette="indigo" size="sm" />
+                                        @endif
+
+                                        @if ($message->ai_intent)
+                                            <x-admin.chatbot.status-badge :value="$message->ai_intent" palette="purple" size="sm" />
+                                        @endif
+
+                                        @if ($message->is_fallback)
+                                            <x-admin.chatbot.status-badge value="fallback" palette="amber" size="sm" />
+                                        @endif
+
+                                        @if (! $isInbound && $deliveryStatus)
+                                            <x-admin.chatbot.status-badge :value="$deliveryStatus" size="sm" />
+                                        @endif
+                                    </div>
+
+                                    @if (! $isInbound && $message->delivery_error)
+                                        <div class="mt-2 text-xs text-red-500">{{ \Illuminate\Support\Str::limit($message->delivery_error, 160) }}</div>
+                                    @endif
+
+                                    @if ($canResend)
+                                        <div class="mt-2 {{ $isInbound ? '' : 'text-right' }}">
+                                            <form method="POST" action="{{ route('admin.chatbot.conversations.messages.resend', [$conversation, $message]) }}" onsubmit="return confirm('Kirim ulang pesan ini ke customer?')">
+                                                @csrf
+                                                <button type="submit" class="inline-flex items-center gap-2 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-medium text-orange-700 transition hover:border-orange-300 hover:bg-orange-100">
+                                                    Kirim ulang
+                                                </button>
+                                            </form>
+                                        </div>
+                                    @endif
+                                </div>
+                            </div>
                         @endforeach
                     </div>
                 @endif
-                <div class="mt-3">
-                    <a href="{{ route('admin.chatbot.customers.show', $conversation->customer) }}"
-                       class="text-xs text-indigo-600 hover:underline">Lihat profil customer →</a>
-                </div>
-            @else
-                <p class="text-sm text-gray-400">Customer tidak ditemukan.</p>
-            @endif
-        </div>
+            </x-admin.chatbot.panel>
 
-        {{-- Conversation Meta --}}
-        <div class="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">📋 Info Percakapan</h3>
-            <div class="space-y-1.5 text-sm">
-                @php $sv = is_string($conversation->status) ? $conversation->status : $conversation->status->value; @endphp
-                <div><span class="text-gray-400 w-24 inline-block">Status</span> <span class="font-medium">{{ $sv }}</span></div>
-                <div><span class="text-gray-400 w-24 inline-block">Intent</span> <span>{{ $conversation->current_intent ?? '—' }}</span></div>
-                <div><span class="text-gray-400 w-24 inline-block">Butuh admin</span> <span>{{ $conversation->needs_human ? '✅ Ya' : '—' }}</span></div>
-                <div><span class="text-gray-400 w-24 inline-block">Mulai</span> <span>{{ $conversation->started_at?->format('d M Y H:i') ?? '—' }}</span></div>
-                <div><span class="text-gray-400 w-24 inline-block">Pesan terakhir</span> <span>{{ $conversation->last_message_at?->format('d M Y H:i') ?? '—' }}</span></div>
-            </div>
-            @if ($conversation->summary)
-                <div class="mt-3 border-t pt-3">
-                    <div class="text-xs text-gray-400 mb-1">Ringkasan AI</div>
-                    <p class="text-sm text-gray-700 leading-relaxed">{{ $conversation->summary }}</p>
-                </div>
-            @endif
-        </div>
+            @if ($conversation->customer)
+                <x-admin.chatbot.panel title="Balas Manual" description="Admin bisa mengirim pesan langsung ke customer. Saat takeover aktif, bot tetap disuppress.">
+                    <form method="POST" action="{{ route('admin.chatbot.conversations.reply', $conversation) }}" class="space-y-4">
+                        @csrf
+                        <textarea
+                            name="message"
+                            rows="4"
+                            required
+                            maxlength="4096"
+                            placeholder="Tulis pesan manual ke customer..."
+                            class="w-full rounded-[24px] border border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-700 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:bg-white focus:ring-4 focus:ring-slate-200/60"
+                        >{{ old('message') }}</textarea>
+                        @error('message')
+                            <p class="text-sm text-red-500">{{ $message }}</p>
+                        @enderror
 
-        {{-- ── Handoff / Takeover Panel ──────────────────────────────── --}}
-        <div class="bg-white rounded-lg border {{ $conversation->isAdminTakeover() ? 'border-orange-300' : 'border-gray-200' }} p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">🔁 Handoff & Kontrol Bot</h3>
-
-            @if ($conversation->isAdminTakeover())
-                <div class="mb-3 bg-orange-50 border border-orange-200 rounded-md px-3 py-2 text-xs text-orange-700">
-                    <strong>Bot sedang nonaktif.</strong> Admin (ID: {{ $conversation->handoff_admin_id ?? '—' }}) mengambil alih
-                    sejak {{ $conversation->handoff_at?->format('d M Y H:i') ?? '—' }}.
-                </div>
-                {{-- Release ke Bot --}}
-                <form method="POST"
-                      action="{{ route('admin.chatbot.conversations.release', $conversation) }}"
-                      onsubmit="return confirm('Aktifkan bot kembali untuk percakapan ini?')">
-                    @csrf
-                    <button type="submit"
-                            class="w-full bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-4 py-2 rounded-md">
-                        ✅ Release ke Bot
-                    </button>
-                </form>
-            @else
-                <div class="mb-3 text-xs text-gray-500">
-                    Bot sedang aktif dan membalas otomatis. Klik <strong>Takeover</strong> untuk mengendalikan percakapan secara manual.
-                </div>
-                {{-- Takeover --}}
-                <form method="POST"
-                      action="{{ route('admin.chatbot.conversations.takeover', $conversation) }}"
-                      onsubmit="return confirm('Ambil alih percakapan ini? Bot akan dinonaktifkan.')">
-                    @csrf
-                    <button type="submit"
-                            class="w-full bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium px-4 py-2 rounded-md">
-                        🔒 Takeover (Nonaktifkan Bot)
-                    </button>
-                </form>
-            @endif
-        </div>
-
-        {{-- Active States --}}
-        @if ($conversation->states->isNotEmpty())
-        <div class="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">🗂 State Aktif</h3>
-            <div class="space-y-1.5">
-                @foreach ($conversation->states as $state)
-                    <div class="flex items-start justify-between text-xs gap-2">
-                        <span class="text-gray-500 font-mono">{{ $state->state_key }}</span>
-                        <span class="text-gray-700 break-all text-right">{{ is_array($state->state_value) ? json_encode($state->state_value) : $state->state_value }}</span>
-                    </div>
-                @endforeach
-            </div>
-        </div>
-        @endif
-
-        {{-- Active Booking --}}
-        @if ($conversation->bookingRequests->isNotEmpty())
-        <div class="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">🎫 Booking Aktif</h3>
-            @foreach ($conversation->bookingRequests as $booking)
-                <div class="text-sm space-y-1">
-                    @php $bs = is_string($booking->booking_status) ? $booking->booking_status : $booking->booking_status->value; @endphp
-                    <div><span class="text-gray-400 w-20 inline-block">Status</span> <span class="font-medium">{{ $bs }}</span></div>
-                    <div><span class="text-gray-400 w-20 inline-block">Pickup</span> {{ $booking->pickup_location ?? '—' }}</div>
-                    <div><span class="text-gray-400 w-20 inline-block">Tujuan</span> {{ $booking->destination ?? '—' }}</div>
-                    <div><span class="text-gray-400 w-20 inline-block">Penumpang</span> {{ $booking->passenger_name ?? '—' }} ({{ $booking->passenger_count ?? '?' }} org)</div>
-                    <div><span class="text-gray-400 w-20 inline-block">Harga</span> {{ $booking->price_estimate ? 'Rp '.number_format($booking->price_estimate, 0, ',', '.') : '—' }}</div>
-                </div>
-            @endforeach
-        </div>
-        @endif
-
-        {{-- Lead Pipelines --}}
-        @if ($conversation->leadPipelines->isNotEmpty())
-        <div class="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">📈 Lead Pipeline</h3>
-            @foreach ($conversation->leadPipelines as $lead)
-                <div class="text-sm">
-                    <span class="bg-purple-50 text-purple-700 text-xs px-2 py-0.5 rounded">{{ $lead->stage }}</span>
-                    <span class="text-xs text-gray-400 ml-2">{{ $lead->updated_at->diffForHumans() }}</span>
-                </div>
-            @endforeach
-        </div>
-        @endif
-
-        {{-- Escalations --}}
-        @if ($conversation->escalations->isNotEmpty())
-        <div class="bg-white rounded-lg border border-red-100 p-4">
-            <h3 class="text-sm font-semibold text-red-600 mb-3">🚨 Eskalasi</h3>
-            @foreach ($conversation->escalations as $esc)
-                <div class="text-sm space-y-0.5 mb-3">
-                    <div><span class="text-gray-400 w-20 inline-block">Status</span> <span class="font-medium">{{ $esc->status }}</span></div>
-                    <div><span class="text-gray-400 w-20 inline-block">Prioritas</span> {{ $esc->priority }}</div>
-                    <div><span class="text-gray-400 w-20 inline-block">Alasan</span> {{ $esc->reason ?? '—' }}</div>
-                    <div><span class="text-gray-400 w-20 inline-block">Dibuat</span> {{ $esc->created_at->format('d M Y H:i') }}</div>
-                </div>
-            @endforeach
-        </div>
-        @endif
-
-    </div>
-
-    {{-- ── Right column: Chat Thread + Admin Reply ─────────────────────── --}}
-    <div class="lg:col-span-2 flex flex-col gap-4">
-
-        {{-- Chat Thread --}}
-        <div class="bg-white rounded-lg border border-gray-200 flex flex-col" style="min-height: 520px;">
-            <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
-                <div>
-                    <span class="text-sm font-semibold text-gray-700">💬 Thread Percakapan</span>
-                    <span class="text-xs text-gray-400 ml-2">({{ $conversation->messages->count() }} pesan)</span>
-                </div>
-                @if ($conversation->isAdminTakeover())
-                    <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
-                        🔒 Mode Admin — Bot Nonaktif
-                    </span>
-                @endif
-            </div>
-            <div class="flex-1 overflow-y-auto p-4 space-y-3">
-                @forelse ($conversation->messages as $msg)
-                    @php
-                        $dir        = is_string($msg->direction)   ? $msg->direction   : $msg->direction->value;
-                        $senderType = is_string($msg->sender_type) ? $msg->sender_type : $msg->sender_type->value;
-                        $isInbound  = $dir === 'inbound';
-                        $isAgent    = $senderType === 'agent';
-                        $ds         = $msg->delivery_status instanceof \App\Enums\MessageDeliveryStatus
-                            ? $msg->delivery_status->value
-                            : $msg->delivery_status;
-                        $canResend  = ! $isInbound && $msg->isResendable()
-                            && ($msg->send_attempts < config('chatbot.reliability.max_send_attempts', 3));
-                    @endphp
-                    <div class="flex {{ $isInbound ? 'justify-start' : 'justify-end' }}">
-                        <div class="max-w-xs lg:max-w-md xl:max-w-lg">
-                            <div class="rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed
-                                @if ($isInbound)
-                                    bg-gray-100 text-gray-800 rounded-tl-none
-                                @elseif ($isAgent)
-                                    bg-teal-600 text-white rounded-tr-none
+                        <div class="flex items-center justify-between gap-4">
+                            <div class="text-sm text-slate-500">
+                                @if ($conversation->isAdminTakeover())
+                                    Mode admin takeover aktif. Bot tidak akan auto-reply.
                                 @else
-                                    bg-indigo-600 text-white rounded-tr-none
-                                @endif">
-                                {{ $msg->message_text ?? '[non-text]' }}
-                            </div>
-                            <div class="text-xs mt-0.5 {{ $isInbound ? 'text-left text-gray-400' : 'text-right text-gray-400' }} space-x-1">
-                                <span>{{ $msg->sent_at?->format('H:i') }}</span>
-                                @if ($isAgent)
-                                    <span>·</span><span class="text-teal-500 font-medium">admin</span>
-                                @elseif (! $isInbound)
-                                    <span>·</span><span class="text-indigo-300">bot</span>
-                                @endif
-                                @if ($msg->ai_intent)
-                                    <span>·</span><span class="italic">{{ $msg->ai_intent }}</span>
-                                @endif
-                                @if ($msg->is_fallback)
-                                    <span>·</span><span class="text-orange-400">fallback</span>
-                                @endif
-                                {{-- Delivery status badge (outbound messages only) --}}
-                                @if (! $isInbound && $ds)
-                                    <span>·</span>
-                                    @if ($ds === 'sent' || $ds === 'delivered')
-                                        <span class="text-green-400" title="Terkirim ke WhatsApp">✓ sent</span>
-                                    @elseif ($ds === 'pending')
-                                        <span class="text-yellow-400" title="Menunggu pengiriman">⋯ pending</span>
-                                    @elseif ($ds === 'failed')
-                                        <span class="text-red-400 font-medium" title="{{ $msg->delivery_error ?? 'Gagal kirim' }}">✗ failed</span>
-                                    @elseif ($ds === 'skipped')
-                                        <span class="text-gray-400" title="{{ $msg->delivery_error ?? 'Dilewati' }}">— skip</span>
-                                    @endif
-                                @endif
-                                {{-- Send attempts counter (outbound, shown if > 0) --}}
-                                @if (! $isInbound && ($msg->send_attempts ?? 0) > 0)
-                                    <span>·</span>
-                                    <span class="text-gray-400" title="Percobaan pengiriman: {{ $msg->send_attempts }}x, terakhir {{ $msg->last_send_attempt_at?->format('d M H:i') ?? '—' }}">
-                                        {{ $msg->send_attempts }}x
-                                    </span>
+                                    Balasan manual tetap bisa dikirim, tetapi bot masih aktif sampai takeover dinyalakan.
                                 @endif
                             </div>
-                            {{-- Delivery error detail (only shown for failed messages) --}}
-                            @if (! $isInbound && $ds === 'failed' && $msg->delivery_error)
-                                <div class="mt-0.5 text-right">
-                                    <span class="text-xs text-red-400 italic">{{ \Str::limit($msg->delivery_error, 100) }}</span>
-                                </div>
-                            @endif
-                            {{-- Resend button (Tahap 9) --}}
-                            @if ($canResend)
-                                <div class="mt-1 text-right">
-                                    <form method="POST"
-                                          action="{{ route('admin.chatbot.conversations.messages.resend', [$conversation, $msg]) }}"
-                                          onsubmit="return confirm('Kirim ulang pesan ini ke customer?')">
-                                        @csrf
-                                        <button type="submit"
-                                                class="inline-flex items-center gap-1 text-xs text-orange-600 hover:text-orange-800 border border-orange-300 hover:border-orange-500 bg-orange-50 hover:bg-orange-100 rounded px-2 py-0.5 transition-colors"
-                                                title="Percobaan ke-{{ ($msg->send_attempts ?? 0) + 1 }} dari {{ config('chatbot.reliability.max_send_attempts', 3) }}">
-                                            ↩ Kirim Ulang
-                                        </button>
-                                    </form>
-                                </div>
-                            @endif
+                            <button type="submit" class="inline-flex items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800">
+                                Kirim pesan
+                            </button>
                         </div>
+                    </form>
+                </x-admin.chatbot.panel>
+            @endif
+        </div>
+
+        <div class="space-y-6">
+            @if ($conversation->states->isNotEmpty())
+                <x-admin.chatbot.panel title="State Summary" description="Snapshot state aktif dari memory/state conversation saat ini.">
+                    <div class="space-y-3">
+                        @foreach ($conversation->states as $state)
+                            <div class="rounded-[22px] border border-slate-100 bg-slate-50 px-4 py-3">
+                                <div class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{{ $state->state_key }}</div>
+                                <div class="mt-2 break-all text-sm text-slate-700">
+                                    {{ is_array($state->state_value) ? json_encode($state->state_value) : $state->state_value }}
+                                </div>
+                            </div>
+                        @endforeach
                     </div>
-                @empty
-                    <p class="text-center text-sm text-gray-400 py-8">Tidak ada pesan.</p>
-                @endforelse
-            </div>
-        </div>
+                </x-admin.chatbot.panel>
+            @endif
 
-        {{-- Admin Reply Form --}}
-        @if ($conversation->customer)
-        <div class="bg-white rounded-lg border {{ $conversation->isAdminTakeover() ? 'border-teal-300' : 'border-gray-200' }} p-4">
-            <h3 class="text-sm font-semibold text-gray-700 mb-3">
-                ✍️ Balas Manual
-                @if ($conversation->isAdminTakeover())
-                    <span class="text-xs text-teal-600 ml-2 font-normal">(mode admin takeover)</span>
-                @else
-                    <span class="text-xs text-gray-400 ml-2 font-normal">(bot tetap aktif — takeover tidak otomatis)</span>
-                @endif
-            </h3>
-            <form method="POST" action="{{ route('admin.chatbot.conversations.reply', $conversation) }}">
-                @csrf
-                <div class="flex gap-2">
-                    <textarea name="message"
-                              rows="2"
-                              placeholder="Tulis pesan ke customer..."
-                              required
-                              maxlength="4096"
-                              class="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-300 resize-none">{{ old('message') }}</textarea>
-                    <button type="submit"
-                            class="self-end bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium px-5 py-2 rounded-md whitespace-nowrap">
-                        Kirim
-                    </button>
-                </div>
-                @error('message')
-                    <p class="text-xs text-red-500 mt-1">{{ $message }}</p>
-                @enderror
-            </form>
-        </div>
-        @endif
+            @if ($conversation->bookingRequests->isNotEmpty())
+                <x-admin.chatbot.panel title="Booking Context" description="Draft atau booking aktif yang terkait dengan percakapan ini.">
+                    <div class="space-y-4">
+                        @foreach ($conversation->bookingRequests as $booking)
+                            @php
+                                $bookingStatus = is_string($booking->booking_status) ? $booking->booking_status : $booking->booking_status?->value;
+                            @endphp
+                            <div class="rounded-[22px] border border-slate-100 bg-slate-50 px-4 py-4">
+                                <div class="flex items-start justify-between gap-4">
+                                    <div>
+                                        <div class="text-sm font-semibold text-slate-900">{{ $booking->pickup_location ?? '-' }} -> {{ $booking->destination ?? '-' }}</div>
+                                        <div class="mt-1 text-xs text-slate-500">
+                                            {{ $booking->departure_date?->format('d M Y') ?? '-' }} · {{ $booking->departure_time ?? '-' }}
+                                        </div>
+                                    </div>
+                                    <x-admin.chatbot.status-badge :value="$bookingStatus" size="sm" />
+                                </div>
 
+                                <div class="mt-4 space-y-2 text-sm text-slate-600">
+                                    <div>Passenger: {{ $booking->passenger_name ?? '-' }} ({{ $booking->passenger_count ?? 0 }} org)</div>
+                                    <div>Pickup detail: {{ $booking->pickup_full_address ?? '-' }}</div>
+                                    <div>Destination detail: {{ $booking->destination_full_address ?? '-' }}</div>
+                                    <div>Price: {{ $booking->price_estimate ? 'Rp ' . number_format((float) $booking->price_estimate, 0, ',', '.') : '-' }}</div>
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </x-admin.chatbot.panel>
+            @endif
+
+            @if ($conversation->leadPipelines->isNotEmpty())
+                <x-admin.chatbot.panel title="Lead Pipelines" description="Stage lead yang terkait dengan conversation ini.">
+                    <div class="space-y-3">
+                        @foreach ($conversation->leadPipelines as $lead)
+                            <div class="flex items-center justify-between rounded-[22px] border border-slate-100 bg-slate-50 px-4 py-3">
+                                <div class="text-sm font-medium text-slate-900">{{ $lead->stage }}</div>
+                                <div class="text-xs text-slate-400">{{ $lead->updated_at?->diffForHumans() ?? '-' }}</div>
+                            </div>
+                        @endforeach
+                    </div>
+                </x-admin.chatbot.panel>
+            @endif
+
+            @if ($conversation->escalations->isNotEmpty())
+                <x-admin.chatbot.panel title="Escalation History" description="Catatan escalation yang terkait dengan conversation ini.">
+                    <div class="space-y-3">
+                        @foreach ($conversation->escalations as $escalation)
+                            <div class="rounded-[22px] border border-slate-100 bg-slate-50 px-4 py-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <x-admin.chatbot.status-badge :value="$escalation->status" size="sm" />
+                                    <x-admin.chatbot.status-badge :value="$escalation->priority" size="sm" />
+                                </div>
+                                <p class="mt-3 text-sm leading-6 text-slate-600">{{ $escalation->reason ?? $escalation->summary ?? 'Tidak ada catatan.' }}</p>
+                                <div class="mt-3 text-xs text-slate-400">{{ $escalation->created_at?->format('d M Y H:i') ?? '-' }}</div>
+                            </div>
+                        @endforeach
+                    </div>
+                </x-admin.chatbot.panel>
+            @endif
+        </div>
     </div>
-
 </div>
-
 @endsection

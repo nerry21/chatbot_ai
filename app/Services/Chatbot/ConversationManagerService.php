@@ -180,13 +180,42 @@ class ConversationManagerService
         $message = ConversationMessage::create([
             'conversation_id' => $conversation->id,
             'direction'       => MessageDirection::Outbound,
-            'sender_type'     => SenderType::Agent,
+            'sender_type'     => SenderType::Admin,
             'message_type'    => 'text',
             'message_text'    => $text,
             'raw_payload'     => array_merge($rawPayload, ['admin_id' => $adminId]),
             'is_fallback'     => false,
             'sent_at'         => now(),
             'delivery_status' => MessageDeliveryStatus::Pending,
+        ]);
+
+        $conversation->touchLastMessage();
+
+        return $message;
+    }
+
+    /**
+     * Record an internal system event message on the conversation thread.
+     * This message is not dispatched to WhatsApp and only exists for audit/UI context.
+     *
+     * @param  array<string, mixed>  $rawPayload
+     */
+    public function appendSystemMessage(
+        Conversation $conversation,
+        string $text,
+        array $rawPayload = [],
+    ): ConversationMessage {
+        $message = ConversationMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => MessageDirection::Outbound,
+            'sender_type' => SenderType::System,
+            'message_type' => 'text',
+            'message_text' => $text,
+            'raw_payload' => $rawPayload,
+            'is_fallback' => false,
+            'sent_at' => now(),
+            'delivery_status' => MessageDeliveryStatus::Skipped,
+            'delivery_error' => 'system_event',
         ]);
 
         $conversation->touchLastMessage();

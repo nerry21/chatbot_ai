@@ -24,7 +24,10 @@ class AdminCorrectionLoggerService
             return null;
         }
 
-        if (! $adminMessage->isOutbound() || $adminMessage->sender_type !== SenderType::Agent) {
+        if (
+            ! $adminMessage->isOutbound()
+            || ! in_array($adminMessage->sender_type, [SenderType::Admin, SenderType::Agent], true)
+        ) {
             return null;
         }
 

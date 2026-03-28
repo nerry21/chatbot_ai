@@ -198,7 +198,7 @@ class ConversationContextLoaderService
     {
         return match ($senderType) {
             SenderType::Customer => 'user',
-            SenderType::Agent => 'admin',
+            SenderType::Admin, SenderType::Agent => 'admin',
             default => 'bot',
         };
     }

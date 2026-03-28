@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Models\AdminNotification;
 use App\Models\AiLog;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
@@ -11,122 +10,95 @@ use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Models\Escalation;
 use App\Services\AI\AiQualityService;
+use App\Services\Chatbot\ConversationInsightService;
 use App\Services\Support\ChatbotHealthService;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\View\View;
 
 class ChatbotDashboardController extends Controller
 {
     public function __construct(
         private readonly ChatbotHealthService $healthService,
-        private readonly AiQualityService     $aiQualityService,
+        private readonly AiQualityService $aiQualityService,
+        private readonly ConversationInsightService $conversationInsightService,
     ) {}
 
     public function index(): View
     {
-        // ── Core stats (Tahap 1–8) ────────────────────────────────────────────
-        $stats = [
-            'total_conversations'     => Conversation::count(),
-            'active_conversations'    => Conversation::where('status', 'active')->count(),
-            'needs_human'             => Conversation::where('needs_human', true)->count(),
-            'total_customers'         => Customer::count(),
-            'total_bookings'          => BookingRequest::count(),
-            'awaiting_confirmation'   => BookingRequest::where('booking_status', 'awaiting_confirmation')->count(),
-            'confirmed_bookings'      => BookingRequest::where('booking_status', 'confirmed')->count(),
-            'open_escalations'        => Escalation::where('status', 'open')->count(),
-            'unread_notifications'    => AdminNotification::where('is_read', false)->count(),
-            'ai_logs_today'           => AiLog::whereDate('created_at', today())->count(),
-        ];
-
-        // ── Reliability stats (Tahap 9) ───────────────────────────────────────
-        $reliability = $this->buildReliabilityStats();
-
-        // ── AI quality overview (Tahap 10) ────────────────────────────────────
+        $stats = $this->buildCoreStats();
+        $health = $this->buildHealthSnapshot();
         $aiQuality = $this->buildAiQualityStats();
 
-        $latestConversations = Conversation::with('customer')
-            ->latest('last_message_at')
-            ->limit(5)
-            ->get();
-
-        $latestEscalations = Escalation::with('conversation.customer')
-            ->where('status', 'open')
-            ->latest()
-            ->limit(5)
-            ->get();
-
-        return view('admin.chatbot.dashboard', compact(
-            'stats',
-            'reliability',
-            'aiQuality',
-            'latestConversations',
-            'latestEscalations',
-        ));
+        return view('admin.chatbot.dashboard', [
+            'stats' => $stats,
+            'health' => $health,
+            'aiQuality' => $aiQuality,
+            'workspaceInsights' => $this->conversationInsightService->dashboard(),
+            'recentConversations' => $this->recentConversations(),
+            'recentEscalations' => $this->recentEscalations(),
+            'recentBookings' => $this->recentBookings(),
+            'recentAiIncidents' => $this->recentAiIncidents(),
+            'recentFailedMessages' => $this->recentFailedMessages(),
+        ]);
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
-
     /**
-     * Build reliability summary from direct queries.
-     * We do NOT call ChatbotHealthService::run() here to avoid duplication
-     * of heavy queries on every dashboard load; instead we pull the specific
-     * metrics the UI needs.
-     *
-     * @return array<string, mixed>
+     * @return array<string, int>
      */
-    private function buildReliabilityStats(): array
+    private function buildCoreStats(): array
     {
-        try {
-            $failedMessages24h = ConversationMessage::where('direction', 'outbound')
-                ->where('delivery_status', 'failed')
-                ->where('created_at', '>=', now()->subHours(24))
-                ->count();
-
-            $pendingStale = ConversationMessage::where('direction', 'outbound')
-                ->where('delivery_status', 'pending')
-                ->where('created_at', '<', now()->subMinutes(10))
-                ->count();
-
-            $sentMessages24h = ConversationMessage::where('direction', 'outbound')
-                ->whereIn('delivery_status', ['sent', 'delivered'])
-                ->where('created_at', '>=', now()->subHours(24))
-                ->count();
-
-            $activeTakeovers = Conversation::where('handoff_mode', 'admin')->count();
-
-        } catch (\Throwable) {
-            $failedMessages24h = 0;
-            $pendingStale      = 0;
-            $sentMessages24h   = 0;
-            $activeTakeovers   = 0;
-        }
-
-        // Derive a simple traffic-light status for the reliability card
-        $reliabilityStatus = 'ok';
-        if ($failedMessages24h >= config('chatbot.reliability.health.failed_message_threshold', 10)
-            || $pendingStale >= 5) {
-            $reliabilityStatus = 'critical';
-        } elseif ($failedMessages24h > 0 || $pendingStale > 0) {
-            $reliabilityStatus = 'warning';
-        }
-
         return [
-            'status'               => $reliabilityStatus,
-            'failed_messages_24h'  => $failedMessages24h,
-            'pending_stale'        => $pendingStale,
-            'sent_messages_24h'    => $sentMessages24h,
-            'active_takeovers'     => $activeTakeovers,
-            // These are already in $stats but exposed here for the reliability card context
-            'open_escalations'     => Escalation::where('status', 'open')->count(),
-            'unread_notifications' => AdminNotification::where('is_read', false)->count(),
+            'total_customers' => $this->safeCount(fn (): int => Customer::count()),
+            'total_conversations' => $this->safeCount(fn (): int => Conversation::count()),
+            'active_conversations' => $this->safeCount(fn (): int => Conversation::where('status', 'active')->count()),
+            'human_takeover_active' => $this->safeCount(fn (): int => Conversation::humanTakeoverActive()->count()),
+            'open_escalations' => $this->safeCount(fn (): int => Escalation::where('status', 'open')->count()),
+            'pending_handoffs' => $this->safeCount(function (): int {
+                return Conversation::where(function ($query): void {
+                        $query->where('needs_human', true)
+                            ->orWhere('bot_paused', true)
+                            ->orWhere('status', 'escalated');
+                    })
+                    ->where(function ($query): void {
+                        $query->whereNull('assigned_admin_id')
+                            ->orWhere('handoff_mode', '!=', 'admin');
+                    })
+                    ->count();
+            }),
+            'total_bookings' => $this->safeCount(fn (): int => BookingRequest::count()),
+            'failed_outbound_messages' => $this->safeCount(function (): int {
+                return ConversationMessage::where('direction', 'outbound')
+                    ->where('delivery_status', 'failed')
+                    ->count();
+            }),
+            'ai_logs_today' => $this->safeCount(fn (): int => AiLog::whereDate('created_at', today())->count()),
         ];
     }
 
     /**
-     * Build a lightweight AI quality summary for the dashboard.
-     * Gracefully returns null if quality tracking is disabled or queries fail.
-     *
+     * @return array<string, mixed>
+     */
+    private function buildHealthSnapshot(): array
+    {
+        try {
+            return $this->healthService->run();
+        } catch (\Throwable) {
+            return [
+                'status' => 'warning',
+                'checks' => [],
+                'summary' => [
+                    'failed_messages_24h' => 0,
+                    'pending_messages_stale' => 0,
+                    'open_escalations' => 0,
+                    'unread_notifications' => 0,
+                    'active_takeovers' => 0,
+                    'queue_backlog' => null,
+                ],
+            ];
+        }
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     private function buildAiQualityStats(): ?array
@@ -137,11 +109,103 @@ class ChatbotDashboardController extends Controller
 
         try {
             $overview = $this->aiQualityService->buildOverview();
-            $status   = $this->aiQualityService->qualityStatus($overview['quality_rate']);
 
-            return array_merge($overview, ['status' => $status]);
+            return array_merge($overview, [
+                'status' => $this->aiQualityService->qualityStatus($overview['quality_rate'] ?? 0),
+            ]);
         } catch (\Throwable) {
             return null;
+        }
+    }
+
+    /**
+     * @return EloquentCollection<int, Conversation>
+     */
+    private function recentConversations(): EloquentCollection
+    {
+        try {
+            return Conversation::with(['customer'])
+                ->where('status', 'active')
+                ->latest('last_message_at')
+                ->limit(6)
+                ->get();
+        } catch (\Throwable) {
+            return new EloquentCollection();
+        }
+    }
+
+    /**
+     * @return EloquentCollection<int, Escalation>
+     */
+    private function recentEscalations(): EloquentCollection
+    {
+        try {
+            return Escalation::with(['conversation.customer'])
+                ->latest()
+                ->limit(6)
+                ->get();
+        } catch (\Throwable) {
+            return new EloquentCollection();
+        }
+    }
+
+    /**
+     * @return EloquentCollection<int, BookingRequest>
+     */
+    private function recentBookings(): EloquentCollection
+    {
+        try {
+            return BookingRequest::with(['customer', 'conversation'])
+                ->latest('updated_at')
+                ->limit(6)
+                ->get();
+        } catch (\Throwable) {
+            return new EloquentCollection();
+        }
+    }
+
+    /**
+     * @return EloquentCollection<int, AiLog>
+     */
+    private function recentAiIncidents(): EloquentCollection
+    {
+        try {
+            return AiLog::with(['conversation.customer'])
+                ->where(function ($query): void {
+                    $query->where('status', 'failed')
+                        ->orWhereIn('quality_label', ['low_confidence', 'fallback']);
+                })
+                ->latest()
+                ->limit(6)
+                ->get();
+        } catch (\Throwable) {
+            return new EloquentCollection();
+        }
+    }
+
+    /**
+     * @return EloquentCollection<int, ConversationMessage>
+     */
+    private function recentFailedMessages(): EloquentCollection
+    {
+        try {
+            return ConversationMessage::with(['conversation.customer'])
+                ->where('direction', 'outbound')
+                ->whereIn('delivery_status', ['failed', 'skipped'])
+                ->latest()
+                ->limit(6)
+                ->get();
+        } catch (\Throwable) {
+            return new EloquentCollection();
+        }
+    }
+
+    private function safeCount(callable $callback): int
+    {
+        try {
+            return (int) $callback();
+        } catch (\Throwable) {
+            return 0;
         }
     }
 }

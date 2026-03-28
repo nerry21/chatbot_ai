@@ -62,7 +62,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
             return;
         }
 
-        if (! in_array($message->sender_type, [SenderType::Bot, SenderType::Agent], true)) {
+        if (! in_array($message->sender_type, [SenderType::Bot, SenderType::Admin, SenderType::Agent], true)) {
             WaLog::debug('[Job:SendWA] Skipped — sender_type not bot/agent', [
                 'message_id'  => $message->id,
                 'sender_type' => $message->sender_type->value,

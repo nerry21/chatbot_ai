@@ -4,10 +4,16 @@ use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\AiLogController;
 use App\Http\Controllers\Admin\BookingLeadController;
 use App\Http\Controllers\Admin\ChatbotDashboardController;
+use App\Http\Controllers\Admin\ChatbotSettingsController;
 use App\Http\Controllers\Admin\ConversationController as AdminConversationController;
+use App\Http\Controllers\Admin\ConversationInternalNoteController;
+use App\Http\Controllers\Admin\ConversationStatusController;
+use App\Http\Controllers\Admin\ConversationTagController;
 use App\Http\Controllers\Admin\CustomerController as AdminCustomerController;
 use App\Http\Controllers\Admin\EscalationController;
 use App\Http\Controllers\Admin\KnowledgeBaseController;
+use App\Http\Controllers\Admin\LiveChatController;
+use App\Http\Controllers\Admin\LiveChatMessageController;
 use App\Http\Controllers\ProfileController;
 use App\Support\WaLog;
 use Illuminate\Support\Facades\Log;
@@ -42,6 +48,20 @@ Route::middleware(['auth', 'chatbot.admin'])
         Route::get('/', [ChatbotDashboardController::class, 'index'])
             ->name('dashboard');
 
+        // Live chats alias for the admin console shell
+        Route::get('/live-chats', [LiveChatController::class, 'index'])
+            ->name('live-chats.index');
+        Route::get('/live-chats/poll/list', [LiveChatController::class, 'pollList'])
+            ->name('live-chats.poll.list');
+        Route::get('/live-chats/{conversation}/poll', [LiveChatController::class, 'pollConversation'])
+            ->name('live-chats.poll.conversation');
+        Route::post('/live-chats/{conversation}/mark-read', [LiveChatController::class, 'markRead'])
+            ->name('live-chats.mark-read');
+        Route::get('/live-chats/{conversation}', [LiveChatController::class, 'show'])
+            ->name('live-chats.show');
+        Route::post('/live-chats/{conversation}/messages', [LiveChatMessageController::class, 'store'])
+            ->name('live-chats.messages.store');
+
         // Conversations
         Route::get('/conversations', [AdminConversationController::class, 'index'])
             ->name('conversations.index');
@@ -53,6 +73,18 @@ Route::middleware(['auth', 'chatbot.admin'])
             ->name('conversations.takeover');
         Route::post('/conversations/{conversation}/release', [AdminConversationController::class, 'release'])
             ->name('conversations.release');
+        Route::post('/conversations/{conversation}/notes', [ConversationInternalNoteController::class, 'store'])
+            ->name('conversations.notes.store');
+        Route::post('/conversations/{conversation}/tags', [ConversationTagController::class, 'store'])
+            ->name('conversations.tags.store');
+        Route::post('/conversations/{conversation}/status/escalate', [ConversationStatusController::class, 'escalate'])
+            ->name('conversations.status.escalate');
+        Route::post('/conversations/{conversation}/status/urgent', [ConversationStatusController::class, 'urgent'])
+            ->name('conversations.status.urgent');
+        Route::post('/conversations/{conversation}/status/close', [ConversationStatusController::class, 'close'])
+            ->name('conversations.status.close');
+        Route::post('/conversations/{conversation}/status/reopen', [ConversationStatusController::class, 'reopen'])
+            ->name('conversations.status.reopen');
         // Tahap 9: manual resend of a failed/skipped outbound message
         Route::post('/conversations/{conversation}/messages/{message}/resend', [AdminConversationController::class, 'resendMessage'])
             ->name('conversations.messages.resend');
@@ -98,6 +130,10 @@ Route::middleware(['auth', 'chatbot.admin'])
             ->name('knowledge.edit');
         Route::patch('/knowledge/{knowledgeArticle}', [KnowledgeBaseController::class, 'update'])
             ->name('knowledge.update');
+
+        // Settings
+        Route::get('/settings', [ChatbotSettingsController::class, 'index'])
+            ->name('settings.index');
     });
 
 // ─────────────────────────────────────────────────────────────────────────────
