@@ -8,6 +8,8 @@ use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Services\Chatbot\ConversationReplyGuardService;
 use App\Services\Chatbot\ConversationStateService;
+use App\Services\Chatbot\Guardrails\ReplyLoopGuardService;
+use App\Services\Chatbot\Guardrails\UnavailableReplyGuardService;
 use Illuminate\Config\Repository as ConfigRepository;
 use Illuminate\Container\Container;
 use PHPUnit\Framework\TestCase;
@@ -205,6 +207,52 @@ class ConversationReplyGuardServiceTest extends TestCase
         $this->assertStringNotContainsString('untuk keberangkatan ini ada berapa orang penumpangnya', mb_strtolower($result['reply']['text'], 'UTF-8'));
     }
 
+    public function test_it_does_not_skip_repeat_when_inbound_context_has_changed(): void
+    {
+        $service = $this->makeServiceWithState(null);
+        $conversation = new Conversation();
+        $reply = [
+            'text' => 'Baik, saya bantu cek lagi ya.',
+            'is_fallback' => false,
+            'message_type' => 'text',
+            'meta' => [
+                'source' => 'ai_reply',
+                'action' => 'pass_through',
+            ],
+        ];
+
+        $previousInboundFingerprint = $service->buildInboundContextFingerprint(
+            messageText: 'besok jam 10 ada?',
+            intentResult: ['intent' => 'tanya_jam'],
+            entityResult: ['destination' => 'Pekanbaru'],
+            resolvedContext: ['last_destination' => 'Pekanbaru'],
+        );
+        $candidateInboundFingerprint = $service->buildInboundContextFingerprint(
+            messageText: 'besok jam 10 ada?',
+            intentResult: ['intent' => 'tanya_jam'],
+            entityResult: ['destination' => 'Bangkinang'],
+            resolvedContext: ['last_destination' => 'Bangkinang'],
+        );
+
+        $latestIdentity = $service->buildReplyIdentity($conversation, $reply, $previousInboundFingerprint);
+        $latestOutbound = new ConversationMessage([
+            'direction' => MessageDirection::Outbound,
+            'sender_type' => SenderType::Bot,
+            'message_type' => 'text',
+            'message_text' => 'Baik, saya bantu cek lagi ya.',
+            'raw_payload' => $latestIdentity,
+        ]);
+        $candidateIdentity = $service->buildReplyIdentity($conversation, $reply, $candidateInboundFingerprint);
+
+        $this->assertFalse($service->shouldSkipRepeat(
+            $conversation,
+            $latestOutbound,
+            $reply,
+            $candidateIdentity,
+            $candidateInboundFingerprint,
+        ));
+    }
+
     private function makeServiceWithState(
         ?array $unavailableState,
         ?array $recentReplyIdentity = null,
@@ -225,6 +273,9 @@ class ConversationReplyGuardServiceTest extends TestCase
             }
         );
 
-        return new ConversationReplyGuardService($stateService);
+        return new ConversationReplyGuardService(
+            new UnavailableReplyGuardService($stateService),
+            new ReplyLoopGuardService($stateService),
+        );
     }
 }

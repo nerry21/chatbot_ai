@@ -28,6 +28,8 @@ class IntentDetectionService
     ): array {
         $rawIntent = IntentType::tryFrom((string) ($rawIntentResult['intent'] ?? ''));
         $confidence = (float) ($rawIntentResult['confidence'] ?? 0.0);
+        $handoffRecommended = (bool) ($rawIntentResult['handoff_recommended'] ?? false);
+        $needsClarification = (bool) ($rawIntentResult['needs_clarification'] ?? false);
 
         if (($signals['close_intent'] ?? false) === true) {
             return $this->result(IntentType::CloseIntent, max($confidence, 0.98), 'Customer memberi sinyal penutup.');
@@ -43,6 +45,10 @@ class IntentDetectionService
 
         if (($signals['today_schedule_keyword'] ?? false) === true) {
             return $this->result(IntentType::TanyaKeberangkatanHariIni, max($confidence, 0.98), 'Customer menanyakan keberangkatan hari ini.');
+        }
+
+        if ($handoffRecommended) {
+            return $this->result(IntentType::HumanHandoff, max($confidence, 0.95), 'Understanding LLM merekomendasikan handoff ke admin.');
         }
 
         if ($this->isFinalConfirmation($signals, $slots, $updates)) {
@@ -63,6 +69,17 @@ class IntentDetectionService
 
         if (($signals['schedule_keyword'] ?? false) === true || in_array($rawIntent, [IntentType::ScheduleInquiry, IntentType::TanyaJam], true)) {
             return $this->result(IntentType::TanyaJam, max($confidence, 0.95), 'Customer menanyakan jam atau jadwal keberangkatan.');
+        }
+
+        if (
+            $needsClarification
+            && (
+                ($rawIntent?->isBookingRelated() === true)
+                || $updates !== []
+                || $this->hasBookingState($slots)
+            )
+        ) {
+            return $this->result(IntentType::Booking, max($confidence, 0.85), 'Understanding LLM membaca konteks booking tetapi masih perlu klarifikasi.');
         }
 
         if (

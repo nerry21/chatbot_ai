@@ -9,6 +9,7 @@ use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
+use App\Services\Booking\Guardrails\ActionEligibilityValidatorService;
 use App\Services\Chatbot\GreetingService;
 use App\Services\Chatbot\HumanEscalationService;
 use App\Services\Chatbot\IntentDetectionService;
@@ -32,12 +33,13 @@ class BookingFlowStateMachine
         private readonly IntentDetectionService $intentDetectionService,
         private readonly BookingInteractiveMessageService $interactiveService,
         private readonly BookingReplyNaturalizerService $replyNaturalizer,
+        private readonly ActionEligibilityValidatorService $actionEligibilityValidator,
     ) {}
 
     /**
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $entityResult
-     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>  $replyResult Optional precomposed reply for backward compatibility.
      * @return array{
      *     handled: bool,
      *     booking: BookingRequest|null,
@@ -52,7 +54,7 @@ class BookingFlowStateMachine
         ConversationMessage $message,
         array $intentResult,
         array $entityResult,
-        array $replyResult,
+        array $replyResult = [],
     ): array {
         $booking = $this->bookingAssistant->findExistingDraft($conversation);
         $slots = $this->stateService->hydrateFromBooking($conversation, $booking);
@@ -91,6 +93,8 @@ class BookingFlowStateMachine
             'message_id' => $message->id,
             'raw_intent' => $rawIntentValue !== '' ? $rawIntentValue : null,
             'resolved_intent' => $intentResult['intent'] ?? null,
+            'llm_needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
+            'llm_handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
             'expected_input' => $expectedInput,
             'slot_update_keys' => array_keys($updates),
             'signal_flags' => array_keys(array_filter($signals, fn (mixed $value): bool => $value === true)),
@@ -105,6 +109,34 @@ class BookingFlowStateMachine
 
         if ($signals['human_keyword']) {
             return $this->escalateUnknownQuestion($conversation, $customer, $intentResult, $signals, $messageText, $booking);
+        }
+
+        $eligibility = $this->actionEligibilityValidator->validate(
+            conversation: $conversation,
+            intentResult: $intentResult,
+            slots: array_merge($slots, [
+                'booking_expected_input' => $expectedInput,
+            ]),
+            updates: $updates,
+            booking: $booking,
+        );
+        $intentResult = $eligibility['intent_result'];
+
+        if (is_array($eligibility['reply'] ?? null)) {
+            WaLog::info('[BookingFlow] action eligibility guard applied', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'validator_action' => $eligibility['meta']['action'] ?? null,
+                'reasons' => $eligibility['meta']['reasons'] ?? [],
+                'resolved_intent' => $intentResult['intent'] ?? null,
+            ]);
+
+            return $this->decision(
+                booking: $booking,
+                action: (string) ($eligibility['meta']['action'] ?? 'guarded'),
+                reply: $eligibility['reply'],
+                intentResult: $intentResult,
+            );
         }
 
         $hasBookingContext = $this->hasBookingContext($conversation, $booking, $intentResult, $slots, $updates, $signals);
@@ -210,23 +242,33 @@ class BookingFlowStateMachine
                 );
             }
 
-            if (($replyResult['is_fallback'] ?? false) === true || in_array((string) ($intentResult['intent'] ?? ''), [
-                IntentType::Unknown->value,
-                IntentType::OutOfScope->value,
-                IntentType::Support->value,
-                IntentType::HumanHandoff->value,
-                IntentType::PertanyaanTidakTerjawab->value,
-            ], true)) {
+            if ($this->shouldEscalateWithoutAutoReply($intentResult, $replyResult)) {
                 return $this->escalateUnknownQuestion($conversation, $customer, $intentResult, $signals, $messageText, null);
+            }
+
+            if (trim((string) ($replyResult['text'] ?? '')) !== '') {
+                return $this->decision(
+                    booking: null,
+                    action: 'pass_through',
+                    reply: $this->reply(
+                        $this->withGreetingContext($signals, $messageText, (string) ($replyResult['text'] ?? '')),
+                        ['source' => 'ai_reply', 'action' => 'pass_through'],
+                        (bool) ($replyResult['is_fallback'] ?? false),
+                    ),
+                    intentResult: $intentResult,
+                );
             }
 
             return $this->decision(
                 booking: null,
-                action: 'pass_through',
+                action: 'compose_ai_reply',
                 reply: $this->reply(
-                    $this->withGreetingContext($signals, $messageText, (string) ($replyResult['text'] ?? '')),
-                    ['source' => 'ai_reply', 'action' => 'pass_through'],
-                    (bool) ($replyResult['is_fallback'] ?? false),
+                    '',
+                    [
+                        'source' => 'ai_reply',
+                        'action' => 'compose_ai_reply',
+                        'requires_composition' => true,
+                    ],
                 ),
                 intentResult: $intentResult,
             );
@@ -1092,6 +1134,29 @@ class BookingFlowStateMachine
 
         return in_array('pickup_location', $keys, true)
             && in_array('destination', $keys, true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $replyResult
+     */
+    private function shouldEscalateWithoutAutoReply(array $intentResult, array $replyResult): bool
+    {
+        if (($replyResult['is_fallback'] ?? false) === true) {
+            return true;
+        }
+
+        if (($intentResult['handoff_recommended'] ?? false) === true) {
+            return true;
+        }
+
+        return in_array((string) ($intentResult['intent'] ?? ''), [
+            IntentType::Unknown->value,
+            IntentType::OutOfScope->value,
+            IntentType::Support->value,
+            IntentType::HumanHandoff->value,
+            IntentType::PertanyaanTidakTerjawab->value,
+        ], true);
     }
 
     /**

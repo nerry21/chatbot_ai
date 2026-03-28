@@ -17,6 +17,7 @@ return [
         'models' => [
             'intent'     => env('OPENAI_MODEL_INTENT',     'gpt-4o-mini'),
             'extraction' => env('OPENAI_MODEL_EXTRACTION', 'gpt-4o-mini'),
+            'grounded_response' => env('OPENAI_MODEL_GROUNDED_RESPONSE', 'gpt-4o-mini'),
             'reply'      => env('OPENAI_MODEL_REPLY',      'gpt-4o-mini'),
             'summary'    => env('OPENAI_MODEL_SUMMARY',    'gpt-4o-mini'),
         ],
@@ -552,6 +553,31 @@ return [
         'low_confidence_threshold'       => (float) env('CHATBOT_AI_LOW_CONFIDENCE_THRESHOLD', 0.40),
         'dashboard_days_window'          => (int)   env('CHATBOT_AI_DASHBOARD_DAYS_WINDOW', 7),
         'sample_recent_logs_limit'       => (int)   env('CHATBOT_AI_SAMPLE_LOGS_LIMIT', 20),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Continuous Improvement Foundation
+    |--------------------------------------------------------------------------
+    |
+    | enabled                    - Master switch for learning signal logging.
+    | store_case_memory          - Persist successful/corrected cases for later retrieval.
+    | case_memory_min_confidence - Minimum LLM understanding confidence before a
+    |                              successful turn may become reusable memory.
+    | case_memory_max_candidates - Upper bound on lightweight in-app retrieval scan.
+    | case_memory_retrieval_limit - How many examples to return per retrieval call.
+    | correction_window_hours    - Max age of the linked inbound/bot turn for
+    |                              admin correction capture.
+    |
+    */
+
+    'continuous_improvement' => [
+        'enabled' => (bool) env('CHATBOT_CONTINUOUS_IMPROVEMENT_ENABLED', true),
+        'store_case_memory' => (bool) env('CHATBOT_STORE_CASE_MEMORY', true),
+        'case_memory_min_confidence' => (float) env('CHATBOT_CASE_MEMORY_MIN_CONFIDENCE', 0.75),
+        'case_memory_max_candidates' => (int) env('CHATBOT_CASE_MEMORY_MAX_CANDIDATES', 30),
+        'case_memory_retrieval_limit' => (int) env('CHATBOT_CASE_MEMORY_RETRIEVAL_LIMIT', 3),
+        'correction_window_hours' => (int) env('CHATBOT_CORRECTION_WINDOW_HOURS', 24),
     ],
 
     /*

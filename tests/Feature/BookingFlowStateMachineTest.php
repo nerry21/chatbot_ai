@@ -370,6 +370,8 @@ class BookingFlowStateMachineTest extends TestCase
 
     public function test_it_offers_another_departure_time_when_remaining_seats_are_not_enough(): void
     {
+        Carbon::setTestNow(Carbon::parse('2026-03-27 08:00:00', 'Asia/Jakarta'));
+
         [$customer, $conversation] = $this->makeConversation();
         [$otherCustomer, $otherConversation] = $this->makeConversation('+6281234567891');
         $flow = app(BookingFlowStateMachine::class);
@@ -463,6 +465,32 @@ class BookingFlowStateMachineTest extends TestCase
         );
         $this->assertTrue($slots['waiting_admin_takeover']);
         $this->assertTrue($slots['needs_human_escalation']);
+    }
+
+    public function test_it_can_choose_ai_compose_action_without_prebuilt_reply(): void
+    {
+        [$customer, $conversation] = $this->makeConversation();
+        $flow = app(BookingFlowStateMachine::class);
+
+        $reply = $flow->handle(
+            conversation: $conversation,
+            customer: $customer,
+            message: $this->inboundMessage($conversation, 'apakah tersedia untuk saya?'),
+            intentResult: [
+                'intent' => IntentType::ScheduleInquiry->value,
+                'confidence' => 0.88,
+                'reasoning_short' => 'Customer menanyakan ketersediaan secara umum.',
+                'needs_clarification' => false,
+                'handoff_recommended' => false,
+            ],
+            entityResult: [],
+            replyResult: [],
+        );
+
+        $this->assertSame('compose_ai_reply', $reply['booking_decision']['action']);
+        $this->assertSame('ai_reply', $reply['reply']['meta']['source']);
+        $this->assertTrue($reply['reply']['meta']['requires_composition']);
+        $this->assertSame('', $reply['reply']['text']);
     }
 
     public function test_acknowledgement_does_not_close_an_active_booking_step(): void

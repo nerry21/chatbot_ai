@@ -90,7 +90,7 @@ class BookingSlotExtractorService
         }
         $signals['time_ambiguous'] = $time['ambiguous'];
 
-        $seats = $this->extractSeatSelection($text, $normalized, $expectedInput);
+        $seats = $this->extractSeatSelection($text, $normalized, $expectedInput, $entityResult);
         if ($seats !== []) {
             $updates['selected_seats'] = $seats;
         }
@@ -303,10 +303,23 @@ class BookingSlotExtractorService
     }
 
     /**
+     * @param  array<string, mixed>  $entityResult
      * @return array<int, string>
      */
-    private function extractSeatSelection(string $messageText, string $normalizedText, ?string $expectedInput): array
+    private function extractSeatSelection(string $messageText, string $normalizedText, ?string $expectedInput, array $entityResult): array
     {
+        $entitySeats = $entityResult['selected_seats'] ?? $entityResult['seat_number'] ?? null;
+
+        if (is_array($entitySeats) && $entitySeats !== []) {
+            return $this->seatAvailability->normalizeSeatSelection($entitySeats);
+        }
+
+        if (is_string($entitySeats) && trim($entitySeats) !== '') {
+            $selection = preg_split('/[\n,;\/]+/u', $entitySeats) ?: [$entitySeats];
+
+            return $this->seatAvailability->normalizeSeatSelection($selection);
+        }
+
         $explicit = $expectedInput === 'selected_seats' || (bool) preg_match('/\b(seat|kursi)\b/u', $normalizedText);
         $chunks = preg_split('/[\n,;\/]+/u', $messageText) ?: [$messageText];
         $selection = [];

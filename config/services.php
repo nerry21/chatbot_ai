@@ -9,8 +9,7 @@ return [
     |
     | This file is for storing the credentials for third party services such
     | as Mailgun, Postmark, AWS and more. This file provides the de facto
-    | location for this type of information, allowing packages to have
-    | a conventional file to locate the various service credentials.
+    | location for the various service credentials.
     |
     */
 
@@ -36,9 +35,31 @@ return [
     ],
 
     'whatsapp' => [
-        'verify_token'      => env('WHATSAPP_VERIFY_TOKEN'),
-        'phone_number_id'   => env('WHATSAPP_PHONE_NUMBER_ID'),
-        'access_token'      => env('WHATSAPP_ACCESS_TOKEN'),
+        'verify_token'    => env('WHATSAPP_VERIFY_TOKEN'),
+        'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
+        'access_token'    => env('WHATSAPP_ACCESS_TOKEN'),
+    ],
+
+    'openai' => [
+        'key' => env('OPENAI_API_KEY'),
+        'api_key' => env('OPENAI_API_KEY'),
+        'base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+        'timeout' => (int) env('OPENAI_TIMEOUT', 90),
+
+        'model_intent' => env('OPENAI_MODEL_INTENT', 'gpt-5.4-mini'),
+        'model_extraction' => env('OPENAI_MODEL_EXTRACTION', 'gpt-5.4-mini'),
+        'model_reply' => env('OPENAI_MODEL_REPLY', 'gpt-5.4'),
+        'model_summary' => env('OPENAI_MODEL_SUMMARY', 'gpt-5.4-mini'),
+
+        'reasoning_effort_intent' => env('OPENAI_REASONING_EFFORT_INTENT', 'low'),
+        'reasoning_effort_extraction' => env('OPENAI_REASONING_EFFORT_EXTRACTION', 'low'),
+        'reasoning_effort_reply' => env('OPENAI_REASONING_EFFORT_REPLY', 'medium'),
+        'reasoning_effort_summary' => env('OPENAI_REASONING_EFFORT_SUMMARY', 'low'),
+
+        'max_output_tokens_intent' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_INTENT', 300),
+        'max_output_tokens_extraction' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_EXTRACTION', 500),
+        'max_output_tokens_reply' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_REPLY', 700),
+        'max_output_tokens_summary' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_SUMMARY', 250),
     ],
 
 ];

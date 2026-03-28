@@ -97,6 +97,62 @@ class LlmClientService
         );
     }
 
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function understandMessage(array $context): array
+    {
+        $fallback = [
+            'intent' => 'unknown',
+            'sub_intent' => null,
+            'confidence' => 0.0,
+            'uses_previous_context' => false,
+            'entities' => [
+                'origin' => null,
+                'destination' => null,
+                'travel_date' => null,
+                'departure_time' => null,
+                'passenger_count' => null,
+                'passenger_name' => null,
+                'seat_number' => null,
+                'payment_method' => null,
+            ],
+            'needs_clarification' => true,
+            'clarification_question' => 'Boleh dijelaskan lagi kebutuhan perjalanannya?',
+            'handoff_recommended' => false,
+            'reasoning_summary' => 'LLM understanding tidak aktif atau gagal.',
+        ];
+
+        return $this->callChat(
+            context: $context,
+            taskType: 'message_understanding',
+            model: $context['model'] ?? config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent')),
+            expectJson: true,
+            fallback: $fallback,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function composeGroundedResponse(array $context): array
+    {
+        $fallback = [
+            'text' => '',
+            'mode' => 'direct_answer',
+        ];
+
+        return $this->callChat(
+            context: $context,
+            taskType: 'grounded_response_composition',
+            model: $context['model'] ?? config('chatbot.llm.models.grounded_response', config('chatbot.llm.models.reply')),
+            expectJson: true,
+            fallback: $fallback,
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Private core
     // -------------------------------------------------------------------------

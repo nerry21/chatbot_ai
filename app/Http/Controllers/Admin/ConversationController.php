@@ -13,6 +13,7 @@ use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\AdminNotification;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
+use App\Services\AI\Learning\AdminCorrectionLoggerService;
 use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Support\AuditLogService;
 use Illuminate\Http\RedirectResponse;
@@ -83,6 +84,7 @@ class ConversationController extends Controller
         SendConversationReplyRequest $request,
         Conversation $conversation,
         ConversationManagerService $manager,
+        AdminCorrectionLoggerService $adminCorrectionLogger,
     ): RedirectResponse {
         $conversation->loadMissing('customer');
 
@@ -94,6 +96,12 @@ class ConversationController extends Controller
             conversation: $conversation,
             text:         $request->input('message'),
             adminId:      auth()->id(),
+        );
+
+        $adminCorrectionLogger->captureForAdminReply(
+            conversation: $conversation,
+            adminMessage: $message,
+            adminId: auth()->id(),
         );
 
         SendWhatsAppMessageJob::dispatch($message->id);

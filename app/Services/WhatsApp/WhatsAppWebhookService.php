@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\Chatbot\ConversationManagerService;
+use App\Services\OpenAiChatService;
 use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
 use Illuminate\Support\Carbon;
@@ -22,6 +23,7 @@ class WhatsAppWebhookService
         private readonly WhatsAppMessageParser $parser,
         private readonly PhoneNumberService $phoneService,
         private readonly ConversationManagerService $conversationManager,
+        private readonly OpenAiChatService $openAiChatService,
     ) {
     }
 
@@ -115,6 +117,13 @@ class WhatsAppWebhookService
             'text_preview' => $text ? mb_substr((string) $text, 0, 80) : null,
         ]);
 
+        $openAiSeed = $this->buildOpenAiSeed(
+            parsedMessage: $parsedMessage,
+            messageText: is_string($text) ? $text : null,
+            phoneE164: $phoneE164,
+            sentAt: $sentAt,
+        );
+
         try {
             DB::transaction(function () use (
                 $phoneE164,
@@ -123,7 +132,8 @@ class WhatsAppWebhookService
                 $text,
                 $type,
                 $sentAt,
-                $parsedMessage
+                $parsedMessage,
+                $openAiSeed,
             ): void {
                 $customer = $this->findOrCreateCustomer($phoneE164, $fromName);
 
@@ -151,6 +161,7 @@ class WhatsAppWebhookService
                         : (is_array($parsedMessage['raw_message'] ?? null)
                             ? $parsedMessage['raw_message']
                             : []),
+                    openAiSeed: $openAiSeed,
                 );
 
                 WaLog::info('[WebhookService] Inbound message persisted', [
@@ -218,7 +229,17 @@ class WhatsAppWebhookService
         ?string $messageText,
         ?Carbon $sentAt,
         array $rawPayload,
+        array $openAiSeed = [],
     ): ConversationMessage {
+        $intentPreview = is_array($openAiSeed['intent'] ?? null) ? $openAiSeed['intent'] : [];
+        $aiIntent = $this->normalizeAiIntent($intentPreview['intent'] ?? null);
+        $aiConfidence = $this->normalizeAiConfidence($intentPreview['confidence'] ?? null);
+        $enrichedPayload = $rawPayload;
+
+        if ($openAiSeed !== []) {
+            $enrichedPayload['_openai_seed'] = $openAiSeed;
+        }
+
         /** @var ConversationMessage $message */
         $message = ConversationMessage::create([
             'conversation_id' => $conversation->id,
@@ -226,8 +247,10 @@ class WhatsAppWebhookService
             'sender_type' => SenderType::Customer,
             'message_type' => $messageType,
             'message_text' => $messageText,
-            'raw_payload' => $rawPayload,
+            'raw_payload' => $enrichedPayload,
             'wa_message_id' => $waMessageId,
+            'ai_intent' => $aiIntent,
+            'ai_confidence' => $aiConfidence,
             'is_fallback' => false,
             'sent_at' => $sentAt ?? now(),
         ]);
@@ -294,5 +317,100 @@ class WhatsAppWebhookService
 
         return in_array($sqlState, ['23000', '23505'], true)
             || in_array($errorCode, [1062, 1555, 2067], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $parsedMessage
+     * @return array<string, mixed>
+     */
+    private function buildOpenAiSeed(
+        array $parsedMessage,
+        ?string $messageText,
+        string $phoneE164,
+        ?Carbon $sentAt,
+    ): array {
+        if (! $this->shouldBuildOpenAiSeed($messageText)) {
+            return [];
+        }
+
+        $context = array_filter([
+            'channel' => 'whatsapp',
+            'message_type' => $parsedMessage['message_type'] ?? 'text',
+            'from_name' => $parsedMessage['from_name'] ?? null,
+            'sent_at' => $sentAt?->toIso8601String(),
+            'interactive_reply' => is_array($parsedMessage['interactive_reply'] ?? null)
+                ? $parsedMessage['interactive_reply']
+                : null,
+            'metadata' => is_array($parsedMessage['metadata'] ?? null)
+                ? $parsedMessage['metadata']
+                : null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []);
+
+        try {
+            $intent = $this->openAiChatService->detectIntent($messageText, $context);
+            $bookingData = $this->openAiChatService->extractBookingData($messageText, $context);
+
+            WaLog::debug('[WebhookService] OpenAI seed built for inbound message', [
+                'intent' => $intent['intent'] ?? null,
+                'confidence' => $intent['confidence'] ?? null,
+                'has_booking_data' => array_filter(
+                    $bookingData,
+                    static fn (mixed $value): bool => $value !== null && $value !== ''
+                ) !== [],
+            ]);
+
+            return [
+                'source' => OpenAiChatService::class,
+                'seeded_at' => now()->toIso8601String(),
+                'intent' => $intent,
+                'booking_data' => $bookingData,
+            ];
+        } catch (Throwable $e) {
+            WaLog::warning('[WebhookService] OpenAI seed skipped after recoverable failure', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+
+    private function shouldBuildOpenAiSeed(?string $messageText): bool
+    {
+        if (! config('openai.enabled', true)) {
+            return false;
+        }
+
+        if (! config('openai.seed_on_webhook', true)) {
+            return false;
+        }
+
+        if (trim((string) $messageText) === '') {
+            return false;
+        }
+
+        return trim((string) config('services.openai.api_key', '')) !== '';
+    }
+
+    private function normalizeAiIntent(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $intent = trim((string) $value);
+
+        return $intent !== '' ? $intent : null;
+    }
+
+    private function normalizeAiConfidence(mixed $value): ?float
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $confidence = (float) $value;
+        $confidence = max(0.0, min(1.0, $confidence));
+
+        return $confidence;
     }
 }

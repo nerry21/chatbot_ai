@@ -305,8 +305,25 @@ class PromptBuilderService
         $lines[] = "Intent: {$intent}";
         $lines[] = '';
 
+        $understanding = $context['understanding_result'] ?? [];
+        if (is_array($understanding) && $understanding !== []) {
+            $lines[] = '=== HASIL UNDERSTANDING ===';
+            if (! empty($understanding['sub_intent'])) {
+                $lines[] = 'Sub-intent: '.$understanding['sub_intent'];
+            }
+            if (! empty($understanding['reasoning_summary'])) {
+                $lines[] = 'Reasoning: '.$understanding['reasoning_summary'];
+            }
+            if (($understanding['needs_clarification'] ?? false) === true && ! empty($understanding['clarification_question'])) {
+                $lines[] = 'Klarifikasi yang dibutuhkan: '.$understanding['clarification_question'];
+            }
+            if (($understanding['uses_previous_context'] ?? false) === true) {
+                $lines[] = 'Pesan terbaru bergantung pada konteks sebelumnya.';
+            }
+            $lines[] = '';
+        }
+
         $entities = $context['entity_result'] ?? [];
-        $hasEntities = array_filter($entities, fn ($v) => $v !== null && $v !== [] && $key !== 'missing_fields');
         if (! empty($entities)) {
             $lines[] = '=== DATA PERJALANAN YANG SUDAH TERKUMPUL ===';
             foreach (['pickup_location', 'destination', 'departure_date', 'departure_time', 'passenger_count'] as $field) {
@@ -317,6 +334,21 @@ class PromptBuilderService
             if (! empty($entities['missing_fields'])) {
                 $missing = implode(', ', $entities['missing_fields']);
                 $lines[] = "  - Data yang masih kurang: {$missing}";
+            }
+            $lines[] = '';
+        }
+
+        if (! empty($context['conversation_summary'])) {
+            $lines[] = '=== RINGKASAN KONTEKS ===';
+            $lines[] = (string) $context['conversation_summary'];
+            $lines[] = '';
+        }
+
+        if (! empty($context['resolved_context']) && is_array($context['resolved_context'])) {
+            $lines[] = '=== KONTEKS AKTIF ===';
+            foreach ($context['resolved_context'] as $key => $value) {
+                $valueStr = is_array($value) ? json_encode($value) : (string) $value;
+                $lines[] = "  {$key}: {$valueStr}";
             }
             $lines[] = '';
         }
