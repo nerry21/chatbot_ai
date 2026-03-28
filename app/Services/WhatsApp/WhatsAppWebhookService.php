@@ -75,6 +75,15 @@ class WhatsAppWebhookService
         $type = (string) ($parsedMessage['message_type'] ?? 'text');
         $sentAt = $this->parseTimestamp($parsedMessage['timestamp'] ?? null);
 
+        if ($messageId === null) {
+            WaLog::warning('[WebhookService] Message skipped because wa_message_id is missing', [
+                'from' => WaLog::maskPhone((string) ($rawWaId ?? '')),
+                'type' => $type,
+            ]);
+
+            return;
+        }
+
         if ($rawWaId === null || trim((string) $rawWaId) === '') {
             WaLog::warning('[WebhookService] Message has no sender wa_id — skipping', [
                 'wa_message_id' => $messageId,

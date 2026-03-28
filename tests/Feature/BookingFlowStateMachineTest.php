@@ -203,10 +203,21 @@ class BookingFlowStateMachineTest extends TestCase
         );
 
         $this->assertStringContainsString('ongkos rute Pasir Pengaraian ke Pekanbaru', $destinationReply['reply']['text']);
-        $this->assertSame('passenger_name', $stateService->expectedInput($conversation->fresh()));
+        $this->assertSame('destination_full_address', $stateService->expectedInput($conversation->fresh()));
         $booking = BookingRequest::query()->where('conversation_id', $conversation->id)->latest()->first();
         $this->assertSame('pasir pengaraian__pekanbaru', $booking?->trip_key);
         $this->assertSame(['pasir pengaraian__pekanbaru', 'pasir pengaraian__pekanbaru'], $booking?->seatReservations()->orderBy('seat_code')->pluck('trip_key')->all());
+
+        $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'Jl Tuanku Tambusai No 5'),
+            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
+            entityResult: [],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $this->assertSame('passenger_name', $stateService->expectedInput($conversation->fresh()));
 
         $flow->handle(
             conversation: $conversation->fresh(),
@@ -230,7 +241,10 @@ class BookingFlowStateMachineTest extends TestCase
 
         $this->assertTrue($readySlots['review_sent']);
         $this->assertSame(BookingFlowState::AwaitingFinalConfirmation->value, $readySlots['booking_intent_status']);
+        $this->assertSame('final_confirmation', $stateService->expectedInput($conversation->fresh()));
         $this->assertSame('+6281234567890', $readySlots['contact_number']);
+        $this->assertSame('Jl Tuanku Tambusai No 5', $readySlots['destination_full_address']);
+        $this->assertNotNull($readySlots['review_hash']);
         $this->assertContainsAny(
             mb_strtolower($contactReply['reply']['text'], 'UTF-8'),
             [
@@ -241,6 +255,9 @@ class BookingFlowStateMachineTest extends TestCase
         );
         $this->assertStringContainsString('No HP', $contactReply['reply']['text']);
         $this->assertStringContainsString('Total ongkos', $contactReply['reply']['text']);
+        $this->assertStringContainsString('Alamat tujuan antar', $contactReply['reply']['text']);
+        $this->assertStringContainsString('Jl Tuanku Tambusai No 5', $contactReply['reply']['text']);
+        $this->assertSame('interactive', $contactReply['reply']['message_type']);
 
         $confirmedReply = $flow->handle(
             conversation: $conversation->fresh(),
@@ -286,6 +303,45 @@ class BookingFlowStateMachineTest extends TestCase
             'ada yang bisa kami bantu untuk perjalanannya?',
             'keperluannya apa ya, biar kami bantu cek?',
         ]);
+    }
+
+    public function test_it_does_not_repeat_full_review_while_waiting_for_final_confirmation(): void
+    {
+        [$customer, $conversation] = $this->makeConversation();
+        $flow = app(BookingFlowStateMachine::class);
+        $stateService = app(BookingConversationStateService::class);
+
+        $stateService->putMany($conversation, [
+            'pickup_location' => 'Pasir Pengaraian',
+            'pickup_full_address' => 'Jl Sudirman No 1',
+            'destination' => 'Pekanbaru',
+            'destination_full_address' => 'Jl Tuanku Tambusai No 5',
+            'passenger_name' => 'Andi',
+            'passenger_names' => ['Andi'],
+            'passenger_count' => 1,
+            'travel_date' => '2026-03-28',
+            'travel_time' => '08:00',
+            'selected_seats' => ['CC'],
+            'contact_number' => '+6281234567890',
+            'route_status' => 'supported',
+            'fare_amount' => 150000,
+            'review_sent' => true,
+            'review_hash' => 'hash-review-1',
+        ], 'test_final_confirmation_pending');
+        $stateService->transitionFlowState($conversation, BookingFlowState::AwaitingFinalConfirmation, 'final_confirmation', 'test_final_confirmation_pending');
+
+        $reply = $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'masih bingung'),
+            intentResult: ['intent' => 'confirmation', 'confidence' => 0.90],
+            entityResult: [],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $this->assertSame('await_final_confirmation', $reply['booking_decision']['action']);
+        $this->assertStringContainsString('pilih benar atau ubah data', mb_strtolower($reply['reply']['text'], 'UTF-8'));
+        $this->assertStringNotContainsString('Tanggal keberangkatan', $reply['reply']['text']);
     }
 
     public function test_it_does_not_repeat_the_full_opening_greeting_in_the_same_session(): void
@@ -655,6 +711,15 @@ class BookingFlowStateMachineTest extends TestCase
             conversation: $conversation->fresh(),
             customer: $customer->fresh(),
             message: $this->inboundMessage($conversation->fresh(), 'Pekanbaru'),
+            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
+            entityResult: [],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'Jl Tuanku Tambusai No 5'),
             intentResult: ['intent' => 'booking', 'confidence' => 0.95],
             entityResult: [],
             replyResult: ['text' => '', 'is_fallback' => true],

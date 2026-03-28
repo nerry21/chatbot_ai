@@ -24,8 +24,10 @@ class BookingConversationStateService
         'pickup_location',
         'pickup_full_address',
         'destination',
+        'destination_full_address',
         'passenger_name',
         'contact_number',
+        'final_confirmation',
     ];
 
     /**
@@ -39,6 +41,7 @@ class BookingConversationStateService
         'pickup_location',
         'pickup_full_address',
         'destination',
+        'destination_full_address',
         'passenger_name',
         'passenger_names',
         'contact_number',
@@ -51,6 +54,7 @@ class BookingConversationStateService
         'pickup_location',
         'pickup_full_address',
         'destination',
+        'destination_full_address',
         'passenger_name',
         'passenger_names',
         'passenger_count',
@@ -70,6 +74,25 @@ class BookingConversationStateService
         'admin_takeover',
         'waiting_admin_takeover',
         'needs_manual_confirmation',
+        'review_hash',
+    ];
+
+    /**
+     * @var array<int, string>
+     */
+    private const FINAL_REVIEW_KEYS = [
+        'passenger_count',
+        'travel_date',
+        'travel_time',
+        'selected_seats',
+        'pickup_location',
+        'pickup_full_address',
+        'destination',
+        'destination_full_address',
+        'passenger_name',
+        'passenger_names',
+        'contact_number',
+        'fare_amount',
     ];
 
     public function __construct(
@@ -89,6 +112,7 @@ class BookingConversationStateService
             'booking_intent_status' => BookingFlowState::Idle->value,
             'pickup_location' => null,
             'destination' => null,
+            'destination_full_address' => null,
             'passenger_name' => null,
             'passenger_names' => [],
             'passenger_count' => null,
@@ -109,6 +133,7 @@ class BookingConversationStateService
             'needs_manual_confirmation' => false,
             'review_sent' => false,
             'booking_confirmed' => false,
+            'review_hash' => null,
 
             // Legacy mirrors retained for backward compatibility.
             'pickup_point' => null,
@@ -367,8 +392,9 @@ class BookingConversationStateService
         }
 
         $booking->pickup_location = $slots['pickup_location'];
-        $booking->pickup_full_address = $slots['pickup_full_address'] ?? $booking->pickup_full_address;
+        $booking->pickup_full_address = $slots['pickup_full_address'];
         $booking->destination = $slots['destination'];
+        $booking->destination_full_address = $slots['destination_full_address'];
         $booking->trip_key = $this->routeValidator->tripKey(
             $booking->pickup_location,
             $booking->destination,
@@ -383,9 +409,10 @@ class BookingConversationStateService
             : ($slots['passenger_name'] ?? null);
         $booking->payment_method = $slots['payment_method'] ?? $booking->payment_method;
         $booking->price_estimate = $slots['fare_amount'];
-        $booking->contact_number = $slots['contact_number']
-            ?: ($booking->contact_number ?: ($senderPhone !== '' ? $senderPhone : null));
-        $booking->contact_same_as_sender = $senderPhone !== '' && $booking->contact_number === $senderPhone;
+        $booking->contact_number = $slots['contact_number'] ?: ($booking->contact_number ?: null);
+        $booking->contact_same_as_sender = $senderPhone !== ''
+            && $booking->contact_number !== null
+            && $booking->contact_number === $senderPhone;
 
         $dirty = $booking->getDirty();
 
@@ -452,6 +479,11 @@ class BookingConversationStateService
             $reasons[] = 'fare_amount_invalid';
         }
 
+        if (($slots['review_sent'] ?? false) === true && $nextRequiredInput === null && blank($slots['review_hash'] ?? null)) {
+            $updates['review_hash'] = $this->finalReviewHash($slots);
+            $reasons[] = 'review_hash_missing';
+        }
+
         $normalizedExpectedInput = is_string($expectedInput) && in_array(trim($expectedInput), self::EXPECTED_INPUTS, true)
             ? trim($expectedInput)
             : null;
@@ -466,8 +498,17 @@ class BookingConversationStateService
         }
 
         $nextRequiredInput = $this->nextRequiredInput($slots);
-        $targetExpectedInput = $this->targetExpectedInput($slots, $nextRequiredInput);
-        $targetState = $this->targetStateForSnapshot($slots, $nextRequiredInput);
+        $preservePendingPrompt = ! $this->hasAnyFilledTrackedSlot($slots)
+            && ($slots['review_sent'] ?? false) !== true
+            && ($slots['booking_confirmed'] ?? false) !== true
+            && ($slots['waiting_admin_takeover'] ?? false) !== true
+            && $normalizedExpectedInput !== null;
+        $targetExpectedInput = $preservePendingPrompt
+            ? $normalizedExpectedInput
+            : $this->targetExpectedInput($slots, $nextRequiredInput);
+        $targetState = $preservePendingPrompt
+            ? $this->stateForInput($normalizedExpectedInput, $slots)
+            : $this->targetStateForSnapshot($slots, $nextRequiredInput);
         $currentState = $this->normalizeFlowState((string) ($slots['booking_intent_status'] ?? null), $slots);
 
         if ($currentState !== $targetState || $normalizedExpectedInput !== $targetExpectedInput) {
@@ -575,6 +616,10 @@ class BookingConversationStateService
             return 'destination';
         }
 
+        if ($this->isBlank($slots['destination_full_address'] ?? null)) {
+            return 'destination_full_address';
+        }
+
         if ($this->missingPassengerNames($slots) > 0) {
             return 'passenger_name';
         }
@@ -602,6 +647,74 @@ class BookingConversationStateService
     }
 
     /**
+     * @param  array<string, mixed>  $slots
+     * @return array<string, mixed>|null
+     */
+    public function finalReviewSnapshot(array $slots): ?array
+    {
+        if (! $this->isFinalReviewComplete($slots)) {
+            return null;
+        }
+
+        $snapshot = [];
+
+        foreach (self::FINAL_REVIEW_KEYS as $key) {
+            $value = $slots[$key] ?? null;
+
+            if ($key === 'selected_seats') {
+                $value = $this->normalizeStringArray((array) $value);
+            }
+
+            if ($key === 'passenger_names') {
+                $value = $this->normalizeNames((array) $value);
+            }
+
+            $snapshot[$key] = $value;
+        }
+
+        if (($snapshot['passenger_names'] ?? []) === [] && filled($snapshot['passenger_name'] ?? null)) {
+            $snapshot['passenger_names'] = [(string) $snapshot['passenger_name']];
+        }
+
+        return $snapshot;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    public function canSendFinalReview(array $slots): bool
+    {
+        return $this->isFinalReviewComplete($slots) && $this->finalReviewHash($slots) !== null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    public function finalReviewHash(array $slots): ?string
+    {
+        $snapshot = $this->finalReviewSnapshot($slots);
+
+        if ($snapshot === null) {
+            return null;
+        }
+
+        return hash(
+            'sha256',
+            (string) json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function isFinalReviewComplete(array $slots): bool
+    {
+        return $this->nextRequiredInput($slots) === null
+            && filled($slots['destination_full_address'] ?? null)
+            && ($slots['route_status'] ?? 'supported') === 'supported';
+    }
+
+    /**
      * @param  array<string, mixed>  $current
      * @param  array<string, mixed>  $updates
      * @return array<string, mixed>
@@ -614,6 +727,14 @@ class BookingConversationStateService
 
         if (array_key_exists('destination', $updates) && ! array_key_exists('destination_point', $updates)) {
             $updates['destination_point'] = $updates['destination'];
+        }
+
+        if (array_key_exists('pickup_location', $updates) && ! array_key_exists('pickup_full_address', $updates)) {
+            $updates['pickup_full_address'] = null;
+        }
+
+        if (array_key_exists('destination', $updates) && ! array_key_exists('destination_full_address', $updates)) {
+            $updates['destination_full_address'] = null;
         }
 
         if (array_key_exists('passenger_name', $updates) && ! array_key_exists('passenger_names', $updates)) {
@@ -647,6 +768,7 @@ class BookingConversationStateService
             $updates['review_sent'] = $updates['review_sent'] ?? false;
             $updates['booking_confirmed'] = $updates['booking_confirmed'] ?? false;
             $updates['waiting_admin_takeover'] = $updates['waiting_admin_takeover'] ?? false;
+            $updates['review_hash'] = $updates['review_hash'] ?? null;
         }
 
         if (array_key_exists('contact_number', $updates) && blank($updates['contact_number'])) {
@@ -721,6 +843,7 @@ class BookingConversationStateService
             'pickup_location' => $booking->pickup_location,
             'pickup_full_address' => $booking->pickup_full_address,
             'destination' => $booking->destination,
+            'destination_full_address' => $booking->destination_full_address,
             'passenger_name' => $booking->passenger_name ?? $this->primaryPassengerName($booking->passenger_names),
             'passenger_names' => $this->normalizeNames($booking->passenger_names ?? []),
             'passenger_count' => $booking->passenger_count,
@@ -757,6 +880,7 @@ class BookingConversationStateService
             $updates['booking_intent_status'] = BookingFlowState::AwaitingFinalConfirmation->value;
             $updates['review_sent'] = true;
             $updates['booking_confirmed'] = false;
+            $updates['review_hash'] = $this->finalReviewHash(array_replace($current, $bookingSlots));
 
             return $updates;
         }
@@ -765,6 +889,7 @@ class BookingConversationStateService
             $updates['booking_intent_status'] = BookingFlowState::Completed->value;
             $updates['review_sent'] = true;
             $updates['booking_confirmed'] = true;
+            $updates['review_hash'] = $this->finalReviewHash(array_replace($current, $bookingSlots));
 
             return $updates;
         }
@@ -809,8 +934,10 @@ class BookingConversationStateService
             'pickup_location' => BookingFlowState::AskingPickupPoint->value,
             'pickup_full_address' => BookingFlowState::AskingPickupAddress->value,
             'destination' => BookingFlowState::AskingDropoffPoint->value,
+            'destination_full_address' => BookingFlowState::AskingDropoffPoint->value,
             'passenger_name' => BookingFlowState::AskingPassengerNames->value,
             'contact_number' => BookingFlowState::AskingContactConfirmation->value,
+            'final_confirmation' => BookingFlowState::AwaitingFinalConfirmation->value,
             null => ($slots['review_sent'] ?? false) === true
                 ? BookingFlowState::AwaitingFinalConfirmation->value
                 : BookingFlowState::ShowingReview->value,
@@ -880,7 +1007,7 @@ class BookingConversationStateService
         }
 
         if (($slots['review_sent'] ?? false) === true && $nextRequiredInput === null) {
-            return null;
+            return 'final_confirmation';
         }
 
         return $nextRequiredInput;

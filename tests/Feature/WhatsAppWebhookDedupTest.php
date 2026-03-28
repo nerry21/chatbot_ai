@@ -67,4 +67,40 @@ class WhatsAppWebhookDedupTest extends TestCase
 
         Queue::assertPushed(ProcessIncomingWhatsAppMessage::class, 1);
     }
+
+    public function test_inbound_without_wa_message_id_is_skipped(): void
+    {
+        Queue::fake([ProcessIncomingWhatsAppMessage::class]);
+
+        $payload = [
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => [
+                            'display_phone_number' => '6281234567890',
+                            'phone_number_id' => '123456789',
+                        ],
+                        'contacts' => [[
+                            'wa_id' => '6281234567890',
+                            'profile' => ['name' => 'Budi'],
+                        ]],
+                        'messages' => [[
+                            'from' => '6281234567890',
+                            'timestamp' => (string) now()->timestamp,
+                            'type' => 'text',
+                            'text' => ['body' => 'Halo tanpa ID.'],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ];
+
+        $response = $this->postJson(route('webhook.whatsapp.receive'), $payload);
+
+        $response->assertOk();
+        $this->assertDatabaseCount('conversation_messages', 0);
+        Queue::assertNothingPushed();
+    }
 }

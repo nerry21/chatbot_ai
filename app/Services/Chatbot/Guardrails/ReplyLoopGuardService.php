@@ -240,8 +240,10 @@ class ReplyLoopGuardService
             'pickup_location' => 'Baik Bapak/Ibu, kami tunggu lokasi jemputnya ya.',
             'pickup_full_address' => 'Baik Bapak/Ibu, kami tunggu alamat jemput lengkapnya ya.',
             'destination' => 'Baik Bapak/Ibu, kami tunggu tujuan pengantarannya ya.',
+            'destination_full_address' => 'Baik Bapak/Ibu, kami tunggu alamat tujuan lengkapnya ya.',
             'passenger_name' => 'Baik Bapak/Ibu, kami tunggu nama penumpangnya ya.',
             'contact_number' => 'Baik Bapak/Ibu, kami tunggu nomor kontak penumpangnya ya.',
+            'final_confirmation' => 'Baik Bapak/Ibu, silakan pilih Benar atau Ubah Data pada ringkasan booking sebelumnya ya.',
         ];
 
         return [

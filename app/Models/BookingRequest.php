@@ -18,6 +18,7 @@ class BookingRequest extends Model
         'pickup_location',
         'pickup_full_address',
         'destination',
+        'destination_full_address',
         'trip_key',
         'departure_date',
         'departure_time',
@@ -58,6 +59,7 @@ class BookingRequest extends Model
         'pickup_location',
         'pickup_full_address',
         'destination',
+        'destination_full_address',
         'passenger_name',
         'contact_number',
     ];

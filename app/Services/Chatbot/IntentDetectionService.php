@@ -146,6 +146,8 @@ class IntentDetectionService
     private function isFinalConfirmation(array $signals, array $slots, array $updates): bool
     {
         return ($slots['review_sent'] ?? false) === true
+            && (($slots['booking_expected_input'] ?? null) === 'final_confirmation'
+                || ($slots['booking_intent_status'] ?? null) === 'awaiting_final_confirmation')
             && ($signals['affirmation'] ?? false) === true
             && $updates === [];
     }
@@ -187,6 +189,7 @@ class IntentDetectionService
             'pickup_location',
             'pickup_full_address',
             'destination',
+            'destination_full_address',
             'passenger_name',
             'passenger_names',
             'passenger_count',

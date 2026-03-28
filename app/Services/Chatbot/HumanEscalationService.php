@@ -3,6 +3,7 @@
 namespace App\Services\Chatbot;
 
 use App\Enums\BookingFlowState;
+use App\Enums\BookingStatus;
 use App\Jobs\EscalateConversationToAdminJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
@@ -97,6 +98,16 @@ class HumanEscalationService
 
     public function forwardBooking(Conversation $conversation, Customer $customer, BookingRequest $booking): void
     {
+        if (! in_array($booking->booking_status, [BookingStatus::Confirmed, BookingStatus::Paid, BookingStatus::Completed], true)) {
+            WaLog::warning('[HumanEscalation] booking forward skipped because booking is not finalized', [
+                'conversation_id' => $conversation->id,
+                'booking_id' => $booking->id,
+                'booking_status' => $booking->booking_status?->value,
+            ]);
+
+            return;
+        }
+
         $adminPhone = $this->adminPhone();
 
         if ($adminPhone === '') {
@@ -177,6 +188,7 @@ class HumanEscalationService
     ): void {
         $this->stateService->put($conversation, self::STATE_ADMIN_BOOKING_FORWARD, [
             'booking_id' => $booking->id,
+            'booking_status' => $booking->booking_status?->value,
             'customer_id' => $customer->id,
             'customer_phone' => $customer->phone_e164,
             'status' => $status,

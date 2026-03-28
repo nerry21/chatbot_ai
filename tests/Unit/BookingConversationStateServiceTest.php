@@ -50,6 +50,7 @@ class BookingConversationStateServiceTest extends TestCase
             'pickup_location' => 'Pasir Pengaraian',
             'pickup_full_address' => 'Jl Sudirman No 1',
             'destination' => 'Pekanbaru',
+            'destination_full_address' => 'Jl Tuanku Tambusai No 5',
             'passenger_name' => 'Andi',
             'passenger_names' => ['Andi'],
             'passenger_count' => 1,
@@ -65,6 +66,7 @@ class BookingConversationStateServiceTest extends TestCase
         $this->assertSame(BookingFlowState::AwaitingFinalConfirmation->value, $slots['booking_intent_status']);
         $this->assertTrue($slots['review_sent']);
         $this->assertFalse($slots['booking_confirmed']);
+        $this->assertNotNull($slots['review_hash']);
     }
 
     public function test_it_transitions_flow_state_with_expected_input_snapshot(): void
@@ -135,6 +137,34 @@ class BookingConversationStateServiceTest extends TestCase
         $this->assertFalse($slots['review_sent']);
         $this->assertFalse($slots['booking_confirmed']);
         $this->assertSame('passenger_count', $service->expectedInput($conversation->fresh()));
+    }
+
+    public function test_it_requires_destination_full_address_before_final_review(): void
+    {
+        $service = app(BookingConversationStateService::class);
+        [, $conversation] = $this->makeConversation();
+
+        $slots = $service->putMany($conversation, [
+            'pickup_location' => 'Pasir Pengaraian',
+            'pickup_full_address' => 'Jl Sudirman No 1',
+            'destination' => 'Pekanbaru',
+            'passenger_name' => 'Andi',
+            'passenger_names' => ['Andi'],
+            'passenger_count' => 1,
+            'travel_date' => '2026-03-28',
+            'travel_time' => '08:00',
+            'selected_seats' => ['CC'],
+            'contact_number' => '+6281234567890',
+            'route_status' => 'supported',
+            'fare_amount' => 150000,
+        ], 'test_destination_full_address');
+
+        $snapshot = $service->load($conversation->fresh());
+
+        $this->assertArrayHasKey('destination', $slots);
+        $this->assertSame('destination_full_address', $service->nextRequiredInput($snapshot));
+        $this->assertFalse($service->canSendFinalReview($snapshot));
+        $this->assertNull($service->finalReviewHash($snapshot));
     }
 
     /**

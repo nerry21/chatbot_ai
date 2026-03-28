@@ -46,6 +46,7 @@ class BookingStateGuardService
             'pickup_location',
             'pickup_full_address',
             'destination',
+            'destination_full_address',
             'passenger_name',
             'passenger_names',
             'passenger_count',

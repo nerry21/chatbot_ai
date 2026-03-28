@@ -38,6 +38,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 
 class ProcessIncomingWhatsAppMessage implements ShouldQueue
 {
@@ -142,6 +143,18 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         $booking = null;
         $bookingDecision = null;
         $outboundMessage = null;
+        $conversationLock = Cache::lock('chatbot:conversation:'.$conversation->id, 30);
+
+        if (! $conversationLock->get()) {
+            WaLog::warning('[Job:ProcessIncoming] Conversation lock busy - releasing job', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+            ]);
+
+            $this->release(5);
+
+            return;
+        }
 
         try {
             // ── 1.5 Guard: admin takeover — bot pipeline suppressed ─────────
@@ -653,6 +666,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             );
 
             throw $e;
+        } finally {
+            rescue(static function () use ($conversationLock): void {
+                $conversationLock->release();
+            }, report: false);
         }
     }
 
@@ -983,6 +1000,18 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             ? $guardResult['reply_identity']
             : $replyGuard->buildReplyIdentity($conversation, $finalReply, $inboundContextFingerprint);
 
+        if ($this->shouldSkipDuplicateFinalReview($conversation, $finalReply)) {
+            WaLog::info('[Job:ProcessIncoming] Duplicate final review skipped by review_hash', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'review_hash' => $finalReply['meta']['review_hash'] ?? null,
+            ]);
+
+            $replyGuard->rememberReplyIdentity($conversation, $replyIdentity);
+
+            return null;
+        }
+
         if ($replyGuard->shouldSkipRepeat($conversation, $latestOutbound, $finalReply, $replyIdentity, $inboundContextFingerprint)) {
             WaLog::info('[Job:ProcessIncoming] Anti-repeat skip — outbound identical to latest reply', [
                 'conversation_id'    => $conversation->id,
@@ -1062,6 +1091,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             'reply_state' => $replyIdentity['booking_state'] ?? null,
             'reply_expected_input' => $replyIdentity['expected_input'] ?? null,
             'inbound_context_fingerprint' => $replyIdentity['inbound_context_fingerprint'] ?? null,
+            'review_hash' => $finalReply['meta']['review_hash'] ?? null,
             'outbound_payload' => is_array($finalReply['outbound_payload'] ?? null)
                 ? $finalReply['outbound_payload']
                 : null,
@@ -1073,6 +1103,32 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             messageType  : $finalReply['message_type'] ?? 'text',
             rawPayload   : $rawPayload,
         );
+    }
+
+    /**
+     * @param  array{text?: string, is_fallback?: bool, meta?: array<string, mixed>}  $finalReply
+     */
+    private function shouldSkipDuplicateFinalReview(Conversation $conversation, array $finalReply): bool
+    {
+        if (($finalReply['meta']['action'] ?? null) !== 'ask_confirmation') {
+            return false;
+        }
+
+        $reviewHash = trim((string) ($finalReply['meta']['review_hash'] ?? ''));
+
+        if ($reviewHash === '') {
+            return false;
+        }
+
+        return $conversation->messages()
+            ->outbound()
+            ->latest('id')
+            ->limit(20)
+            ->get(['raw_payload'])
+            ->contains(function (ConversationMessage $message) use ($reviewHash): bool {
+                return is_array($message->raw_payload)
+                    && (string) ($message->raw_payload['review_hash'] ?? '') === $reviewHash;
+            });
     }
 
     /**

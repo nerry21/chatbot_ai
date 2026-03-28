@@ -83,7 +83,9 @@ class BookingFlowStateMachine
             rawIntentResult: $intentResult,
             messageText: $messageText,
             signals: $signals,
-            slots: $slots,
+            slots: array_merge($slots, [
+                'booking_expected_input' => $expectedInput,
+            ]),
             updates: $updates,
             replyResult: $replyResult,
         );
@@ -351,12 +353,17 @@ class BookingFlowStateMachine
         $slots = $this->stateService->load($conversation);
         $booking = $this->stateService->syncBooking($booking->fresh(), $slots, $customer->phone_e164 ?? '');
         $booking = $this->seatAvailability->syncDraftReservationContext($booking->fresh());
+        $expectedInput = $this->stateService->expectedInput($conversation);
+        $isAwaitingFinalConfirmation = ($slots['review_sent'] ?? false) === true
+            && ! (bool) ($slots['booking_confirmed'] ?? false)
+            && in_array($expectedInput, [null, 'final_confirmation'], true);
 
-        if (($slots['review_sent'] ?? false) === true && ($signals['affirmation'] ?? false) === true && $mergedUpdates === []) {
+        if ($isAwaitingFinalConfirmation && ($signals['affirmation'] ?? false) === true && $mergedUpdates === []) {
             $this->confirmationService->confirm($booking);
             $this->stateService->putMany($conversation, [
                 'booking_confirmed' => true,
                 'review_sent' => true,
+                'review_hash' => $slots['review_hash'] ?? $this->stateService->finalReviewHash($slots),
             ], 'booking_confirmation');
             $this->stateService->transitionFlowState($conversation, BookingFlowState::Completed, null, 'booking_confirmation');
             $this->humanEscalationService->forwardBooking($conversation, $customer, $booking->fresh());
@@ -372,11 +379,12 @@ class BookingFlowStateMachine
             );
         }
 
-        if (($slots['review_sent'] ?? false) === true && (($signals['rejection'] ?? false) === true || ($signals['change_request'] ?? false) === true) && $mergedUpdates === []) {
+        if ($isAwaitingFinalConfirmation && (($signals['rejection'] ?? false) === true || ($signals['change_request'] ?? false) === true) && $mergedUpdates === []) {
             $this->stateService->putMany($conversation, [
                 'review_sent' => false,
                 'booking_confirmed' => false,
             ], 'booking_rejection');
+            $this->stateService->transitionFlowState($conversation, BookingFlowState::ShowingReview, null, 'booking_rejection');
 
             return $this->decision(
                 booking: $booking,
@@ -386,6 +394,19 @@ class BookingFlowStateMachine
                     ['source' => 'booking_engine', 'action' => 'ask_correction'],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
+            );
+        }
+
+        if ($isAwaitingFinalConfirmation && $mergedUpdates === []) {
+            return $this->replyForPendingFinalConfirmation(
+                conversation: $conversation,
+                booking: $booking,
+                intentResult: $intentResult,
+                signals: $signals,
+                messageText: $messageText,
+                reviewHash: is_string($slots['review_hash'] ?? null)
+                    ? (string) $slots['review_hash']
+                    : $this->stateService->finalReviewHash($slots),
             );
         }
 
@@ -467,7 +488,25 @@ class BookingFlowStateMachine
             return $this->escalateUnknownQuestion($conversation, $customer, $intentResult, $signals, $messageText, $booking);
         }
 
-        return $this->replyForReview($conversation, $booking, $intentResult, $signals, $messageText);
+        if (! $this->stateService->canSendFinalReview($slots)) {
+            $reviewGuardInput = $this->stateService->nextRequiredInput($slots) ?? 'destination_full_address';
+
+            return $this->replyForNextStep(
+                conversation: $conversation,
+                booking: $booking,
+                intentResult: $intentResult,
+                signals: $signals,
+                messageText: $messageText,
+                slots: $slots,
+                mergedUpdates: $mergedUpdates,
+                capturedUpdates: $capturedUpdates,
+                correctionLines: $correctionLines,
+                route: $route,
+                nextInput: $reviewGuardInput,
+            );
+        }
+
+        return $this->replyForReview($conversation, $booking, $intentResult, $signals, $messageText, $slots);
     }
 
     /**
@@ -707,10 +746,10 @@ class BookingFlowStateMachine
             ...$correctionLines,
             $this->replyNaturalizer->captureSummary($capturedUpdates),
             $manualNotice,
-            ($route['status'] ?? null) === 'supported' && in_array($resolvedNextInput, ['destination', 'passenger_name', 'contact_number'], true)
+            ($route['status'] ?? null) === 'supported' && in_array($resolvedNextInput, ['destination', 'destination_full_address', 'passenger_name', 'contact_number'], true)
                 ? $this->replyNaturalizer->routeAvailableLine($slots['pickup_location'] ?? null, $slots['destination'] ?? null)
                 : null,
-            ($route['status'] ?? null) === 'supported' && in_array($resolvedNextInput, ['passenger_name', 'contact_number'], true)
+            ($route['status'] ?? null) === 'supported' && in_array($resolvedNextInput, ['destination_full_address', 'passenger_name', 'contact_number'], true)
                 ? $this->replyNaturalizer->priceLine($slots['pickup_location'] ?? null, $slots['destination'] ?? null, $slots['passenger_count'] ?? null)
                 : null,
             $prompt['lead'] ?? null,
@@ -741,6 +780,7 @@ class BookingFlowStateMachine
     /**
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $signals
+     * @param  array<string, mixed>  $slots
      * @return array<string, mixed>
      */
     private function replyForReview(
@@ -749,16 +789,102 @@ class BookingFlowStateMachine
         array $intentResult,
         array $signals,
         string $messageText,
+        array $slots,
     ): array {
+        $reviewHash = $this->stateService->finalReviewHash($slots);
+
+        if ($reviewHash === null) {
+            return $this->decision(
+                booking: $booking,
+                action: 'collect_destination_full_address',
+                reply: $this->reply(
+                    $this->withGreetingContext(
+                        $signals,
+                        $messageText,
+                        $this->replyNaturalizer->askDestinationAddress(
+                            $slots['destination'] ?? null,
+                            $this->replySeed($conversation, 'destination_full_address'),
+                        ),
+                    ),
+                    ['source' => 'booking_engine', 'action' => 'collect_destination_full_address'],
+                ),
+                intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
+            );
+        }
+
+        if (($slots['review_hash'] ?? null) === $reviewHash && ($slots['review_sent'] ?? false) !== true) {
+            return $this->decision(
+                booking: $booking->fresh(),
+                action: 'await_booking_change',
+                reply: $this->reply(
+                    $this->withGreetingContext($signals, $messageText, $this->replyNaturalizer->askCorrection()),
+                    [
+                        'source' => 'booking_engine',
+                        'action' => 'await_booking_change',
+                        'review_hash' => $reviewHash,
+                    ],
+                ),
+                intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
+            );
+        }
+
         $this->confirmationService->requestConfirmation($booking);
         $this->stateService->putMany($conversation, [
             'review_sent' => true,
             'booking_confirmed' => false,
+            'review_hash' => $reviewHash,
         ], 'ready_to_confirm');
-        $this->stateService->transitionFlowState($conversation, BookingFlowState::AwaitingFinalConfirmation, null, 'ready_to_confirm');
+        $this->stateService->transitionFlowState($conversation, BookingFlowState::AwaitingFinalConfirmation, 'final_confirmation', 'ready_to_confirm');
+
+        $reviewText = $this->replyNaturalizer->reviewSummary(
+            $booking->fresh(),
+            $this->replySeed($conversation, 'booking_review'),
+        );
 
         $buttons = $this->interactiveService->buttonMessage(
-            'Mohon izin Bapak/Ibu, apakah data perjalanan ini sudah benar?',
+            $reviewText,
+            [
+                ['id' => 'booking_confirm', 'title' => 'Benar'],
+                ['id' => 'booking_change', 'title' => 'Ubah Data'],
+            ],
+            'Pilih Benar jika datanya sudah sesuai, atau Ubah Data jika masih ada yang perlu diperbaiki.',
+        );
+
+        return $this->decision(
+            booking: $booking->fresh(),
+            action: 'ask_confirmation',
+            reply: $this->reply(
+                $this->withGreetingContext($signals, $messageText, $buttons['text']),
+                [
+                    'source' => 'booking_engine',
+                    'action' => 'ask_confirmation',
+                    'review_hash' => $reviewHash,
+                ],
+                false,
+                $buttons['message_type'],
+                $buttons['outbound_payload'],
+            ),
+            intentResult: $this->overrideIntent($intentResult, IntentType::Booking),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $signals
+     * @return array<string, mixed>
+     */
+    private function replyForPendingFinalConfirmation(
+        Conversation $conversation,
+        BookingRequest $booking,
+        array $intentResult,
+        array $signals,
+        string $messageText,
+        ?string $reviewHash,
+    ): array {
+        $buttons = $this->interactiveService->buttonMessage(
+            $this->replyNaturalizer->finalConfirmationReminder(
+                $this->replySeed($conversation, 'final_confirmation_reminder'),
+            ),
             [
                 ['id' => 'booking_confirm', 'title' => 'Benar'],
                 ['id' => 'booking_change', 'title' => 'Ubah Data'],
@@ -767,17 +893,14 @@ class BookingFlowStateMachine
 
         return $this->decision(
             booking: $booking->fresh(),
-            action: 'ask_confirmation',
+            action: 'await_final_confirmation',
             reply: $this->reply(
-                $this->withGreetingContext(
-                    $signals,
-                    $messageText,
-                    $this->replyNaturalizer->reviewSummary(
-                        $booking->fresh(),
-                        $this->replySeed($conversation, 'booking_review'),
-                    ),
-                ),
-                ['source' => 'booking_engine', 'action' => 'ask_confirmation'],
+                $this->withGreetingContext($signals, $messageText, $buttons['text']),
+                [
+                    'source' => 'booking_engine',
+                    'action' => 'await_final_confirmation',
+                    'review_hash' => $reviewHash,
+                ],
                 false,
                 $buttons['message_type'],
                 $buttons['outbound_payload'],
@@ -811,6 +934,10 @@ class BookingFlowStateMachine
                 $this->replySeed($conversation, 'pickup_full_address'),
             )],
             'destination' => $this->promptDestination($conversation, $slots),
+            'destination_full_address' => ['prompt' => $this->replyNaturalizer->askDestinationAddress(
+                $slots['destination'] ?? null,
+                $this->replySeed($conversation, 'destination_full_address'),
+            )],
             'passenger_name' => ['prompt' => $this->replyNaturalizer->askPassengerName(
                 (int) ($slots['passenger_count'] ?? 1),
                 $this->stateService->missingPassengerNames($slots),
@@ -1024,8 +1151,10 @@ class BookingFlowStateMachine
             'pickup_location' => BookingFlowState::AskingPickupPoint,
             'pickup_full_address' => BookingFlowState::AskingPickupAddress,
             'destination' => BookingFlowState::AskingDropoffPoint,
+            'destination_full_address' => BookingFlowState::AskingDropoffPoint,
             'passenger_name' => BookingFlowState::AskingPassengerNames,
             'contact_number' => BookingFlowState::AskingContactConfirmation,
+            'final_confirmation' => BookingFlowState::AwaitingFinalConfirmation,
             default => BookingFlowState::Idle,
         };
     }
@@ -1081,7 +1210,7 @@ class BookingFlowStateMachine
         ], true);
 
         if ($preserveHistoricalSlots) {
-            foreach (['pickup_location', 'pickup_full_address', 'destination', 'passenger_name', 'passenger_count', 'travel_date', 'travel_time', 'selected_seats', 'contact_number'] as $slot) {
+            foreach (['pickup_location', 'pickup_full_address', 'destination', 'destination_full_address', 'passenger_name', 'passenger_count', 'travel_date', 'travel_time', 'selected_seats', 'contact_number'] as $slot) {
                 if (filled($slots[$slot] ?? null)) {
                     return true;
                 }
@@ -1118,6 +1247,7 @@ class BookingFlowStateMachine
             'passenger_count',
             'selected_seats',
             'pickup_full_address',
+            'destination_full_address',
             'passenger_name',
             'passenger_names',
             'contact_number',

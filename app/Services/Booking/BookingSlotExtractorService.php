@@ -59,7 +59,7 @@ class BookingSlotExtractorService
             'time_ambiguous' => false,
         ];
 
-        if (! in_array($expectedInput, ['pickup_full_address', 'contact_number'], true)) {
+        if (! in_array($expectedInput, ['pickup_full_address', 'destination_full_address', 'contact_number'], true)) {
             $route = $this->extractRouteSlots($text, $normalized, $expectedInput, $entityResult);
             if ($route['pickup_location'] !== null) {
                 $updates['pickup_location'] = $route['pickup_location'];
@@ -98,6 +98,11 @@ class BookingSlotExtractorService
         $address = $this->extractPickupAddress($text, $normalized, $expectedInput);
         if ($address !== null) {
             $updates['pickup_full_address'] = $address;
+        }
+
+        $destinationAddress = $this->extractDestinationAddress($text, $normalized, $expectedInput, $entityResult);
+        if ($destinationAddress !== null) {
+            $updates['destination_full_address'] = $destinationAddress;
         }
 
         $payment = $this->extractPaymentMethod($normalized, $expectedInput, $entityResult);
@@ -344,6 +349,29 @@ class BookingSlotExtractorService
         }
 
         if ($expectedInput !== 'pickup_full_address' || $this->isCloseIntent($normalizedText) || $this->isGreetingOnly($normalizedText)) {
+            return null;
+        }
+
+        return $this->normalizeAddress($messageText);
+    }
+
+    private function extractDestinationAddress(
+        string $messageText,
+        string $normalizedText,
+        ?string $expectedInput,
+        array $entityResult,
+    ): ?string {
+        $raw = $entityResult['destination_full_address'] ?? null;
+
+        if (is_string($raw) && trim($raw) !== '') {
+            return $this->normalizeAddress($raw);
+        }
+
+        if (preg_match('/\b(?:alamat(?:\s+lengkap)?\s+(?:tujuan|antar)|detail\s+(?:tujuan|antar)|titik\s+antar(?:an)?(?:\s+lengkap)?)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
+            return $this->normalizeAddress((string) ($matches[1] ?? ''));
+        }
+
+        if ($expectedInput !== 'destination_full_address' || $this->isCloseIntent($normalizedText) || $this->isGreetingOnly($normalizedText)) {
             return null;
         }
 

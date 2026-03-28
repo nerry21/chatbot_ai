@@ -16,6 +16,7 @@ class BookingReplyNaturalizerService
         'pickup_location' => 'lokasi penjemputan',
         'pickup_full_address' => 'alamat jemput',
         'destination' => 'lokasi pengantaran',
+        'destination_full_address' => 'alamat tujuan lengkap',
         'passenger_name' => 'nama penumpang',
         'passenger_names' => 'nama penumpang',
         'contact_number' => 'nomor kontak penumpang',
@@ -221,6 +222,23 @@ class BookingReplyNaturalizerService
             : 'Izin Bapak/Ibu, mohon pilih lokasi pengantarannya ya.';
     }
 
+    public function askDestinationAddress(?string $destination = null, ?string $seed = null): string
+    {
+        if ($destination !== null) {
+            return $this->variation->pick([
+                'Baik Bapak/Ibu, boleh dibantu alamat lengkap tujuan antar di '.$destination.' ya?',
+                'Izin Bapak/Ibu, mohon dibantu alamat lengkap titik pengantarannya di '.$destination.' ya.',
+                'Baik Bapak/Ibu, untuk titik pengantaran di '.$destination.' mohon alamat lengkapnya ya.',
+            ], $seed);
+        }
+
+        return $this->variation->pick([
+            'Baik Bapak/Ibu, boleh dibantu alamat lengkap tujuan antarnya ya?',
+            'Izin Bapak/Ibu, mohon dibantu alamat lengkap titik pengantarannya ya.',
+            'Baik Bapak/Ibu, untuk lokasi pengantaran mohon alamat lengkapnya ya.',
+        ], $seed);
+    }
+
     public function askPassengerName(int $passengerCount, int $missingCount = 0, ?string $seed = null): string
     {
         if ($passengerCount <= 1) {
@@ -387,6 +405,10 @@ class BookingReplyNaturalizerService
                 'Baik Bapak/Ibu, kami tunggu tujuan pengantarannya ya.',
                 'Siap Bapak/Ibu, tinggal dibantu tujuan pengantarannya ya.',
             ],
+            'destination_full_address' => [
+                'Baik Bapak/Ibu, kami tunggu alamat tujuan lengkapnya ya.',
+                'Siap Bapak/Ibu, tinggal dibantu alamat tujuan lengkapnya ya.',
+            ],
             'passenger_name' => [
                 'Baik Bapak/Ibu, kami tunggu nama penumpangnya ya.',
                 'Siap Bapak/Ibu, tinggal dibantu nama penumpangnya ya.',
@@ -394,6 +416,10 @@ class BookingReplyNaturalizerService
             'contact_number' => [
                 'Baik Bapak/Ibu, kami tunggu nomor kontak penumpangnya ya.',
                 'Siap Bapak/Ibu, tinggal dibantu nomor kontak penumpangnya ya.',
+            ],
+            'final_confirmation' => [
+                'Baik Bapak/Ibu, silakan pilih Benar atau Ubah Data pada ringkasan booking sebelumnya ya.',
+                'Izin Bapak/Ibu, mohon pilih Benar atau Ubah Data agar bookingnya bisa kami lanjutkan ya.',
             ],
         ];
 
@@ -419,6 +445,15 @@ class BookingReplyNaturalizerService
         return $this->reviewFormatter->buildCustomerReview($booking, $seed);
     }
 
+    public function finalConfirmationReminder(?string $seed = null): string
+    {
+        return $this->variation->pick([
+            'Izin Bapak/Ibu, silakan pilih Benar atau Ubah Data pada ringkasan booking sebelumnya ya.',
+            'Baik Bapak/Ibu, agar booking bisa kami lanjutkan mohon pilih Benar atau Ubah Data ya.',
+            'Izin Bapak/Ibu, kami menunggu pilihan Benar atau Ubah Data untuk ringkasan booking tadi ya.',
+        ], $seed);
+    }
+
     public function fallbackForState(string $state, ?string $pendingPrompt = null): string
     {
         if (in_array($state, ['waiting_admin_takeover', 'closed'], true)) {
@@ -430,7 +465,7 @@ class BookingReplyNaturalizerService
         }
 
         if ($state === 'awaiting_final_confirmation') {
-            return 'Izin Bapak/Ibu, mohon konfirmasi apakah data perjalanan ini sudah benar ya.';
+            return 'Izin Bapak/Ibu, mohon pilih Benar atau Ubah Data pada ringkasan booking tadi ya.';
         }
 
         return $pendingPrompt !== null

@@ -127,13 +127,16 @@ return [
 
         // Fields that must be non-null before a booking can be sent for confirmation.
         'required_fields' => [
-            'pickup_location',
-            'destination',
-            'passenger_name',
             'passenger_count',
             'departure_date',
             'departure_time',
-            'payment_method',
+            'selected_seats',
+            'pickup_location',
+            'pickup_full_address',
+            'destination',
+            'destination_full_address',
+            'passenger_name',
+            'contact_number',
         ],
 
         // Base price per seat in Indonesian Rupiah (IDR).
