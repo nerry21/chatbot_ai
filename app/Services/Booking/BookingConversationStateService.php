@@ -287,8 +287,10 @@ class BookingConversationStateService
             BookingFlowState::ReadyToConfirm->value,
             BookingStatus::AwaitingConfirmation->value => BookingFlowState::AwaitingFinalConfirmation->value,
             BookingFlowState::WaitingAdminTakeover->value => BookingFlowState::WaitingAdminTakeover->value,
+            'handed_to_admin' => BookingFlowState::WaitingAdminTakeover->value,
             BookingFlowState::Completed->value,
-            BookingFlowState::Confirmed->value => BookingFlowState::Completed->value,
+            BookingFlowState::Confirmed->value,
+            'final_confirmed' => BookingFlowState::Completed->value,
             BookingFlowState::CollectingRoute->value,
             BookingFlowState::CollectingPassenger->value,
             BookingFlowState::CollectingSchedule->value,
@@ -309,6 +311,21 @@ class BookingConversationStateService
     public function isCollectingState(?string $state): bool
     {
         return BookingFlowState::from($this->normalizeFlowState($state))->isCollecting();
+    }
+
+    public function isTerminalState(?string $state, ?string $expectedInput = null): bool
+    {
+        if ($expectedInput !== null) {
+            return false;
+        }
+
+        $normalized = $this->normalizeFlowState($state);
+
+        return in_array($normalized, [
+            BookingFlowState::Completed->value,
+            BookingFlowState::WaitingAdminTakeover->value,
+            BookingFlowState::Closed->value,
+        ], true);
     }
 
     public function expectedInput(Conversation $conversation): ?string
@@ -460,6 +477,12 @@ class BookingConversationStateService
 
         $slots = $this->load($conversation);
         $expectedInput = $this->expectedInput($conversation);
+        $currentState = $this->normalizeFlowState((string) ($slots['booking_intent_status'] ?? null), $slots);
+
+        if ($this->isTerminalState($currentState, $expectedInput)) {
+            return $slots;
+        }
+
         $updates = [];
         $reasons = [];
         $nextRequiredInput = $this->nextRequiredInput($slots);

@@ -167,6 +167,26 @@ class BookingConversationStateServiceTest extends TestCase
         $this->assertNull($service->finalReviewHash($snapshot));
     }
 
+    public function test_it_does_not_reopen_completed_state_during_corrupted_state_repair(): void
+    {
+        $service = app(BookingConversationStateService::class);
+        [, $conversation] = $this->makeConversation();
+
+        $service->putMany($conversation, [
+            'booking_intent_status' => BookingFlowState::Completed->value,
+            'booking_confirmed' => true,
+            'final_confirmation_received' => true,
+            'pickup_location' => 'Pasir Pengaraian',
+            'destination' => 'Pekanbaru',
+        ], 'test_terminal_repair_guard');
+
+        $slots = $service->repairCorruptedState($conversation->fresh());
+
+        $this->assertSame(BookingFlowState::Completed->value, $slots['booking_intent_status']);
+        $this->assertTrue($slots['booking_confirmed']);
+        $this->assertNull($service->expectedInput($conversation->fresh()));
+    }
+
     /**
      * @return array{0: Customer, 1: Conversation}
      */

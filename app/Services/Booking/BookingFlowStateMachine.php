@@ -67,6 +67,17 @@ class BookingFlowStateMachine
             'admin_takeover' => $conversation->isAdminTakeover(),
         ], 'conversation_context');
 
+        if ($this->shouldShortCircuitTerminalCloseIntent($rawSlots, $expectedInput, $messageText)) {
+            WaLog::info('[BookingFlow] terminal close intent short-circuited before extraction', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'booking_state' => $rawSlots['booking_intent_status'] ?? null,
+                'expected_input' => $expectedInput,
+            ]);
+
+            return $this->terminalCloseIntentDecision($conversation, $booking, $intentResult);
+        }
+
         $finalConfirmationCommand = $this->resolveFinalConfirmationCommand($message, $messageText);
         if (
             $booking !== null
@@ -707,6 +718,56 @@ class BookingFlowStateMachine
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function shouldShortCircuitTerminalCloseIntent(array $slots, ?string $expectedInput, string $messageText): bool
+    {
+        return $this->stateService->isTerminalState((string) ($slots['booking_intent_status'] ?? null), $expectedInput)
+            && $this->isTerminalCloseIntentMessage($messageText);
+    }
+
+    private function isTerminalCloseIntentMessage(string $messageText): bool
+    {
+        $normalized = mb_strtolower(trim($messageText), 'UTF-8');
+        $normalized = preg_replace('/\s+/u', ' ', $normalized) ?? $normalized;
+
+        if ($normalized === '') {
+            return false;
+        }
+
+        $configuredCloseIntents = array_map(
+            static fn (mixed $phrase): string => mb_strtolower(trim((string) $phrase), 'UTF-8'),
+            (array) config('chatbot.guards.close_intents', []),
+        );
+
+        if (in_array($normalized, $configuredCloseIntents, true)) {
+            return true;
+        }
+
+        return (bool) preg_match('/^(?:ok|oke|baik|siap|sip|terima kasih|makasih|thanks|thank you|ok terima kasih|oke terima kasih|baik terima kasih|siap terima kasih)$/u', $normalized);
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @return array<string, mixed>
+     */
+    private function terminalCloseIntentDecision(
+        Conversation $conversation,
+        ?BookingRequest $booking,
+        array $intentResult,
+    ): array {
+        return $this->decision(
+            booking: $booking,
+            action: 'close_after_completion',
+            reply: $this->reply(
+                $this->replyNaturalizer->closing($this->replySeed($conversation, 'terminal_close_intent')),
+                ['source' => 'booking_engine', 'action' => 'close_after_completion', 'close_conversation' => true],
+            ),
+            intentResult: $this->overrideIntent($intentResult, IntentType::CloseIntent),
+        );
     }
 
     /**

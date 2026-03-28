@@ -441,6 +441,71 @@ class BookingFlowStateMachineTest extends TestCase
         $this->assertSame('confirmed', $booking->fresh()->booking_status->value);
     }
 
+    public function test_it_does_not_reopen_booking_when_customer_sends_oke_after_completion(): void
+    {
+        [$customer, $conversation] = $this->makeConversation();
+        $flow = app(BookingFlowStateMachine::class);
+        $stateService = app(BookingConversationStateService::class);
+
+        $stateService->putMany($conversation, [
+            'booking_intent_status' => BookingFlowState::Completed->value,
+            'booking_confirmed' => true,
+            'final_confirmation_received' => true,
+            'review_sent' => true,
+            'pickup_location' => 'Pasir Pengaraian',
+            'pickup_full_address' => 'Jl Sudirman No 1',
+            'destination' => 'Pekanbaru',
+            'destination_full_address' => 'Jl Tuanku Tambusai No 5',
+        ], 'test_close_after_completion');
+
+        $reply = $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'oke'),
+            intentResult: ['intent' => 'close_intent', 'confidence' => 0.95],
+            entityResult: [],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $slots = $stateService->load($conversation->fresh());
+
+        $this->assertSame('close_after_completion', $reply['booking_decision']['action']);
+        $this->assertTrue($reply['reply']['meta']['close_conversation'] ?? false);
+        $this->assertSame(BookingFlowState::Completed->value, $slots['booking_intent_status']);
+        $this->assertNull($stateService->expectedInput($conversation->fresh()));
+        $this->assertStringNotContainsString('alamat jemput', mb_strtolower($reply['reply']['text'], 'UTF-8'));
+    }
+
+    public function test_it_does_not_reopen_booking_when_customer_sends_thanks_after_handoff(): void
+    {
+        [$customer, $conversation] = $this->makeConversation();
+        $flow = app(BookingFlowStateMachine::class);
+        $stateService = app(BookingConversationStateService::class);
+
+        $stateService->putMany($conversation, [
+            'booking_intent_status' => BookingFlowState::WaitingAdminTakeover->value,
+            'waiting_admin_takeover' => true,
+            'needs_human_escalation' => true,
+        ], 'test_close_after_handoff');
+
+        $reply = $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'terima kasih'),
+            intentResult: ['intent' => 'close_intent', 'confidence' => 0.95],
+            entityResult: [],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $slots = $stateService->load($conversation->fresh());
+
+        $this->assertSame('close_after_completion', $reply['booking_decision']['action']);
+        $this->assertTrue($reply['reply']['meta']['close_conversation'] ?? false);
+        $this->assertSame(BookingFlowState::WaitingAdminTakeover->value, $slots['booking_intent_status']);
+        $this->assertNull($stateService->expectedInput($conversation->fresh()));
+        $this->assertStringNotContainsString('alamat jemput', mb_strtolower($reply['reply']['text'], 'UTF-8'));
+    }
+
     public function test_it_does_not_repeat_the_full_opening_greeting_in_the_same_session(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-03-27 08:00:00', 'Asia/Jakarta'));
