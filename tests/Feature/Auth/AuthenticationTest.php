@@ -30,7 +30,7 @@ class AuthenticationTest extends TestCase
         ]);
 
         $this->assertAuthenticated();
-        $response->assertRedirect(route('admin.chatbot.dashboard', absolute: false));
+        $response->assertRedirect(route('admin.chatbot.live-chats.index', absolute: false));
         $this->assertSame(self::ADMIN_EMAIL, auth()->user()?->email);
         $this->assertTrue((bool) auth()->user()?->is_chatbot_admin);
     }

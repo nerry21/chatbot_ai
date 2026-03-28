@@ -28,7 +28,7 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
-        return redirect()->intended(route('admin.chatbot.dashboard', absolute: false));
+        return redirect()->intended(route('admin.chatbot.live-chats.index', absolute: false));
     }
 
     /**
