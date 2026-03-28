@@ -38,6 +38,7 @@ class HumanEscalationServiceTest extends TestCase
             'pickup_location' => 'Pasir Pengaraian',
             'pickup_full_address' => 'Jl Sudirman No 1',
             'destination' => 'Pekanbaru',
+            'destination_full_address' => 'Jl Tuanku Tambusai No 5',
             'passenger_name' => 'Andi',
             'passenger_names' => ['Andi', 'Budi'],
             'passenger_count' => 2,
@@ -57,6 +58,7 @@ class HumanEscalationServiceTest extends TestCase
                 Mockery::on(fn (string $text): bool => str_contains($text, 'Forward booking baru JET dari WhatsApp AI.')
                     && str_contains($text, 'Status tindak lanjut : Pending admin')
                     && str_contains($text, 'No customer          : +6281234567890')
+                    && str_contains($text, 'Alamat tujuan antar  : Jl Tuanku Tambusai No 5')
                     && str_contains($text, 'Total ongkos         : Rp 300.000')),
                 Mockery::on(fn (array $meta): bool => ($meta['context'] ?? null) === 'booking_forward'
                     && ($meta['booking_id'] ?? null) === $booking->id),
@@ -78,10 +80,16 @@ class HumanEscalationServiceTest extends TestCase
         $service->forwardBooking($conversation->fresh(), $customer->fresh(), $booking->fresh());
 
         $forwardState = app(ConversationStateService::class)->get($conversation->fresh(), 'admin_booking_forward');
+        $adminForwarded = app(ConversationStateService::class)->get($conversation->fresh(), 'admin_forwarded');
+        $adminForwardHash = app(ConversationStateService::class)->get($conversation->fresh(), 'admin_forward_hash');
 
         $this->assertIsArray($forwardState);
         $this->assertSame($booking->id, $forwardState['booking_id'] ?? null);
         $this->assertSame('sent', $forwardState['status'] ?? null);
+        $this->assertTrue($adminForwarded);
+        $this->assertIsString($adminForwardHash);
+        $this->assertNotSame('', $adminForwardHash);
+        $this->assertSame($adminForwardHash, $forwardState['admin_forward_hash'] ?? null);
     }
 
     public function test_it_sends_unanswered_question_escalation_only_once_while_takeover_is_active(): void

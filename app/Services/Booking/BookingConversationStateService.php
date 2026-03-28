@@ -75,6 +75,9 @@ class BookingConversationStateService
         'waiting_admin_takeover',
         'needs_manual_confirmation',
         'review_hash',
+        'final_confirmation_received',
+        'admin_forwarded',
+        'admin_forward_hash',
     ];
 
     /**
@@ -134,6 +137,9 @@ class BookingConversationStateService
             'review_sent' => false,
             'booking_confirmed' => false,
             'review_hash' => null,
+            'final_confirmation_received' => false,
+            'admin_forwarded' => false,
+            'admin_forward_hash' => null,
 
             // Legacy mirrors retained for backward compatibility.
             'pickup_point' => null,
@@ -484,6 +490,13 @@ class BookingConversationStateService
             $reasons[] = 'review_hash_missing';
         }
 
+        if (($slots['final_confirmation_received'] ?? false) === true && $nextRequiredInput !== null) {
+            $updates['final_confirmation_received'] = false;
+            $updates['admin_forwarded'] = false;
+            $updates['admin_forward_hash'] = null;
+            $reasons[] = 'final_confirmation_before_slots_complete';
+        }
+
         $normalizedExpectedInput = is_string($expectedInput) && in_array(trim($expectedInput), self::EXPECTED_INPUTS, true)
             ? trim($expectedInput)
             : null;
@@ -769,6 +782,9 @@ class BookingConversationStateService
             $updates['booking_confirmed'] = $updates['booking_confirmed'] ?? false;
             $updates['waiting_admin_takeover'] = $updates['waiting_admin_takeover'] ?? false;
             $updates['review_hash'] = $updates['review_hash'] ?? null;
+            $updates['final_confirmation_received'] = $updates['final_confirmation_received'] ?? false;
+            $updates['admin_forwarded'] = $updates['admin_forwarded'] ?? false;
+            $updates['admin_forward_hash'] = $updates['admin_forward_hash'] ?? null;
         }
 
         if (array_key_exists('contact_number', $updates) && blank($updates['contact_number'])) {
@@ -881,6 +897,7 @@ class BookingConversationStateService
             $updates['review_sent'] = true;
             $updates['booking_confirmed'] = false;
             $updates['review_hash'] = $this->finalReviewHash(array_replace($current, $bookingSlots));
+            $updates['final_confirmation_received'] = false;
 
             return $updates;
         }
@@ -890,6 +907,7 @@ class BookingConversationStateService
             $updates['review_sent'] = true;
             $updates['booking_confirmed'] = true;
             $updates['review_hash'] = $this->finalReviewHash(array_replace($current, $bookingSlots));
+            $updates['final_confirmation_received'] = true;
 
             return $updates;
         }

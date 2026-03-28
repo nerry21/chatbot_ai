@@ -272,6 +272,8 @@ class BookingFlowStateMachineTest extends TestCase
 
         $this->assertSame(BookingFlowState::Completed->value, $confirmedSlots['booking_intent_status']);
         $this->assertTrue($confirmedSlots['booking_confirmed']);
+        $this->assertTrue($confirmedSlots['final_confirmation_received']);
+        $this->assertNull($stateService->expectedInput($conversation->fresh()));
         $this->assertStringContainsString('data sudah kami terima', mb_strtolower($confirmedReply['reply']['text'], 'UTF-8'));
     }
 

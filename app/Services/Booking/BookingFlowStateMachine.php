@@ -362,6 +362,7 @@ class BookingFlowStateMachine
             $this->confirmationService->confirm($booking);
             $this->stateService->putMany($conversation, [
                 'booking_confirmed' => true,
+                'final_confirmation_received' => true,
                 'review_sent' => true,
                 'review_hash' => $slots['review_hash'] ?? $this->stateService->finalReviewHash($slots),
             ], 'booking_confirmation');
@@ -383,6 +384,9 @@ class BookingFlowStateMachine
             $this->stateService->putMany($conversation, [
                 'review_sent' => false,
                 'booking_confirmed' => false,
+                'final_confirmation_received' => false,
+                'admin_forwarded' => false,
+                'admin_forward_hash' => null,
             ], 'booking_rejection');
             $this->stateService->transitionFlowState($conversation, BookingFlowState::ShowingReview, null, 'booking_rejection');
 
@@ -833,6 +837,9 @@ class BookingFlowStateMachine
             'review_sent' => true,
             'booking_confirmed' => false,
             'review_hash' => $reviewHash,
+            'final_confirmation_received' => false,
+            'admin_forwarded' => false,
+            'admin_forward_hash' => null,
         ], 'ready_to_confirm');
         $this->stateService->transitionFlowState($conversation, BookingFlowState::AwaitingFinalConfirmation, 'final_confirmation', 'ready_to_confirm');
 

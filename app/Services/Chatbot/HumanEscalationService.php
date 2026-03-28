@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\Customer;
 use App\Services\WhatsApp\WhatsAppSenderService;
 use App\Support\WaLog;
+use Illuminate\Support\Facades\Cache;
 
 class HumanEscalationService
 {
@@ -108,69 +109,92 @@ class HumanEscalationService
             return;
         }
 
+        $bookingForwardLock = Cache::lock('chatbot:booking-forward:'.$booking->id, 30);
+
+        if (! $bookingForwardLock->get()) {
+            WaLog::warning('[HumanEscalation] booking forward lock busy', [
+                'conversation_id' => $conversation->id,
+                'booking_id' => $booking->id,
+            ]);
+
+            return;
+        }
+
         $adminPhone = $this->adminPhone();
-
-        if ($adminPhone === '') {
-            WaLog::warning('[HumanEscalation] booking not forwarded because admin phone is missing', [
-                'conversation_id' => $conversation->id,
-                'booking_id' => $booking->id,
-            ]);
-
-            return;
-        }
-
-        if ($this->bookingAlreadyForwarded($conversation, $booking)) {
-            WaLog::info('[HumanEscalation] skipped duplicate booking forward', [
-                'conversation_id' => $conversation->id,
-                'booking_id' => $booking->id,
-                'admin_phone' => WaLog::maskPhone($adminPhone),
-            ]);
-
-            return;
-        }
-
         $summary = $this->formatter->formatBookingForward(
             booking: $booking,
             customerPhone: $customer->phone_e164 ?? '-',
         );
-        $this->rememberBookingForward($conversation, $booking, $customer, 'pending');
+        $adminForwardHash = $this->adminForwardHash($booking, $summary);
 
-        $result = $this->senderService->sendText(
-            $adminPhone,
-            $summary,
-            [
-                'conversation_id' => $conversation->id,
-                'customer_id' => $customer->id,
-                'booking_id' => $booking->id,
-                'context' => 'booking_forward',
-            ],
-        );
-        $this->rememberBookingForward($conversation, $booking, $customer, $result['status']);
+        try {
+            if ($adminPhone === '') {
+                WaLog::warning('[HumanEscalation] booking not forwarded because admin phone is missing', [
+                    'conversation_id' => $conversation->id,
+                    'booking_id' => $booking->id,
+                ]);
 
-        WaLog::info('[HumanEscalation] booking forwarded to admin', [
-            'conversation_id' => $conversation->id,
-            'booking_id' => $booking->id,
-            'admin_phone' => WaLog::maskPhone($adminPhone),
-            'status' => $result['status'],
-        ]);
+                return;
+            }
 
-        if ($result['status'] !== 'sent') {
-            WaLog::warning('[HumanEscalation] booking forward did not send successfully', [
+            if ($this->bookingAlreadyForwarded($conversation, $booking, $adminForwardHash)) {
+                WaLog::info('[HumanEscalation] skipped duplicate booking forward', [
+                    'conversation_id' => $conversation->id,
+                    'booking_id' => $booking->id,
+                    'admin_phone' => WaLog::maskPhone($adminPhone),
+                    'admin_forward_hash' => $adminForwardHash,
+                ]);
+
+                return;
+            }
+
+            $this->rememberBookingForward($conversation, $booking, $customer, 'pending', $adminForwardHash);
+
+            $result = $this->senderService->sendText(
+                $adminPhone,
+                $summary,
+                [
+                    'conversation_id' => $conversation->id,
+                    'customer_id' => $customer->id,
+                    'booking_id' => $booking->id,
+                    'context' => 'booking_forward',
+                ],
+            );
+            $this->rememberBookingForward($conversation, $booking, $customer, $result['status'], $adminForwardHash);
+
+            WaLog::info('[HumanEscalation] booking forwarded to admin', [
                 'conversation_id' => $conversation->id,
                 'booking_id' => $booking->id,
                 'admin_phone' => WaLog::maskPhone($adminPhone),
                 'status' => $result['status'],
-                'error' => $result['error'],
+                'admin_forward_hash' => $adminForwardHash,
             ]);
+
+            if ($result['status'] !== 'sent') {
+                WaLog::warning('[HumanEscalation] booking forward did not send successfully', [
+                    'conversation_id' => $conversation->id,
+                    'booking_id' => $booking->id,
+                    'admin_phone' => WaLog::maskPhone($adminPhone),
+                    'status' => $result['status'],
+                    'error' => $result['error'],
+                    'admin_forward_hash' => $adminForwardHash,
+                ]);
+            }
+        } finally {
+            rescue(static function () use ($bookingForwardLock): void {
+                $bookingForwardLock->release();
+            }, report: false);
         }
     }
 
-    private function bookingAlreadyForwarded(Conversation $conversation, BookingRequest $booking): bool
+    private function bookingAlreadyForwarded(Conversation $conversation, BookingRequest $booking, string $adminForwardHash): bool
     {
         $state = $this->stateService->get($conversation, self::STATE_ADMIN_BOOKING_FORWARD);
 
         return is_array($state)
-            && (int) ($state['booking_id'] ?? 0) === $booking->id;
+            && (int) ($state['booking_id'] ?? 0) === $booking->id
+            && (string) ($state['admin_forward_hash'] ?? '') === $adminForwardHash
+            && (bool) ($state['admin_forwarded'] ?? false) === true;
     }
 
     private function questionEscalationAlreadySent(Conversation $conversation): bool
@@ -185,12 +209,18 @@ class HumanEscalationService
         BookingRequest $booking,
         Customer $customer,
         string $status,
+        string $adminForwardHash,
     ): void {
+        $this->stateService->put($conversation, 'admin_forwarded', true);
+        $this->stateService->put($conversation, 'admin_forward_hash', $adminForwardHash);
+
         $this->stateService->put($conversation, self::STATE_ADMIN_BOOKING_FORWARD, [
             'booking_id' => $booking->id,
             'booking_status' => $booking->booking_status?->value,
             'customer_id' => $customer->id,
             'customer_phone' => $customer->phone_e164,
+            'admin_forwarded' => true,
+            'admin_forward_hash' => $adminForwardHash,
             'status' => $status,
             'sent_at' => now()->toIso8601String(),
         ]);
@@ -224,5 +254,14 @@ class HumanEscalationService
         $this->stateService->put($conversation, 'waiting_reason', $reason);
         $this->stateService->put($conversation, 'waiting_admin_takeover', true);
         $this->stateService->put($conversation, 'booking_intent_status', BookingFlowState::WaitingAdminTakeover->value);
+    }
+
+    private function adminForwardHash(BookingRequest $booking, string $summary): string
+    {
+        return hash('sha256', implode('|', [
+            (string) $booking->id,
+            $booking->booking_status?->value ?? 'unknown',
+            $summary,
+        ]));
     }
 }
