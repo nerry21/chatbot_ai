@@ -57,8 +57,7 @@ class BookingFlowStateMachine
         array $replyResult = [],
     ): array {
         $booking = $this->bookingAssistant->findExistingDraft($conversation);
-        $slots = $this->stateService->hydrateFromBooking($conversation, $booking);
-        $slots = $this->stateService->repairCorruptedState($conversation);
+        $rawSlots = $this->stateService->load($conversation);
         $expectedInput = $this->stateService->expectedInput($conversation);
         $messageText = trim((string) ($message->message_text ?? ''));
         $timeGreeting = $this->timeGreetingService->resolve();
@@ -67,6 +66,35 @@ class BookingFlowStateMachine
             'time_greeting' => $timeGreeting['label'],
             'admin_takeover' => $conversation->isAdminTakeover(),
         ], 'conversation_context');
+
+        $finalConfirmationCommand = $this->resolveFinalConfirmationCommand($message, $messageText);
+        if (
+            $booking !== null
+            && $finalConfirmationCommand !== null
+            && $this->isAwaitingFinalConfirmationState($rawSlots, $expectedInput)
+        ) {
+            WaLog::info('[BookingFlow] final confirmation command prioritized before extraction', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'command' => $finalConfirmationCommand,
+                'expected_input' => $expectedInput,
+                'booking_state' => $rawSlots['booking_intent_status'] ?? null,
+            ]);
+
+            return $this->handleFinalConfirmationCommand(
+                conversation: $conversation,
+                customer: $customer,
+                booking: $booking,
+                command: $finalConfirmationCommand,
+                slots: $rawSlots,
+                messageText: $messageText,
+                intentResult: $intentResult,
+            );
+        }
+
+        $slots = $this->stateService->hydrateFromBooking($conversation, $booking);
+        $slots = $this->stateService->repairCorruptedState($conversation);
+        $expectedInput = $this->stateService->expectedInput($conversation);
 
         $extracted = $this->slotExtractor->extract(
             messageText: $messageText,
@@ -582,6 +610,103 @@ class BookingFlowStateMachine
         }
 
         return $updates;
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     * @param  array<string, mixed>  $intentResult
+     * @return array<string, mixed>
+     */
+    private function handleFinalConfirmationCommand(
+        Conversation $conversation,
+        Customer $customer,
+        BookingRequest $booking,
+        string $command,
+        array $slots,
+        string $messageText,
+        array $intentResult,
+    ): array {
+        if ($command === 'confirm') {
+            $this->confirmationService->confirm($booking);
+            $this->stateService->putMany($conversation, [
+                'booking_confirmed' => true,
+                'final_confirmation_received' => true,
+                'review_sent' => true,
+                'review_hash' => $slots['review_hash'] ?? $this->stateService->finalReviewHash($slots),
+            ], 'booking_confirmation_priority');
+            $this->stateService->transitionFlowState($conversation, BookingFlowState::Completed, null, 'booking_confirmation_priority');
+            $this->humanEscalationService->forwardBooking($conversation, $customer, $booking->fresh());
+
+            return $this->decision(
+                booking: $booking->fresh(),
+                action: 'confirmed',
+                reply: $this->reply(
+                    $this->replyNaturalizer->confirmed(),
+                    ['source' => 'booking_engine', 'action' => 'confirmed'],
+                ),
+                intentResult: $this->overrideIntent($intentResult, IntentType::KonfirmasiBooking),
+            );
+        }
+
+        $this->stateService->putMany($conversation, [
+            'review_sent' => false,
+            'booking_confirmed' => false,
+            'final_confirmation_received' => false,
+            'admin_forwarded' => false,
+            'admin_forward_hash' => null,
+        ], 'booking_rejection_priority');
+        $this->stateService->transitionFlowState($conversation, BookingFlowState::ShowingReview, null, 'booking_rejection_priority');
+
+        return $this->decision(
+            booking: $booking->fresh(),
+            action: 'ask_correction',
+            reply: $this->reply(
+                $this->replyNaturalizer->askCorrection(),
+                ['source' => 'booking_engine', 'action' => 'ask_correction'],
+            ),
+            intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $slots
+     */
+    private function isAwaitingFinalConfirmationState(array $slots, ?string $expectedInput): bool
+    {
+        $normalizedState = $this->stateService->normalizeFlowState(
+            (string) ($slots['booking_intent_status'] ?? BookingFlowState::Idle->value),
+            $slots,
+        );
+
+        return ($slots['review_sent'] ?? false) === true
+            && ! (bool) ($slots['booking_confirmed'] ?? false)
+            && ($expectedInput === 'final_confirmation' || $normalizedState === BookingFlowState::AwaitingFinalConfirmation->value);
+    }
+
+    private function resolveFinalConfirmationCommand(ConversationMessage $message, string $messageText): ?string
+    {
+        $interactiveId = trim((string) data_get($message->raw_payload, '_interactive_selection.id', ''));
+
+        if ($interactiveId === 'booking_confirm') {
+            return 'confirm';
+        }
+
+        if ($interactiveId === 'booking_change') {
+            return 'change';
+        }
+
+        $normalized = mb_strtolower(trim($messageText), 'UTF-8');
+        $normalized = preg_replace('/\s+/u', ' ', $normalized) ?? $normalized;
+
+        if (preg_match('/^(?:benar|betul|bener|iya benar|ya benar|iya betul|ya betul|sudah benar|udah benar|ok benar|oke benar)$/u', $normalized)) {
+            return 'confirm';
+        }
+
+        if (preg_match('/^(?:ubah data|ubah|ganti data|koreksi data|perbaiki data|revisi data|belum benar|masih salah|salah)$/u', $normalized)) {
+            return 'change';
+        }
+
+        return null;
     }
 
     /**

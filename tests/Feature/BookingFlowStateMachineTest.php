@@ -385,6 +385,62 @@ class BookingFlowStateMachineTest extends TestCase
         $this->assertSame('Jl Tuanku Tambusai No 5', $slots['destination_full_address']);
     }
 
+    public function test_it_prioritizes_benar_as_final_confirmation_before_slot_extraction(): void
+    {
+        [$customer, $conversation] = $this->makeConversation();
+        $flow = app(BookingFlowStateMachine::class);
+        $stateService = app(BookingConversationStateService::class);
+
+        $booking = BookingRequest::create([
+            'conversation_id' => $conversation->id,
+            'customer_id' => $customer->id,
+            'pickup_location' => 'Pasir Pengaraian',
+            'destination' => 'Pekanbaru',
+            'passenger_name' => 'Andi',
+            'passenger_names' => ['Andi'],
+            'passenger_count' => 1,
+            'departure_date' => '2026-03-28',
+            'departure_time' => '08:00',
+            'selected_seats' => ['CC'],
+            'contact_number' => '+6281234567890',
+            'price_estimate' => 150000,
+            'booking_status' => 'awaiting_confirmation',
+        ]);
+
+        $stateService->putMany($conversation, [
+            'review_sent' => true,
+            'review_hash' => 'hash-priority-confirm',
+            'booking_confirmed' => false,
+            'pickup_location' => 'Pasir Pengaraian',
+            'destination' => 'Pekanbaru',
+        ], 'test_final_confirmation_priority');
+        $stateService->transitionFlowState(
+            $conversation,
+            BookingFlowState::AwaitingFinalConfirmation,
+            'final_confirmation',
+            'test_final_confirmation_priority',
+        );
+
+        $reply = $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'benar'),
+            intentResult: ['intent' => 'booking_confirm', 'confidence' => 0.95],
+            entityResult: ['destination' => 'Pekanbaru'],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $slots = $stateService->load($conversation->fresh());
+
+        $this->assertSame('confirmed', $reply['booking_decision']['action']);
+        $this->assertTrue($slots['booking_confirmed']);
+        $this->assertTrue($slots['final_confirmation_received']);
+        $this->assertNull($stateService->expectedInput($conversation->fresh()));
+        $this->assertSame(BookingFlowState::Completed->value, $slots['booking_intent_status']);
+        $this->assertStringContainsString('data sudah kami terima', mb_strtolower($reply['reply']['text'], 'UTF-8'));
+        $this->assertSame('confirmed', $booking->fresh()->booking_status->value);
+    }
+
     public function test_it_does_not_repeat_the_full_opening_greeting_in_the_same_session(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-03-27 08:00:00', 'Asia/Jakarta'));

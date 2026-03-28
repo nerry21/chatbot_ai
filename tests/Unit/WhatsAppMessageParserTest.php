@@ -77,6 +77,27 @@ class WhatsAppMessageParserTest extends TestCase
         $this->assertSame('benar', $text);
     }
 
+    public function test_it_normalizes_booking_confirm_button_to_benar_even_when_title_exists(): void
+    {
+        $parser = app(WhatsAppMessageParser::class);
+
+        $messages = $parser->extractMessages($this->payloadWithMessage([
+            'from' => '6281234567890',
+            'id' => 'wamid.button.2',
+            'timestamp' => '1710000002',
+            'type' => 'interactive',
+            'interactive' => [
+                'type' => 'button_reply',
+                'button_reply' => [
+                    'id' => 'booking_confirm',
+                    'title' => 'Benar',
+                ],
+            ],
+        ]));
+
+        $this->assertSame('benar', $messages[0]['message_text']);
+    }
+
     /**
      * @param  array<string, mixed>  $message
      * @return array<string, mixed>

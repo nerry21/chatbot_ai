@@ -146,32 +146,31 @@ class WhatsAppMessageParser
      */
     private function interactiveReplyText(?array $interactiveReply): ?string
     {
+        $id = trim((string) ($interactiveReply['id'] ?? ''));
+
+        if ($id !== '') {
+            $normalizedById = match (true) {
+                $id === 'booking_confirm' => 'benar',
+                $id === 'booking_change' => 'ubah data',
+                str_starts_with($id, 'departure_time:') => (string) substr($id, strlen('departure_time:')),
+                str_starts_with($id, 'pickup_location:') => $this->humanizeSelectionId((string) substr($id, strlen('pickup_location:'))),
+                str_starts_with($id, 'dropoff_location:') => $this->humanizeSelectionId((string) substr($id, strlen('dropoff_location:'))),
+                preg_match('/^passenger_count_(\d+)$/', $id, $matches) === 1 => (string) ($matches[1] ?? $id),
+                default => null,
+            };
+
+            if ($normalizedById !== null) {
+                return $normalizedById;
+            }
+        }
+
         $title = trim((string) ($interactiveReply['title'] ?? ''));
 
         if ($title !== '') {
             return $title;
         }
 
-        $id = trim((string) ($interactiveReply['id'] ?? ''));
-
-        if ($id === '') {
-            return null;
-        }
-
-        if (preg_match('/^passenger_count_(\d+)$/', $id, $matches)) {
-            return (string) ($matches[1] ?? $id);
-        }
-
-        return match (true) {
-            $id === 'contact_same' => 'sama',
-            $id === 'contact_diff' => 'berbeda',
-            $id === 'booking_confirm' => 'benar',
-            $id === 'booking_change' => 'ubah data',
-            str_starts_with($id, 'departure_time:') => (string) substr($id, strlen('departure_time:')),
-            str_starts_with($id, 'pickup_location:') => $this->humanizeSelectionId((string) substr($id, strlen('pickup_location:'))),
-            str_starts_with($id, 'dropoff_location:') => $this->humanizeSelectionId((string) substr($id, strlen('dropoff_location:'))),
-            default => $this->humanizeSelectionId($id),
-        };
+        return $id !== '' ? $this->humanizeSelectionId($id) : null;
     }
 
     private function humanizeSelectionId(string $value): string
