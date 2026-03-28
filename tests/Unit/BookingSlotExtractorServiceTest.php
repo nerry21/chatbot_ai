@@ -166,4 +166,36 @@ class BookingSlotExtractorServiceTest extends TestCase
 
         $this->assertSame('Pasir Pengaraian', $result['updates']['pickup_location']);
     }
+
+    public function test_it_only_maps_pickup_address_when_pickup_address_is_expected(): void
+    {
+        $extractor = app(BookingSlotExtractorService::class);
+
+        $result = $extractor->extract(
+            messageText: 'Alamat jemput: Jl Sudirman No 1',
+            currentSlots: [],
+            entityResult: [],
+            expectedInput: 'pickup_full_address',
+            senderPhone: '+6281234567890',
+        );
+
+        $this->assertSame('Jl Sudirman No 1', $result['updates']['pickup_full_address']);
+        $this->assertArrayNotHasKey('destination_full_address', $result['updates']);
+    }
+
+    public function test_it_only_maps_destination_address_when_destination_address_is_expected(): void
+    {
+        $extractor = app(BookingSlotExtractorService::class);
+
+        $result = $extractor->extract(
+            messageText: 'Alamat tujuan antar: Jl Tuanku Tambusai No 5',
+            currentSlots: [],
+            entityResult: [],
+            expectedInput: 'destination_full_address',
+            senderPhone: '+6281234567890',
+        );
+
+        $this->assertSame('Jl Tuanku Tambusai No 5', $result['updates']['destination_full_address']);
+        $this->assertArrayNotHasKey('pickup_full_address', $result['updates']);
+    }
 }

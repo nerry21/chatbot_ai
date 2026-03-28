@@ -557,6 +557,14 @@ class BookingFlowStateMachine
      */
     private function mergeIncrementalUpdates(array $slots, array $updates, ?string $expectedInput): array
     {
+        if ($expectedInput === 'pickup_full_address') {
+            unset($updates['destination_full_address']);
+        }
+
+        if ($expectedInput === 'destination_full_address') {
+            unset($updates['pickup_full_address']);
+        }
+
         if ($expectedInput === 'passenger_name' && isset($updates['passenger_names'])) {
             $existing = is_array($slots['passenger_names'] ?? null) ? $slots['passenger_names'] : [];
             $required = max(1, (int) ($slots['passenger_count'] ?? 1));

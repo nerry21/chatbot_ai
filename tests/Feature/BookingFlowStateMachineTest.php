@@ -346,6 +346,45 @@ class BookingFlowStateMachineTest extends TestCase
         $this->assertStringNotContainsString('Tanggal keberangkatan', $reply['reply']['text']);
     }
 
+    public function test_it_does_not_copy_destination_address_into_pickup_address(): void
+    {
+        [$customer, $conversation] = $this->makeConversation();
+        $flow = app(BookingFlowStateMachine::class);
+        $stateService = app(BookingConversationStateService::class);
+
+        $stateService->putMany($conversation, [
+            'pickup_location' => 'Pasir Pengaraian',
+            'pickup_full_address' => 'Jl Sudirman No 1',
+            'destination' => 'Pekanbaru',
+            'passenger_count' => 1,
+            'travel_date' => '2026-03-28',
+            'travel_time' => '08:00',
+            'selected_seats' => ['CC'],
+            'route_status' => 'supported',
+            'fare_amount' => 150000,
+        ], 'test_destination_address_mapping');
+        $stateService->transitionFlowState(
+            $conversation,
+            BookingFlowState::AskingDropoffPoint,
+            'destination_full_address',
+            'test_destination_address_mapping',
+        );
+
+        $flow->handle(
+            conversation: $conversation->fresh(),
+            customer: $customer->fresh(),
+            message: $this->inboundMessage($conversation->fresh(), 'Alamat tujuan antar: Jl Tuanku Tambusai No 5'),
+            intentResult: ['intent' => 'booking', 'confidence' => 0.95],
+            entityResult: [],
+            replyResult: ['text' => '', 'is_fallback' => true],
+        );
+
+        $slots = $stateService->load($conversation->fresh());
+
+        $this->assertSame('Jl Sudirman No 1', $slots['pickup_full_address']);
+        $this->assertSame('Jl Tuanku Tambusai No 5', $slots['destination_full_address']);
+    }
+
     public function test_it_does_not_repeat_the_full_opening_greeting_in_the_same_session(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-03-27 08:00:00', 'Asia/Jakarta'));

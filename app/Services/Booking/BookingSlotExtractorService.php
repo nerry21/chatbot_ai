@@ -95,14 +95,26 @@ class BookingSlotExtractorService
             $updates['selected_seats'] = $seats;
         }
 
-        $address = $this->extractPickupAddress($text, $normalized, $expectedInput);
-        if ($address !== null) {
-            $updates['pickup_full_address'] = $address;
-        }
+        if ($expectedInput === 'pickup_full_address') {
+            $address = $this->extractPickupAddress($text, $normalized, $expectedInput);
+            if ($address !== null) {
+                $updates['pickup_full_address'] = $address;
+            }
+        } elseif ($expectedInput === 'destination_full_address') {
+            $destinationAddress = $this->extractDestinationAddress($text, $normalized, $expectedInput, $entityResult);
+            if ($destinationAddress !== null) {
+                $updates['destination_full_address'] = $destinationAddress;
+            }
+        } else {
+            $address = $this->extractPickupAddress($text, $normalized, $expectedInput);
+            if ($address !== null) {
+                $updates['pickup_full_address'] = $address;
+            }
 
-        $destinationAddress = $this->extractDestinationAddress($text, $normalized, $expectedInput, $entityResult);
-        if ($destinationAddress !== null) {
-            $updates['destination_full_address'] = $destinationAddress;
+            $destinationAddress = $this->extractDestinationAddress($text, $normalized, $expectedInput, $entityResult);
+            if ($destinationAddress !== null) {
+                $updates['destination_full_address'] = $destinationAddress;
+            }
         }
 
         $payment = $this->extractPaymentMethod($normalized, $expectedInput, $entityResult);
@@ -344,7 +356,11 @@ class BookingSlotExtractorService
 
     private function extractPickupAddress(string $messageText, string $normalizedText, ?string $expectedInput): ?string
     {
-        if (preg_match('/\b(?:alamat(?:\s+lengkap)?(?:\s+jemput)?|detail\s+alamat)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
+        if ($this->referencesDestinationAddress($normalizedText)) {
+            return null;
+        }
+
+        if (preg_match('/\b(?:alamat(?:\s+lengkap)?\s+(?:jemput|penjemputan|pickup)|detail\s+alamat\s+(?:jemput|pickup)|titik\s+jemput(?:an)?(?:\s+lengkap)?)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
             return $this->normalizeAddress((string) ($matches[1] ?? ''));
         }
 
@@ -367,7 +383,7 @@ class BookingSlotExtractorService
             return $this->normalizeAddress($raw);
         }
 
-        if (preg_match('/\b(?:alamat(?:\s+lengkap)?\s+(?:tujuan|antar)|detail\s+(?:tujuan|antar)|titik\s+antar(?:an)?(?:\s+lengkap)?)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
+        if (preg_match('/\b(?:alamat(?:\s+lengkap)?\s+(?:tujuan(?:\s+antar)?|antar|pengantaran)|detail\s+(?:tujuan|antar|pengantaran)|titik\s+antar(?:an)?(?:\s+lengkap)?)\s*(?:=|:)?\s*(.+)$/ui', $messageText, $matches)) {
             return $this->normalizeAddress((string) ($matches[1] ?? ''));
         }
 
@@ -516,6 +532,8 @@ class BookingSlotExtractorService
     private function normalizeAddress(string $value): ?string
     {
         $clean = trim(preg_replace('/\s+/u', ' ', $value) ?? $value, " \t\n\r\0\x0B,;");
+        $clean = preg_replace('/^(?:alamat(?:\s+lengkap)?\s+)?(?:tujuan(?:\s+antar)?|antar|pengantaran|jemput|penjemputan|pickup)\s*(?:=|:|-)?\s*/ui', '', $clean) ?? $clean;
+        $clean = trim($clean, " \t\n\r\0\x0B,;");
 
         return mb_strlen($clean) >= 5 ? $clean : null;
     }
@@ -558,6 +576,11 @@ class BookingSlotExtractorService
     private function isGreetingOnly(string $messageText): bool
     {
         return $this->greetingDetector->inspect($messageText)['greeting_only'];
+    }
+
+    private function referencesDestinationAddress(string $normalizedText): bool
+    {
+        return (bool) preg_match('/\b(?:alamat|detail|titik)\s+(?:tujuan|antar|pengantaran)\b/u', $normalizedText);
     }
 
     private function departureSlots(): array
