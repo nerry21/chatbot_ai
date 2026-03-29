@@ -4,16 +4,9 @@ namespace App\Services\WhatsApp;
 
 class WhatsAppMessageParser
 {
-    /**
-     * Parse a raw Meta Cloud API webhook payload and extract message entries.
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<int, array<string, mixed>>
-     */
     public function extractMessages(array $payload): array
     {
         $messages = [];
-
         $entries = $payload['entry'] ?? [];
 
         foreach ($entries as $entry) {
@@ -28,7 +21,6 @@ class WhatsAppMessageParser
                 $rawMessages  = $value['messages'] ?? [];
                 $contacts     = $value['contacts'] ?? [];
                 $metadata     = $value['metadata'] ?? [];
-
                 $contactMap = $this->indexContactsByWaId($contacts);
 
                 foreach ($rawMessages as $msg) {
@@ -43,8 +35,8 @@ class WhatsAppMessageParser
                         'message_type'   => $msg['type'] ?? 'unknown',
                         'message_text'   => $this->extractText($msg, $interactiveReply),
                         'timestamp'      => isset($msg['timestamp'])
-                                            ? \Carbon\Carbon::createFromTimestamp((int) $msg['timestamp'])
-                                            : null,
+                            ? \Carbon\Carbon::createFromTimestamp((int) $msg['timestamp'])
+                            : null,
                         'interactive_reply' => $interactiveReply,
                         'raw_message'    => $msg,
                         'raw_payload'    => $this->buildRawPayload($msg, $metadata, $interactiveReply),
@@ -57,11 +49,6 @@ class WhatsAppMessageParser
         return $messages;
     }
 
-    /**
-     * Determine if the payload is a valid WhatsApp Cloud API webhook event.
-     *
-     * @param  array<string, mixed>  $payload
-     */
     public function isValidWebhookPayload(array $payload): bool
     {
         return isset($payload['object'])
@@ -70,32 +57,19 @@ class WhatsAppMessageParser
             && is_array($payload['entry']);
     }
 
-    /**
-     * Extract plain text content from a message node.
-     *
-     * @param  array<string, mixed>  $msg
-     * @param  array<string, mixed>|null  $interactiveReply
-     */
     public function extractText(array $msg, ?array $interactiveReply = null): ?string
     {
         $type = $msg['type'] ?? null;
 
         return match($type) {
-            'text'     => $msg['text']['body'] ?? null,
-            'button'   => $msg['button']['text'] ?? null,
+            'text' => $msg['text']['body'] ?? null,
+            'button' => $msg['button']['text'] ?? null,
             'interactive' => $this->interactiveReplyText($interactiveReply ?? $this->extractInteractiveReply($msg)),
-            default    => null,
+            'audio' => '[Voice note]',
+            default => null,
         };
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * @param  array<int, array<string, mixed>>  $contacts
-     * @return array<string, array<string, mixed>>
-     */
     private function indexContactsByWaId(array $contacts): array
     {
         $map = [];
@@ -108,10 +82,6 @@ class WhatsAppMessageParser
         return $map;
     }
 
-    /**
-     * @param  array<string, mixed>  $msg
-     * @return array<string, mixed>|null
-     */
     private function extractInteractiveReply(array $msg): ?array
     {
         if (($msg['type'] ?? null) !== 'interactive') {
@@ -141,9 +111,6 @@ class WhatsAppMessageParser
         return null;
     }
 
-    /**
-     * @param  array<string, mixed>|null  $interactiveReply
-     */
     private function interactiveReplyText(?array $interactiveReply): ?string
     {
         $id = trim((string) ($interactiveReply['id'] ?? ''));
@@ -165,7 +132,6 @@ class WhatsAppMessageParser
         }
 
         $title = trim((string) ($interactiveReply['title'] ?? ''));
-
         if ($title !== '') {
             return $title;
         }
@@ -182,15 +148,13 @@ class WhatsAppMessageParser
         );
     }
 
-    /**
-     * @param  array<string, mixed>  $msg
-     * @param  array<string, mixed>  $metadata
-     * @param  array<string, mixed>|null  $interactiveReply
-     * @return array<string, mixed>
-     */
     private function buildRawPayload(array $msg, array $metadata, ?array $interactiveReply): array
     {
         $payload = $msg;
+
+        if (($msg['type'] ?? null) === 'audio') {
+            $payload['audio_url'] = null;
+        }
 
         if ($metadata !== []) {
             $payload['_webhook_metadata'] = $metadata;

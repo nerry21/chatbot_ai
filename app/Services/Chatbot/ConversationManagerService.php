@@ -196,13 +196,14 @@ class ConversationManagerService
         Conversation $conversation,
         string $text,
         int $adminId,
+        string $messageType = 'text',
         array $rawPayload = [],
     ): ConversationMessage {
         $message = ConversationMessage::create([
             'conversation_id' => $conversation->id,
             'direction'       => MessageDirection::Outbound,
             'sender_type'     => SenderType::Admin,
-            'message_type'    => 'text',
+            'message_type'    => $messageType,
             'message_text'    => $text,
             'raw_payload'     => array_merge($rawPayload, ['admin_id' => $adminId]),
             'sender_user_id'  => $adminId,

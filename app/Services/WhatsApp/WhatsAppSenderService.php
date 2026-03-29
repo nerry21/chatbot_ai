@@ -31,20 +31,11 @@ class WhatsAppSenderService
             && $this->phoneNumberId !== '';
     }
 
-    /**
-     * @param  array<string, mixed>  $meta
-     * @return array{status: string, provider: string, response: array|null, error: string|null}
-     */
     public function sendText(string $toPhoneE164, string $text, array $meta = []): array
     {
         return $this->sendMessage($toPhoneE164, $text, 'text', [], $meta);
     }
 
-    /**
-     * @param  array<string, mixed>  $providerPayload
-     * @param  array<string, mixed>  $meta
-     * @return array{status: string, provider: string, response: array|null, error: string|null, requested_type?: string, sent_type?: string, fallback_used?: bool}
-     */
     public function sendMessage(
         string $toPhoneE164,
         string $text,
@@ -158,10 +149,6 @@ class WhatsAppSenderService
         }
     }
 
-    /**
-     * @param  array<string, mixed>|null  $response
-     * @return array{status: string, provider: string, response: array|null, error: string|null}
-     */
     private function result(string $status, ?array $response = null, ?string $error = null): array
     {
         return [
@@ -172,10 +159,6 @@ class WhatsAppSenderService
         ];
     }
 
-    /**
-     * @param  array<string, mixed>  $providerPayload
-     * @return array<string, mixed>
-     */
     private function buildRequestBody(string $to, string $text, string $messageType, array $providerPayload): array
     {
         if ($messageType === 'interactive') {
@@ -196,6 +179,19 @@ class WhatsAppSenderService
             ];
         }
 
+        if ($messageType === 'audio') {
+            return [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'audio',
+                'audio' => array_filter([
+                    'link' => data_get($providerPayload, 'audio.link'),
+                    'id' => data_get($providerPayload, 'audio.id'),
+                    'voice' => data_get($providerPayload, 'audio.voice', true),
+                ], static fn (mixed $value): bool => $value !== null && $value !== ''),
+            ];
+        }
+
         return [
             'messaging_product' => 'whatsapp',
             'to' => $to,
@@ -207,9 +203,6 @@ class WhatsAppSenderService
         ];
     }
 
-    /**
-     * @param  array<string, mixed>  $providerPayload
-     */
     private function resolveMessageType(string $messageType, array $providerPayload): string
     {
         if (
@@ -227,6 +220,14 @@ class WhatsAppSenderService
             && $providerPayload['contacts'] !== []
         ) {
             return 'contacts';
+        }
+
+        if (
+            $messageType === 'audio'
+            && is_array($providerPayload['audio'] ?? null)
+            && (filled($providerPayload['audio']['link'] ?? null) || filled($providerPayload['audio']['id'] ?? null))
+        ) {
+            return 'audio';
         }
 
         return 'text';

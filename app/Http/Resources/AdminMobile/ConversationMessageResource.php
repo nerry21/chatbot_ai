@@ -9,9 +9,6 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /** @mixin \App\Models\ConversationMessage */
 class ConversationMessageResource extends JsonResource
 {
-    /**
-     * @return array<string, mixed>
-     */
     public function toArray(Request $request): array
     {
         $direction = is_string($this->direction) ? $this->direction : $this->direction?->value;
@@ -20,6 +17,10 @@ class ConversationMessageResource extends JsonResource
         $senderUser = $this->relationLoaded('senderUser') ? $this->senderUser : null;
         $interactivePayload = data_get($this->raw_payload, 'outbound_payload.interactive');
         $interactiveSelection = data_get($this->raw_payload, '_interactive_selection');
+        $audioLink = data_get($this->raw_payload, 'outbound_payload.audio.link')
+            ?? data_get($this->raw_payload, 'audio.link')
+            ?? data_get($this->raw_payload, 'audio_url');
+        $audioId = data_get($this->raw_payload, 'audio.id');
 
         if (
             $direction === MessageDirection::Inbound->value
@@ -67,6 +68,15 @@ class ConversationMessageResource extends JsonResource
                     ->values()
                     ->all(),
                 'is_booking_review' => filled(data_get($this->raw_payload, 'review_hash')),
+            ],
+            'media' => [
+                'audio_url' => $audioLink,
+                'audio_id' => $audioId,
+                'mime_type' => data_get($this->raw_payload, 'mime_type'),
+                'caption' => data_get($this->raw_payload, 'media_caption'),
+                'is_voice_note' => (bool) (data_get($this->raw_payload, 'outbound_payload.audio.voice')
+                    ?? data_get($this->raw_payload, 'audio.voice')
+                    ?? ($this->message_type === 'audio')),
             ],
         ];
     }

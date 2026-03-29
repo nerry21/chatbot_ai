@@ -34,11 +34,29 @@ class ReplyController extends Controller
             ], 401);
         }
 
+        $messageType = (string) $request->input('message_type', 'text');
+        $text = $messageType === 'audio'
+            ? (string) ($request->input('caption') ?: '[Voice note admin]')
+            : (string) $request->input('message');
+
+        $outboundPayload = $messageType === 'audio'
+            ? [
+                'audio' => [
+                    'link' => (string) $request->input('audio_url'),
+                    'voice' => (bool) $request->boolean('voice', true),
+                ],
+                'mime_type' => $request->input('mime_type'),
+                'caption' => $request->input('caption'),
+            ]
+            : [];
+
         $result = $this->messageService->send(
             conversation: $conversation,
-            text: (string) $request->input('message'),
+            text: $text,
             adminId: (int) $user->id,
-            source: 'admin_mobile_omnichannel',
+            source: $messageType === 'audio' ? 'admin_mobile_voice_note' : 'admin_mobile_omnichannel',
+            messageType: $messageType,
+            outboundPayload: $outboundPayload,
         );
 
         $this->readService->markAsRead($conversation, (int) $user->id);
@@ -59,9 +77,11 @@ class ReplyController extends Controller
         $notice = $duplicate
             ? 'Pesan yang sama baru saja dikirim. Duplikat diabaikan.'
             : (
-                $conversation->channel === 'mobile_live_chat'
-                    ? 'Balasan admin berhasil dikirim ke live chat.'
-                    : 'Balasan admin berhasil diantrekan ke WhatsApp.'
+                $messageType === 'audio'
+                    ? 'Voice note admin berhasil diantrekan ke WhatsApp.'
+                    : ($conversation->channel === 'mobile_live_chat'
+                        ? 'Balasan admin berhasil dikirim ke live chat.'
+                        : 'Balasan admin berhasil diantrekan ke WhatsApp.')
             );
 
         return $this->successResponse($notice, [

@@ -22,6 +22,7 @@ class AdminConversationMessageService
     ) {}
 
     /**
+     * @param  array<string, mixed>  $outboundPayload
      * @return array{
      *     status: 'queued'|'duplicate'|'failed',
      *     message: ConversationMessage,
@@ -36,12 +37,19 @@ class AdminConversationMessageService
         string $text,
         int $adminId,
         string $source = 'conversation_detail',
+        string $messageType = 'text',
+        array $outboundPayload = [],
     ): array {
         $normalizedText = trim(preg_replace('/\s+/u', ' ', $text) ?? $text);
+        $dedupeSeed = $messageType === 'audio'
+            ? (string) data_get($outboundPayload, 'audio.link', '')
+            : mb_strtolower($normalizedText, 'UTF-8');
+
         $fingerprint = hash('sha256', implode('|', [
             (string) $conversation->id,
             (string) $adminId,
-            mb_strtolower($normalizedText, 'UTF-8'),
+            $messageType,
+            $dedupeSeed,
         ]));
 
         $lock = Cache::lock('chatbot:admin-message:'.$conversation->id.':'.$adminId, 10);
@@ -98,12 +106,22 @@ class AdminConversationMessageService
                 conversation: $conversation,
                 text: $normalizedText,
                 adminId: $adminId,
-                rawPayload: [
+                messageType: $messageType,
+                rawPayload: array_merge([
                     'source' => $source,
                     'admin_name' => $adminName,
                     'admin_message_fingerprint' => $fingerprint,
                     'sender_role' => 'admin',
-                ],
+                ], $messageType === 'audio' ? [
+                    'outbound_payload' => [
+                        'audio' => [
+                            'link' => (string) data_get($outboundPayload, 'audio.link', ''),
+                            'voice' => (bool) data_get($outboundPayload, 'audio.voice', true),
+                        ],
+                    ],
+                    'media_caption' => data_get($outboundPayload, 'caption'),
+                    'mime_type' => data_get($outboundPayload, 'mime_type'),
+                ] : []),
             );
 
             $this->adminCorrectionLogger->captureForAdminReply(
@@ -128,6 +146,7 @@ class AdminConversationMessageService
                         'source' => $source,
                         'admin_id' => $adminId,
                         'transport' => $conversation->channel,
+                        'message_type' => $messageType,
                         'error' => $e->getMessage(),
                     ],
                 ]);
@@ -153,6 +172,7 @@ class AdminConversationMessageService
                     'message_id' => $message->id,
                     'admin_id' => $adminId,
                     'source' => $source,
+                    'message_type' => $messageType,
                     'text_preview' => mb_substr($normalizedText, 0, 120),
                     'message_fingerprint' => $fingerprint,
                     'transport' => $conversation->channel,
