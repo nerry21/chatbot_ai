@@ -5,51 +5,48 @@ namespace App\Services\AdminMobile;
 use App\Models\AdminMobileAccessToken;
 use App\Models\User;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class AdminMobileAuthService
 {
     /**
-     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $credentials
      * @return array{user: User, access_token: string, token: AdminMobileAccessToken}
      */
-    public function login(array $payload): array
+    public function login(array $credentials): array
     {
-        $email = Str::lower(trim((string) $payload['email']));
-        $password = (string) $payload['password'];
-        $deviceName = $this->nullableString($payload['device_name'] ?? null) ?? 'admin-mobile';
-        $deviceId = $this->nullableString($payload['device_id'] ?? null);
+        $email = trim((string) ($credentials['email'] ?? ''));
+        $password = (string) ($credentials['password'] ?? '');
 
-        return DB::transaction(function () use ($email, $password, $deviceName, $deviceId): array {
-            $user = User::query()
-                ->whereRaw('LOWER(email) = ?', [$email])
-                ->first();
+        /** @var User|null $user */
+        $user = User::query()->where('email', $email)->first();
 
-            if ($user === null || ! Hash::check($password, (string) $user->getAuthPassword())) {
-                throw new HttpException(401, 'Kredensial admin tidak valid.');
-            }
+        if ($user === null || ! Hash::check($password, (string) $user->password)) {
+            throw ValidationException::withMessages([
+                'email' => ['Email atau password admin tidak valid.'],
+            ]);
+        }
 
-            if (! $user->canAccessChatbotAdmin()) {
-                throw new HttpException(403, 'Akun ini tidak memiliki akses admin mobile.');
-            }
+        if (! $user->canAccessChatbotAdmin()) {
+            throw ValidationException::withMessages([
+                'email' => ['Akun ini tidak memiliki akses ke admin omnichannel.'],
+            ]);
+        }
 
-            if ($deviceId !== null) {
-                $user->adminMobileAccessTokens()
-                    ->where('device_id', $deviceId)
-                    ->delete();
-            }
+        $user->forceFill([
+            'email_verified_at' => $user->email_verified_at ?? now(),
+        ])->save();
 
-            $token = $this->issueToken($user, $deviceName, $deviceId);
+        $token = $this->issueToken($user, 'admin_login');
 
-            return [
-                'user' => $user->fresh() ?? $user,
-                'access_token' => $token['plain_text_token'],
-                'token' => $token['model'],
-            ];
-        });
+        return [
+            'user' => $user->fresh() ?? $user,
+            'access_token' => $token['plain_text_token'],
+            'token' => $token['model'],
+        ];
     }
 
     public function logout(User $user, ?AdminMobileAccessToken $token): void
@@ -67,9 +64,10 @@ class AdminMobileAuthService
         $plainTextToken = trim((string) $request->bearerToken());
 
         if ($plainTextToken === '') {
-            throw new HttpException(401, 'Bearer token admin mobile wajib dikirim.');
+            throw new HttpException(401, 'Bearer token admin wajib dikirim.');
         }
 
+        /** @var AdminMobileAccessToken|null $token */
         $token = AdminMobileAccessToken::query()
             ->with('user')
             ->where('token_hash', hash('sha256', $plainTextToken))
@@ -80,7 +78,7 @@ class AdminMobileAuthService
         }
 
         if (! $token->user->canAccessChatbotAdmin()) {
-            throw new HttpException(403, 'Akun ini tidak memiliki akses admin mobile.');
+            throw new HttpException(403, 'Akses admin omnichannel ditolak.');
         }
 
         $token->forceFill(['last_used_at' => now()])->save();
@@ -111,29 +109,20 @@ class AdminMobileAuthService
     /**
      * @return array{plain_text_token: string, model: AdminMobileAccessToken}
      */
-    private function issueToken(User $user, string $deviceName, ?string $deviceId): array
+    private function issueToken(User $user, string $name): array
     {
         $plainTextToken = Str::random(64);
 
         $model = AdminMobileAccessToken::create([
             'user_id' => $user->id,
-            'name' => 'admin-mobile',
+            'name' => $name,
             'token_hash' => hash('sha256', $plainTextToken),
-            'device_name' => $deviceName,
-            'device_id' => $deviceId,
-            'expires_at' => now()->addDays((int) config('chatbot.admin_mobile.auth_token_ttl_days', 30)),
+            'expires_at' => now()->addDays((int) config('chatbot.mobile_live_chat.auth_token_ttl_days', 30)),
         ]);
 
         return [
             'plain_text_token' => $plainTextToken,
             'model' => $model,
         ];
-    }
-
-    private function nullableString(mixed $value): ?string
-    {
-        $normalized = trim((string) $value);
-
-        return $normalized !== '' ? $normalized : null;
     }
 }

@@ -11,13 +11,13 @@ return new class extends Migration
         Schema::create('admin_mobile_access_tokens', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-            $table->string('name')->default('admin-mobile');
-            $table->string('token_hash')->unique();
-            $table->string('device_name')->nullable();
-            $table->string('device_id')->nullable()->index();
+            $table->string('name')->default('admin_mobile');
+            $table->string('token_hash', 64)->unique();
             $table->timestamp('last_used_at')->nullable();
-            $table->timestamp('expires_at')->nullable()->index();
+            $table->timestamp('expires_at')->nullable();
             $table->timestamps();
+
+            $table->index(['user_id', 'expires_at']);
         });
     }
 

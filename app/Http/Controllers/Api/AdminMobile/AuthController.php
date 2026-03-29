@@ -4,8 +4,6 @@ namespace App\Http\Controllers\Api\AdminMobile;
 
 use App\Http\Controllers\Api\AdminMobile\Concerns\RespondsWithAdminMobileJson;
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\AdminMobile\LoginRequest;
-use App\Http\Resources\AdminMobile\AdminUserResource;
 use App\Services\AdminMobile\AdminMobileAuthService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,36 +13,55 @@ class AuthController extends Controller
     use RespondsWithAdminMobileJson;
 
     public function __construct(
-        private readonly AdminMobileAuthService $adminMobileAuthService,
+        private readonly AdminMobileAuthService $authService,
     ) {}
 
-    public function login(LoginRequest $request): JsonResponse
+    public function login(Request $request): JsonResponse
     {
-        $result = $this->adminMobileAuthService->login($request->validated());
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'password' => ['required', 'string'],
+        ]);
+
+        $result = $this->authService->login($validated);
 
         return $this->successResponse('Login admin mobile berhasil.', [
             'access_token' => $result['access_token'],
             'token_type' => 'Bearer',
-            'user' => AdminUserResource::make($result['user']),
+            'user' => $this->userPayload($result['user']),
+        ]);
+    }
+
+    public function me(Request $request): JsonResponse
+    {
+        $user = $this->authService->currentUser($request);
+
+        return $this->successResponse('Profil admin berhasil diambil.', [
+            'user' => $this->userPayload($user),
         ]);
     }
 
     public function logout(Request $request): JsonResponse
     {
-        $user = $this->adminMobileAuthService->currentUser($request);
-        $token = $this->adminMobileAuthService->currentAccessToken($request);
+        $user = $this->authService->currentUser($request);
+        $token = $this->authService->currentAccessToken($request);
 
-        $this->adminMobileAuthService->logout($user, $token);
+        $this->authService->logout($user, $token);
 
         return $this->successResponse('Logout admin mobile berhasil.');
     }
 
-    public function me(Request $request): JsonResponse
+    /**
+     * @return array<string, mixed>
+     */
+    private function userPayload($user): array
     {
-        $user = $this->adminMobileAuthService->currentUser($request);
-
-        return $this->successResponse('Profil admin mobile berhasil diambil.', [
-            'user' => AdminUserResource::make($user),
-        ]);
+        return [
+            'id' => (int) $user->id,
+            'name' => (string) $user->name,
+            'email' => (string) $user->email,
+            'is_chatbot_admin' => (bool) $user->is_chatbot_admin,
+            'is_chatbot_operator' => (bool) $user->is_chatbot_operator,
+        ];
     }
 }

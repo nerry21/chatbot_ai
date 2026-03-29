@@ -11,8 +11,6 @@ class AdminMobileAccessToken extends Model
         'user_id',
         'name',
         'token_hash',
-        'device_name',
-        'device_id',
         'last_used_at',
         'expires_at',
     ];

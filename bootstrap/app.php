@@ -16,99 +16,64 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
         then: function (): void {
-            // Webhook routes loaded separately so CSRF can be excluded cleanly
             \Illuminate\Support\Facades\Route::middleware('web')
                 ->group(base_path('routes/webhook.php'));
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // Exclude webhook paths from CSRF token verification
         $middleware->validateCsrfTokens(except: [
             'webhook/*',
         ]);
 
-        // Register named middleware aliases
         $middleware->alias([
             'chatbot.admin' => \App\Http\Middleware\EnsureChatbotAdminAccess::class,
             'mobile.auth' => \App\Http\Middleware\AuthenticateMobileCustomer::class,
-            'admin-mobile.auth' => \App\Http\Middleware\AuthenticateAdminMobile::class,
+            'admin.mobile.auth' => \App\Http\Middleware\AuthenticateAdminMobile::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        $isMobileApiRequest = static fn (Request $request): bool => $request->is('api/mobile/*');
-        $isAdminMobileApiRequest = static fn (Request $request): bool => $request->is('api/admin-mobile/*');
-        $apiErrorContext = static function (Request $request) use ($isMobileApiRequest, $isAdminMobileApiRequest): ?array {
-            if ($isMobileApiRequest($request)) {
-                return [
-                    'validation_message' => 'Validasi request gagal.',
-                    'authentication_message' => 'Autentikasi mobile gagal.',
-                    'authorization_message' => 'Akses ke resource mobile ditolak.',
-                    'http_fallback_message' => 'Permintaan mobile API gagal.',
-                    'internal_message' => 'Terjadi kesalahan internal pada mobile API.',
-                ];
-            }
+        $isMobileApiRequest = static fn (Request $request): bool => $request->is('api/mobile/*') || $request->is('api/admin-mobile/*');
 
-            if ($isAdminMobileApiRequest($request)) {
-                return [
-                    'validation_message' => 'Validasi request admin mobile gagal.',
-                    'authentication_message' => 'Autentikasi admin mobile gagal.',
-                    'authorization_message' => 'Akses ke resource admin mobile ditolak.',
-                    'http_fallback_message' => 'Permintaan admin mobile API gagal.',
-                    'internal_message' => 'Terjadi kesalahan internal pada admin mobile API.',
-                ];
-            }
-
-            return null;
-        };
-
-        $exceptions->render(function (ValidationException $e, Request $request) use ($apiErrorContext) {
-            $context = $apiErrorContext($request);
-
-            if ($context === null) {
+        $exceptions->render(function (ValidationException $e, Request $request) use ($isMobileApiRequest) {
+            if (! $isMobileApiRequest($request)) {
                 return null;
             }
 
             return response()->json([
                 'success' => false,
-                'message' => $context['validation_message'],
+                'message' => 'Validasi request gagal.',
                 'data' => [
                     'errors' => $e->errors(),
                 ],
             ], 422);
         });
 
-        $exceptions->render(function (AuthenticationException $e, Request $request) use ($apiErrorContext) {
-            $context = $apiErrorContext($request);
-
-            if ($context === null) {
+        $exceptions->render(function (AuthenticationException $e, Request $request) use ($isMobileApiRequest) {
+            if (! $isMobileApiRequest($request)) {
                 return null;
             }
 
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage() !== '' ? $e->getMessage() : $context['authentication_message'],
+                'message' => $e->getMessage() !== '' ? $e->getMessage() : 'Autentikasi API gagal.',
                 'data' => null,
             ], 401);
         });
 
-        $exceptions->render(function (AuthorizationException $e, Request $request) use ($apiErrorContext) {
-            $context = $apiErrorContext($request);
-
-            if ($context === null) {
+        $exceptions->render(function (AuthorizationException $e, Request $request) use ($isMobileApiRequest) {
+            if (! $isMobileApiRequest($request)) {
                 return null;
             }
 
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage() !== '' ? $e->getMessage() : $context['authorization_message'],
+                'message' => $e->getMessage() !== '' ? $e->getMessage() : 'Akses ke resource API ditolak.',
                 'data' => null,
             ], 403);
         });
 
-        $exceptions->render(function (HttpExceptionInterface $e, Request $request) use ($apiErrorContext) {
-            $context = $apiErrorContext($request);
-
-            if ($context === null) {
+        $exceptions->render(function (HttpExceptionInterface $e, Request $request) use ($isMobileApiRequest) {
+            if (! $isMobileApiRequest($request)) {
                 return null;
             }
 
@@ -116,17 +81,13 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage() !== ''
-                    ? $e->getMessage()
-                    : (\Symfony\Component\HttpFoundation\Response::$statusTexts[$status] ?? $context['http_fallback_message']),
+                'message' => $e->getMessage() !== '' ? $e->getMessage() : \Symfony\Component\HttpFoundation\Response::$statusTexts[$status],
                 'data' => null,
             ], $status);
         });
 
-        $exceptions->render(function (Throwable $e, Request $request) use ($apiErrorContext) {
-            $context = $apiErrorContext($request);
-
-            if ($context === null) {
+        $exceptions->render(function (Throwable $e, Request $request) use ($isMobileApiRequest) {
+            if (! $isMobileApiRequest($request)) {
                 return null;
             }
 
@@ -134,7 +95,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return response()->json([
                 'success' => false,
-                'message' => $context['internal_message'],
+                'message' => 'Terjadi kesalahan internal pada API.',
                 'data' => null,
             ], 500);
         });
