@@ -187,11 +187,23 @@ class WhatsAppSenderService
             ];
         }
 
+        if ($messageType === 'contacts') {
+            return [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'contacts',
+                'contacts' => $providerPayload['contacts'] ?? [],
+            ];
+        }
+
         return [
             'messaging_product' => 'whatsapp',
             'to' => $to,
             'type' => 'text',
-            'text' => ['body' => $text],
+            'text' => [
+                'body' => $text,
+                'preview_url' => false,
+            ],
         ];
     }
 
@@ -206,6 +218,15 @@ class WhatsAppSenderService
             && isset($providerPayload['interactive'])
         ) {
             return 'interactive';
+        }
+
+        if (
+            $messageType === 'contacts'
+            && isset($providerPayload['contacts'])
+            && is_array($providerPayload['contacts'])
+            && $providerPayload['contacts'] !== []
+        ) {
+            return 'contacts';
         }
 
         return 'text';
