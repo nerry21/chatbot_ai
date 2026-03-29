@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminMobile\AuthController as AdminMobileAuthController;
+use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
 use App\Http\Controllers\Api\AdminMobile\WorkspaceController as AdminMobileWorkspaceController;
 use App\Http\Controllers\Api\Mobile\AuthController;
 use App\Http\Controllers\Api\Mobile\LiveChatController;
@@ -56,6 +57,7 @@ Route::prefix('admin-mobile')
             Route::get('conversations/{conversation}', [AdminMobileWorkspaceController::class, 'detail'])->name('conversations.show');
             Route::get('conversations/{conversation}/messages', [AdminMobileWorkspaceController::class, 'messages'])->name('conversations.messages.index');
             Route::get('conversations/{conversation}/poll', [AdminMobileWorkspaceController::class, 'pollConversation'])->name('conversations.poll');
+            Route::post('conversations/{conversation}/reply', [AdminMobileReplyController::class, 'store'])->name('conversations.reply');
             Route::get('poll/list', [AdminMobileWorkspaceController::class, 'pollList'])->name('poll.list');
             Route::get('dashboard/summary', [AdminMobileWorkspaceController::class, 'dashboardSummary'])->name('dashboard.summary');
             Route::get('meta/filters', [AdminMobileWorkspaceController::class, 'metaFilters'])->name('meta.filters');
