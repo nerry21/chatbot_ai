@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -87,5 +88,10 @@ class User extends Authenticatable
         }
 
         return false;
+    }
+
+    public function adminMobileAccessTokens(): HasMany
+    {
+        return $this->hasMany(AdminMobileAccessToken::class);
     }
 }

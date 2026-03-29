@@ -366,6 +366,14 @@ return [
         'default_source_app' => env('MOBILE_LIVE_CHAT_SOURCE_APP', 'flutter'),
     ],
 
+    'admin_mobile' => [
+        'poll_interval_ms' => (int) env('ADMIN_MOBILE_POLL_INTERVAL_MS', 3000),
+        'max_messages_per_fetch' => (int) env('ADMIN_MOBILE_MAX_MESSAGES_PER_FETCH', 120),
+        'default_per_page' => (int) env('ADMIN_MOBILE_DEFAULT_PER_PAGE', 18),
+        'max_per_page' => (int) env('ADMIN_MOBILE_MAX_PER_PAGE', 50),
+        'auth_token_ttl_days' => (int) env('ADMIN_MOBILE_AUTH_TOKEN_TTL_DAYS', 30),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | CRM Engine

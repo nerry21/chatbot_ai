@@ -41,12 +41,27 @@ class ConversationInsightService
         $booking = $conversation->relationLoaded('bookingRequests')
             ? $conversation->bookingRequests->first()
             : $conversation->bookingRequests()->latest()->first();
+        $customer = $conversation->relationLoaded('customer')
+            ? $conversation->customer
+            : $conversation->customer()->with([
+                'tags' => fn ($query) => $query->latest('created_at'),
+            ])->first();
+        $conversationTags = $conversation->relationLoaded('tags')
+            ? $conversation->tags
+            : $conversation->tags()->latest('created_at')->get();
+        $customerTags = $customer !== null
+            ? (
+                $customer->relationLoaded('tags')
+                    ? $customer->tags
+                    : $customer->tags()->latest('created_at')->get()
+            )
+            : new EloquentCollection();
 
         return [
             'slot_summary' => $this->buildSlotSummary($states, $booking),
             'internal_notes' => $this->noteService->recentForConversation($conversation, 8),
-            'conversation_tags' => $conversation->tags()->latest('created_at')->get(),
-            'customer_tags' => $conversation->customer?->tags()->latest('created_at')->get() ?? new EloquentCollection(),
+            'conversation_tags' => $conversationTags,
+            'customer_tags' => $customerTags,
             'audit_trail' => AuditLog::query()
                 ->with('actor')
                 ->forConversation($conversation->id)

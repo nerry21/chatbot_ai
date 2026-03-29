@@ -3,43 +3,19 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Models\BookingRequest;
 use App\Models\Conversation;
-use App\Models\ConversationMessage;
-use App\Models\ConversationState;
-use App\Services\Chatbot\ConversationInsightService;
+use App\Services\Chatbot\AdminConversationWorkspaceService;
 use App\Services\Chatbot\ConversationReadService;
 use App\Services\Mobile\MobileConversationService;
-use Illuminate\Database\Eloquent\Collection as EloquentCollection;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class LiveChatController extends Controller
 {
-    private const FILTERS = [
-        'all' => 'All',
-        'unread' => 'Unread',
-        'bot_active' => 'Bot Active',
-        'human_takeover' => 'Human Takeover',
-        'escalated' => 'Escalated',
-        'closed' => 'Closed',
-        'booking_in_progress' => 'Booking In Progress',
-    ];
-
-    private const CHANNELS = [
-        'all' => 'All Channels',
-        'whatsapp' => 'WhatsApp',
-        'mobile_live_chat' => 'Mobile Live Chat',
-    ];
-
     public function __construct(
+        private readonly AdminConversationWorkspaceService $workspaceService,
         private readonly ConversationReadService $readService,
-        private readonly ConversationInsightService $insightService,
         private readonly MobileConversationService $mobileConversationService,
     ) {}
 
@@ -108,257 +84,12 @@ class LiveChatController extends Controller
         ?int $selectedConversationId = null,
         bool $markRead = true,
     ): array {
-        $scope = $request->string('scope')->toString();
-        $scope = array_key_exists($scope, self::FILTERS) ? $scope : 'all';
-        $channel = $request->string('channel')->toString();
-        $channel = array_key_exists($channel, self::CHANNELS) ? $channel : 'all';
-
-        $search = trim((string) $request->input('search', ''));
-        $selectedConversationId ??= $selectedConversation?->id;
-
-        $conversations = $this->conversationListQuery($scope, $search, $channel)
-            ->paginate(18)
-            ->withQueryString();
-
-        $selectedConversation = $this->resolveSelectedConversation(
-            conversations: $conversations,
+        return $this->workspaceService->workspaceData(
+            userId: (int) (auth()->id() ?? 0),
+            filters: $request->all(),
             selectedConversation: $selectedConversation,
             selectedConversationId: $selectedConversationId,
+            markRead: $markRead,
         );
-
-        if ($selectedConversation !== null && $markRead && auth()->check()) {
-            $this->readService->markAsRead($selectedConversation, (int) auth()->id());
-            $this->mobileConversationService->touchAdminRead($selectedConversation);
-        }
-
-        $conversationDetail = $selectedConversation !== null
-            ? $this->loadConversationDetail($selectedConversation)
-            : null;
-
-        $messageGroups = $conversationDetail?->messages
-            ? $conversationDetail->messages->groupBy(
-                fn (ConversationMessage $message): string => $message->sent_at?->format('d M Y') ?? 'Tanpa tanggal',
-            )
-            : collect();
-
-        $conversationInsight = $conversationDetail !== null
-            ? $this->insightService->forConversation($conversationDetail)
-            : null;
-
-        return [
-            'scope' => $scope,
-            'channel' => $channel,
-            'search' => $search,
-            'filters' => collect(self::FILTERS),
-            'channels' => collect(self::CHANNELS),
-            'conversations' => $conversations,
-            'selectedConversation' => $conversationDetail,
-            'selectedConversationId' => $conversationDetail?->id ?? $selectedConversationId,
-            'messageGroups' => $messageGroups,
-            'stateSummary' => $conversationDetail !== null
-                ? $this->buildStateSummary($conversationDetail->states)
-                : collect(),
-            'collectedSlots' => $conversationInsight['slot_summary'] ?? collect(),
-            'internalNotes' => $conversationInsight['internal_notes'] ?? new EloquentCollection(),
-            'conversationTags' => $conversationInsight['conversation_tags'] ?? new EloquentCollection(),
-            'customerTags' => $conversationInsight['customer_tags'] ?? new EloquentCollection(),
-            'auditTrail' => $conversationInsight['audit_trail'] ?? new EloquentCollection(),
-            'latestEscalation' => $conversationDetail?->escalations->first(),
-            'lastInbound' => $conversationDetail?->messages->first(
-                fn (ConversationMessage $message): bool => $this->messageDirection($message) === 'inbound',
-            ),
-            'lastOutbound' => $conversationDetail?->messages->first(
-                fn (ConversationMessage $message): bool => $this->messageDirection($message) === 'outbound'
-                    && $this->messageSenderType($message) !== 'system',
-            ),
-            'lastUpdatedAt' => now()->format('H:i:s'),
-        ];
-    }
-
-    private function conversationListQuery(string $scope, string $search, string $channel): Builder
-    {
-        $userId = (int) (auth()->id() ?? 0);
-
-        $query = Conversation::query()
-            ->with(['customer', 'assignedAdmin'])
-            ->select('conversations.*')
-            ->selectSub($this->latestMessagePreviewSubquery(), 'last_message_preview')
-            ->selectSub($this->latestMessageSenderSubquery(), 'last_message_sender_type')
-            ->selectSub($this->readService->unreadCountSubquery($userId), 'unread_messages_count')
-            ->latest('last_message_at')
-            ->latest('id');
-
-        if ($channel !== 'all') {
-            $query->where('conversations.channel', $channel);
-        }
-
-        if ($search !== '') {
-            $query->where(function (Builder $builder) use ($search): void {
-                $builder
-                    ->whereHas('customer', function (Builder $customerQuery) use ($search): void {
-                        $customerQuery->where('name', 'like', "%{$search}%")
-                            ->orWhere('phone_e164', 'like', "%{$search}%")
-                            ->orWhere('email', 'like', "%{$search}%")
-                            ->orWhere('mobile_user_id', 'like', "%{$search}%");
-                    })
-                    ->orWhere('channel', 'like', "%{$search}%")
-                    ->orWhere('source_app', 'like', "%{$search}%")
-                    ->orWhere('current_intent', 'like', "%{$search}%")
-                    ->orWhereExists(function ($sub) use ($search): void {
-                        $sub->selectRaw('1')
-                            ->from('conversation_messages as search_messages')
-                            ->whereColumn('search_messages.conversation_id', 'conversations.id')
-                            ->where('search_messages.message_text', 'like', "%{$search}%");
-                    });
-            });
-        }
-
-        $this->applyScope($query, $scope, $userId);
-
-        return $query;
-    }
-
-    private function applyScope(Builder $query, string $scope, int $userId): void
-    {
-        match ($scope) {
-            'unread' => $this->readService->applyUnreadFilter($query, $userId),
-            'bot_active' => $query
-                ->where(function (Builder $builder): void {
-                    $builder->whereNull('handoff_mode')
-                        ->orWhere('handoff_mode', 'bot');
-                })
-                ->where(function (Builder $builder): void {
-                    $builder->whereNull('bot_paused')
-                        ->orWhere('bot_paused', false);
-                })
-                ->whereNotIn('status', ['closed', 'archived']),
-            'human_takeover' => $query->humanTakeoverActive(),
-            'escalated' => $query->where(function (Builder $builder): void {
-                $builder->where('status', 'escalated')
-                    ->orWhere('needs_human', true)
-                    ->orWhere('bot_paused', true);
-            })->where(function (Builder $builder): void {
-                $builder->whereNull('assigned_admin_id')
-                    ->orWhere('handoff_mode', '!=', 'admin');
-            }),
-            'closed' => $query->whereIn('status', ['closed', 'archived']),
-            'booking_in_progress' => $query->whereHas('bookingRequests', fn (Builder $builder) => $builder->active()),
-            default => null,
-        };
-    }
-
-    private function resolveSelectedConversation(
-        LengthAwarePaginator $conversations,
-        ?Conversation $selectedConversation = null,
-        ?int $selectedConversationId = null,
-    ): ?Conversation {
-        if ($selectedConversation !== null) {
-            return $selectedConversation;
-        }
-
-        if ($selectedConversationId !== null) {
-            return Conversation::query()->find($selectedConversationId);
-        }
-
-        /** @var Conversation|null $firstConversation */
-        $firstConversation = $conversations->getCollection()->first();
-
-        return $firstConversation;
-    }
-
-    private function loadConversationDetail(Conversation $conversation): Conversation
-    {
-        $conversation->load([
-            'customer.tags',
-            'assignedAdmin',
-            'handoffAdmin',
-            'states' => fn ($query) => $query->active()->latest('updated_at')->limit(20),
-            'bookingRequests' => fn ($query) => $query->latest()->limit(3),
-            'escalations' => fn ($query) => $query->latest()->limit(5),
-        ]);
-
-        $messages = $conversation->messages()
-            ->orderByDesc('sent_at')
-            ->orderByDesc('id')
-            ->limit(120)
-            ->get()
-            ->sortByDesc(fn (ConversationMessage $message) => $message->sent_at?->timestamp ?? $message->id)
-            ->values();
-
-        $conversation->setRelation('messages', $messages);
-
-        return $conversation;
-    }
-
-    /**
-     * @param  Collection<int, ConversationState>  $states
-     * @return Collection<int, array{key: string, value: string}>
-     */
-    private function buildStateSummary(Collection $states): Collection
-    {
-        return $states->map(function (ConversationState $state): array {
-            return [
-                'key' => $state->state_key,
-                'value' => $this->stringifyValue($state->state_value),
-            ];
-        });
-    }
-
-    private function latestMessagePreviewSubquery(): Builder
-    {
-        return ConversationMessage::query()
-            ->select(DB::raw('COALESCE(NULLIF(message_text, ""), "[non-text]")'))
-            ->whereColumn('conversation_id', 'conversations.id')
-            ->orderByDesc('sent_at')
-            ->orderByDesc('id')
-            ->limit(1);
-    }
-
-    private function latestMessageSenderSubquery(): Builder
-    {
-        return ConversationMessage::query()
-            ->select('sender_type')
-            ->whereColumn('conversation_id', 'conversations.id')
-            ->orderByDesc('sent_at')
-            ->orderByDesc('id')
-            ->limit(1);
-    }
-
-    private function stringifyValue(mixed $value): string
-    {
-        if (is_array($value)) {
-            return collect($value)
-                ->filter(fn (mixed $item): bool => filled($item))
-                ->map(fn (mixed $item): string => is_scalar($item) ? (string) $item : json_encode($item))
-                ->implode(', ');
-        }
-
-        if ($value instanceof \DateTimeInterface) {
-            return $value->format('d M Y H:i');
-        }
-
-        if (is_bool($value)) {
-            return $value ? 'Ya' : 'Tidak';
-        }
-
-        if ($value === null || $value === '') {
-            return '-';
-        }
-
-        return (string) $value;
-    }
-
-    private function messageDirection(ConversationMessage $message): string
-    {
-        return is_string($message->direction)
-            ? $message->direction
-            : (string) $message->direction?->value;
-    }
-
-    private function messageSenderType(ConversationMessage $message): string
-    {
-        return is_string($message->sender_type)
-            ? $message->sender_type
-            : (string) $message->sender_type?->value;
     }
 }
