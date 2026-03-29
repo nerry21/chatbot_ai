@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Enums\AuditActionType;
+use App\Enums\ConversationChannel;
 use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
 use App\Enums\SenderType;
@@ -136,6 +137,29 @@ class SendWhatsAppMessageJob implements ShouldQueue
         $conversation = $message->conversation;
         $customer     = $conversation?->customer;
 
+        if (! $conversation?->isWhatsApp()) {
+            $message->markSkipped('wrong_channel_dispatch', [
+                'channel_delivery' => [
+                    'expected' => ConversationChannel::WhatsApp->value,
+                    'actual' => $conversation?->channel,
+                ],
+            ]);
+
+            $audit->record(AuditActionType::WhatsAppSendSkipped, [
+                'auditable_type'  => ConversationMessage::class,
+                'auditable_id'    => $message->id,
+                'conversation_id' => $message->conversation_id,
+                'message'         => 'Pengiriman WhatsApp dilewati karena channel percakapan bukan WhatsApp.',
+                'context'         => [
+                    'reason' => 'wrong_channel_dispatch',
+                    'message_id' => $message->id,
+                    'channel' => $conversation?->channel,
+                ],
+            ]);
+
+            return;
+        }
+
         if ($customer === null || empty($customer->phone_e164)) {
             $message->markSkipped('no_valid_customer_phone');
             $audit->record(AuditActionType::WhatsAppSendSkipped, [
@@ -193,6 +217,9 @@ class SendWhatsAppMessageJob implements ShouldQueue
             $fallbackUsed = (bool) ($deliveryMeta['interactive_text_fallback_used'] ?? false);
 
             $message->markSent($waMessageId, ['wa_send_result' => $result]);
+            $message->forceFill([
+                'channel_message_id' => $waMessageId,
+            ])->save();
 
             $audit->record(AuditActionType::WhatsAppSendSuccess, [
                 'auditable_type'  => ConversationMessage::class,

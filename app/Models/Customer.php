@@ -16,6 +16,10 @@ class Customer extends Model
         'name',
         'phone_e164',
         'email',
+        'mobile_user_id',
+        'mobile_device_id',
+        'preferred_channel',
+        'avatar_url',
         'preferred_pickup',
         'preferred_destination',
         'preferred_departure_time',
@@ -41,6 +45,11 @@ class Customer extends Model
     public function conversations(): HasMany
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    public function mobileAccessTokens(): HasMany
+    {
+        return $this->hasMany(MobileAccessToken::class);
     }
 
     public function aliases(): HasMany
@@ -83,6 +92,13 @@ class Customer extends Model
         string $phoneE164,
     ): \Illuminate\Database\Eloquent\Builder {
         return $query->where('phone_e164', $phoneE164);
+    }
+
+    public function scopeByMobileUserId(
+        \Illuminate\Database\Eloquent\Builder $query,
+        string $mobileUserId,
+    ): \Illuminate\Database\Eloquent\Builder {
+        return $query->where('mobile_user_id', $mobileUserId);
     }
 
     // -------------------------------------------------------------------------
@@ -134,5 +150,27 @@ class Customer extends Model
     public function hasTag(string $tag): bool
     {
         return $this->tags()->where('tag', $tag)->exists();
+    }
+
+    public function hasSyntheticMobilePhone(): bool
+    {
+        return str_starts_with((string) $this->phone_e164, 'mlc:');
+    }
+
+    public function getDisplayContactAttribute(): string
+    {
+        if (! $this->hasSyntheticMobilePhone() && filled($this->phone_e164)) {
+            return (string) $this->phone_e164;
+        }
+
+        if (filled($this->email)) {
+            return (string) $this->email;
+        }
+
+        if (filled($this->mobile_user_id)) {
+            return (string) $this->mobile_user_id;
+        }
+
+        return '-';
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\ConversationChannel;
 use App\Enums\ConversationStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -18,13 +19,17 @@ class Conversation extends Model
         'customer_id',
         'channel',
         'channel_conversation_id',
+        'source_app',
         'started_at',
         'last_message_at',
+        'last_read_at_customer',
+        'last_read_at_admin',
         'status',
         'current_intent',
         'summary',
         'needs_human',
         'escalation_reason',
+        'is_from_mobile_app',
         // Handoff management (Tahap 7)
         'handoff_mode',
         'handoff_admin_id',
@@ -49,7 +54,10 @@ class Conversation extends Model
     protected $casts = [
         'started_at'      => 'datetime',
         'last_message_at' => 'datetime',
+        'last_read_at_customer' => 'datetime',
+        'last_read_at_admin' => 'datetime',
         'needs_human'     => 'boolean',
+        'is_from_mobile_app' => 'boolean',
         'bot_paused'      => 'boolean',
         'status'          => ConversationStatus::class,
         'handoff_at'      => 'datetime',
@@ -212,6 +220,16 @@ class Conversation extends Model
     public function isEscalated(): bool
     {
         return $this->status === ConversationStatus::Escalated;
+    }
+
+    public function isWhatsApp(): bool
+    {
+        return (string) $this->channel === ConversationChannel::WhatsApp->value;
+    }
+
+    public function isMobileLiveChat(): bool
+    {
+        return (string) $this->channel === ConversationChannel::MobileLiveChat->value;
     }
 
     public function isBotPaused(): bool
@@ -389,5 +407,20 @@ class Conversation extends Model
     {
         $this->last_message_at = now();
         return $this->save();
+    }
+
+    public function getChannelLabelAttribute(): string
+    {
+        return ConversationChannel::tryFrom((string) $this->channel)?->label()
+            ?? ucfirst(str_replace('_', ' ', (string) $this->channel));
+    }
+
+    public function getSourceLabelAttribute(): string
+    {
+        if (filled($this->source_app)) {
+            return (string) $this->source_app;
+        }
+
+        return $this->channel_label;
     }
 }

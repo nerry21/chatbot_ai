@@ -9,6 +9,8 @@ use App\Models\ConversationMessage;
 use App\Models\ConversationState;
 use App\Services\Chatbot\ConversationInsightService;
 use App\Services\Chatbot\ConversationReadService;
+use App\Services\Mobile\MobileConversationService;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,9 +31,16 @@ class LiveChatController extends Controller
         'booking_in_progress' => 'Booking In Progress',
     ];
 
+    private const CHANNELS = [
+        'all' => 'All Channels',
+        'whatsapp' => 'WhatsApp',
+        'mobile_live_chat' => 'Mobile Live Chat',
+    ];
+
     public function __construct(
         private readonly ConversationReadService $readService,
         private readonly ConversationInsightService $insightService,
+        private readonly MobileConversationService $mobileConversationService,
     ) {}
 
     public function index(Request $request): View
@@ -78,11 +87,13 @@ class LiveChatController extends Controller
     {
         if (auth()->check()) {
             $this->readService->markAsRead($conversation, (int) auth()->id());
+            $this->mobileConversationService->touchAdminRead($conversation);
         }
 
         return response()->json([
             'ok' => true,
             'conversation_id' => $conversation->id,
+            'channel' => $conversation->channel,
             'unread_count' => 0,
             'marked_at' => now()->format('H:i:s'),
         ]);
@@ -99,11 +110,13 @@ class LiveChatController extends Controller
     ): array {
         $scope = $request->string('scope')->toString();
         $scope = array_key_exists($scope, self::FILTERS) ? $scope : 'all';
+        $channel = $request->string('channel')->toString();
+        $channel = array_key_exists($channel, self::CHANNELS) ? $channel : 'all';
 
         $search = trim((string) $request->input('search', ''));
         $selectedConversationId ??= $selectedConversation?->id;
 
-        $conversations = $this->conversationListQuery($scope, $search)
+        $conversations = $this->conversationListQuery($scope, $search, $channel)
             ->paginate(18)
             ->withQueryString();
 
@@ -115,6 +128,7 @@ class LiveChatController extends Controller
 
         if ($selectedConversation !== null && $markRead && auth()->check()) {
             $this->readService->markAsRead($selectedConversation, (int) auth()->id());
+            $this->mobileConversationService->touchAdminRead($selectedConversation);
         }
 
         $conversationDetail = $selectedConversation !== null
@@ -133,8 +147,10 @@ class LiveChatController extends Controller
 
         return [
             'scope' => $scope,
+            'channel' => $channel,
             'search' => $search,
             'filters' => collect(self::FILTERS),
+            'channels' => collect(self::CHANNELS),
             'conversations' => $conversations,
             'selectedConversation' => $conversationDetail,
             'selectedConversationId' => $conversationDetail?->id ?? $selectedConversationId,
@@ -159,7 +175,7 @@ class LiveChatController extends Controller
         ];
     }
 
-    private function conversationListQuery(string $scope, string $search): Builder
+    private function conversationListQuery(string $scope, string $search, string $channel): Builder
     {
         $userId = (int) (auth()->id() ?? 0);
 
@@ -172,13 +188,21 @@ class LiveChatController extends Controller
             ->latest('last_message_at')
             ->latest('id');
 
+        if ($channel !== 'all') {
+            $query->where('conversations.channel', $channel);
+        }
+
         if ($search !== '') {
             $query->where(function (Builder $builder) use ($search): void {
                 $builder
                     ->whereHas('customer', function (Builder $customerQuery) use ($search): void {
                         $customerQuery->where('name', 'like', "%{$search}%")
-                            ->orWhere('phone_e164', 'like', "%{$search}%");
+                            ->orWhere('phone_e164', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%")
+                            ->orWhere('mobile_user_id', 'like', "%{$search}%");
                     })
+                    ->orWhere('channel', 'like', "%{$search}%")
+                    ->orWhere('source_app', 'like', "%{$search}%")
                     ->orWhere('current_intent', 'like', "%{$search}%")
                     ->orWhereExists(function ($sub) use ($search): void {
                         $sub->selectRaw('1')

@@ -2,6 +2,7 @@
 
 namespace App\Services\Chatbot;
 
+use App\Enums\ConversationChannel;
 use App\Enums\ConversationStatus;
 use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
@@ -31,7 +32,14 @@ class ConversationManagerService
     // Conversation lifecycle
     // -------------------------------------------------------------------------
 
-    public function findOrCreateActive(Customer $customer, string $channel = 'whatsapp'): Conversation
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    public function findOrCreateActive(
+        Customer $customer,
+        string $channel = 'whatsapp',
+        array $attributes = [],
+    ): Conversation
     {
         if (! $this->shouldStartNewConversation($customer, $channel)) {
             $existing = Conversation::query()
@@ -42,11 +50,18 @@ class ConversationManagerService
                 ->first();
 
             if ($existing !== null) {
+                if ($attributes !== []) {
+                    $existing->fill(array_filter($attributes, static fn (mixed $value): bool => $value !== null));
+                    if ($existing->isDirty()) {
+                        $existing->save();
+                    }
+                }
+
                 return $existing;
             }
         }
 
-        return $this->createConversation($customer, $channel);
+        return $this->createConversation($customer, $channel, $attributes);
     }
 
     public function shouldStartNewConversation(Customer $customer, string $channel = 'whatsapp'): bool
@@ -126,6 +141,9 @@ class ConversationManagerService
             'message_type'    => $payload['message_type'] ?? 'text',
             'message_text'    => $payload['message_text'] ?? null,
             'raw_payload'     => $payload['raw_payload'] ?? [],
+            'client_message_id' => $payload['client_message_id'] ?? null,
+            'channel_message_id' => $payload['channel_message_id'] ?? $payload['wa_message_id'] ?? null,
+            'sender_user_id' => $payload['sender_user_id'] ?? null,
             'wa_message_id'   => $payload['wa_message_id'] ?? null,
             'is_fallback'     => false,
             'sent_at'         => $payload['sent_at'] ?? now(),
@@ -154,6 +172,9 @@ class ConversationManagerService
             'message_type'    => $messageType,
             'message_text'    => $text,
             'raw_payload'     => $rawPayload,
+            'client_message_id' => $rawPayload['client_message_id'] ?? null,
+            'channel_message_id' => $rawPayload['channel_message_id'] ?? null,
+            'sender_user_id' => $rawPayload['sender_user_id'] ?? null,
             'is_fallback'     => false,
             'sent_at'         => now(),
             'delivery_status' => MessageDeliveryStatus::Pending,
@@ -184,6 +205,9 @@ class ConversationManagerService
             'message_type'    => 'text',
             'message_text'    => $text,
             'raw_payload'     => array_merge($rawPayload, ['admin_id' => $adminId]),
+            'sender_user_id'  => $adminId,
+            'client_message_id' => $rawPayload['client_message_id'] ?? null,
+            'channel_message_id' => $rawPayload['channel_message_id'] ?? null,
             'is_fallback'     => false,
             'sent_at'         => now(),
             'delivery_status' => MessageDeliveryStatus::Pending,
@@ -245,17 +269,22 @@ class ConversationManagerService
     // Private
     // -------------------------------------------------------------------------
 
-    private function createConversation(Customer $customer, string $channel): Conversation
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function createConversation(Customer $customer, string $channel, array $attributes = []): Conversation
     {
         $now = now();
 
-        return Conversation::create([
+        return Conversation::create(array_merge([
             'customer_id'     => $customer->id,
             'channel'         => $channel,
             'status'          => ConversationStatus::Active,
             'handoff_mode'    => 'bot',
             'started_at'      => $now,
             'last_message_at' => $now,
-        ]);
+            'source_app'      => $attributes['source_app'] ?? null,
+            'is_from_mobile_app' => $channel === ConversationChannel::MobileLiveChat->value,
+        ], array_filter($attributes, static fn (mixed $value): bool => $value !== null)));
     }
 }

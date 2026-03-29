@@ -23,14 +23,14 @@
     $adminName = trim((string) data_get($message->raw_payload, 'admin_name', ''));
     $deliveryLabel = match ($deliveryStatus) {
         'pending' => 'sending',
-        'sent', 'delivered' => 'sent',
+        'sent', 'delivered' => $message->read_at ? 'read' : ($message->delivered_to_app_at ? 'delivered' : 'sent'),
         'failed' => 'failed',
         'skipped' => 'skipped',
         default => $deliveryStatus,
     };
     $deliveryPalette = match ($deliveryStatus) {
         'pending' => 'amber',
-        'sent', 'delivered' => 'green',
+        'sent', 'delivered' => $message->read_at ? 'sky' : ($message->delivered_to_app_at ? 'teal' : 'green'),
         'failed' => 'red',
         'skipped' => 'slate',
         default => null,

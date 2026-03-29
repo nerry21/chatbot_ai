@@ -11,6 +11,7 @@ use App\Http\Requests\Admin\TakeoverConversationRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Services\Chatbot\AdminConversationMessageService;
+use App\Services\Chatbot\ConversationOutboundRouterService;
 use App\Services\Chatbot\ConversationTakeoverService;
 use App\Services\Support\AuditLogService;
 use Illuminate\Http\RedirectResponse;
@@ -22,6 +23,7 @@ class ConversationController extends Controller
 {
     public function __construct(
         private readonly AuditLogService $audit,
+        private readonly ConversationOutboundRouterService $outboundRouter,
     ) {}
 
     public function index(Request $request): View
@@ -93,7 +95,7 @@ class ConversationController extends Controller
             'success',
             $result['duplicate']
                 ? 'Pesan yang sama sudah diantrekan. Duplikat diabaikan.'
-                : 'Pesan berhasil dikirim ke customer.'
+                : $this->replySuccessMessage($result['transport'] ?? $conversation->channel)
         );
     }
 
@@ -134,7 +136,14 @@ class ConversationController extends Controller
 
         $previousStatus = $message->delivery_status;
         $message->markPending();
-        SendWhatsAppMessageJob::dispatch($message->id);
+
+        try {
+            $this->outboundRouter->dispatch($message);
+        } catch (\Throwable $e) {
+            $message->markFailed('dispatch_failed: '.$e->getMessage());
+
+            return back()->with('error', 'Pesan gagal masuk ke jalur pengiriman.');
+        }
 
         $adminId = auth()->id();
 
@@ -148,6 +157,8 @@ class ConversationController extends Controller
                 'conversation_id' => $conversation->id,
                 'admin_id' => $adminId,
                 'previous_status' => $previousStatus?->value,
+                'transport' => $conversation->channel,
+                'dispatch_status' => $message->fresh()?->delivery_status?->value,
                 'send_attempts' => $message->send_attempts,
             ],
         ]);
@@ -156,10 +167,15 @@ class ConversationController extends Controller
             'message_id' => $message->id,
             'conversation_id' => $conversation->id,
             'admin_id' => $adminId,
+            'transport' => $conversation->channel,
             'send_attempts' => $message->send_attempts,
         ]);
 
-        return back()->with('success', "Pesan #{$message->id} diantrekan untuk dikirim ulang.");
+        $successMessage = $conversation->channel === 'mobile_live_chat'
+            ? "Pesan #{$message->id} berhasil dikirim ulang ke live chat pelanggan."
+            : "Pesan #{$message->id} diantrekan untuk dikirim ulang.";
+
+        return back()->with('success', $successMessage);
     }
 
     public function takeover(
@@ -202,5 +218,12 @@ class ConversationController extends Controller
         ]);
 
         return back()->with('success', 'Percakapan dikembalikan ke bot. Bot aktif kembali.');
+    }
+
+    private function replySuccessMessage(string $transport): string
+    {
+        return $transport === 'mobile_live_chat'
+            ? 'Pesan berhasil dikirim ke live chat pelanggan.'
+            : 'Pesan berhasil diantrekan ke customer.';
     }
 }

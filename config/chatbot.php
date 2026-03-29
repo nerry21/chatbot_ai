@@ -347,6 +347,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Mobile Live Chat (Tahap 1)
+    |--------------------------------------------------------------------------
+    |
+    | enabled                — master switch for Flutter/mobile live chat API.
+    | poll_interval_ms       — recommended polling interval returned to clients.
+    | max_messages_per_fetch — hard cap per conversation detail/poll request.
+    | max_conversations      — hard cap for conversation list responses.
+    |
+    */
+
+    'mobile_live_chat' => [
+        'enabled' => (bool) env('MOBILE_LIVE_CHAT_ENABLED', true),
+        'poll_interval_ms' => (int) env('MOBILE_LIVE_CHAT_POLL_INTERVAL_MS', 3000),
+        'max_messages_per_fetch' => (int) env('MOBILE_LIVE_CHAT_MAX_MESSAGES_PER_FETCH', 120),
+        'max_conversations' => (int) env('MOBILE_LIVE_CHAT_MAX_CONVERSATIONS', 20),
+        'auth_token_ttl_days' => (int) env('MOBILE_LIVE_CHAT_AUTH_TOKEN_TTL_DAYS', 30),
+        'default_source_app' => env('MOBILE_LIVE_CHAT_SOURCE_APP', 'flutter'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | CRM Engine
     |--------------------------------------------------------------------------
     |

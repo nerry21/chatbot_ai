@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
 use App\Enums\SenderType;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -21,15 +22,20 @@ class ConversationMessage extends Model
         'message_type',
         'message_text',
         'raw_payload',
+        'client_message_id',
+        'channel_message_id',
         'wa_message_id',
         'ai_intent',
         'ai_confidence',
         'is_fallback',
+        'sender_user_id',
+        'read_at',
         'sent_at',
         // Delivery status columns (Tahap 8)
         'delivery_status',
         'delivery_error',
         'delivered_at',
+        'delivered_to_app_at',
         'failed_at',
         // Retry tracking columns (Tahap 9)
         'send_attempts',
@@ -43,8 +49,10 @@ class ConversationMessage extends Model
         'raw_payload'     => 'array',
         'ai_confidence'   => 'decimal:4',
         'is_fallback'     => 'boolean',
+        'read_at'               => 'datetime',
         'sent_at'               => 'datetime',
         'delivered_at'          => 'datetime',
+        'delivered_to_app_at'   => 'datetime',
         'failed_at'             => 'datetime',
         'last_send_attempt_at'  => 'datetime',
         'send_attempts'         => 'integer',
@@ -57,6 +65,11 @@ class ConversationMessage extends Model
     public function conversation(): BelongsTo
     {
         return $this->belongsTo(Conversation::class);
+    }
+
+    public function senderUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'sender_user_id');
     }
 
     public function bookingIntents(): \Illuminate\Database\Eloquent\Relations\HasMany
@@ -102,6 +115,16 @@ class ConversationMessage extends Model
         return $this->direction === MessageDirection::Outbound;
     }
 
+    public function isReadByCustomer(): bool
+    {
+        return $this->read_at !== null;
+    }
+
+    public function isDeliveredToApp(): bool
+    {
+        return $this->delivered_to_app_at !== null;
+    }
+
     // -------------------------------------------------------------------------
     // Delivery status helpers (Tahap 8)
     // -------------------------------------------------------------------------
@@ -136,6 +159,7 @@ class ConversationMessage extends Model
 
         if ($waMessageId !== null) {
             $updates['wa_message_id'] = $waMessageId;
+            $updates['channel_message_id'] = $waMessageId;
         }
 
         if (! empty($providerPayload)) {
@@ -182,6 +206,20 @@ class ConversationMessage extends Model
         }
 
         $this->update($updates);
+    }
+
+    public function markRead(?CarbonInterface $readAt = null): void
+    {
+        $this->update([
+            'read_at' => $readAt ?? now(),
+        ]);
+    }
+
+    public function markDeliveredToApp(?CarbonInterface $deliveredAt = null): void
+    {
+        $this->update([
+            'delivered_to_app_at' => $deliveredAt ?? now(),
+        ]);
     }
 
     // -------------------------------------------------------------------------

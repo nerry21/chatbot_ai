@@ -1,7 +1,7 @@
 @php
     $query = request()->query();
-    $query['scope'] = $key;
-    $isActive = $currentScope === $key;
+    $query[$queryKey ?? 'scope'] = $key;
+    $isActive = ($currentValue ?? $currentScope ?? null) === $key;
 @endphp
 
 <a

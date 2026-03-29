@@ -70,10 +70,39 @@ class AdminConversationMessageServiceTest extends TestCase
         Queue::assertPushed(SendWhatsAppMessageJob::class, 1);
     }
 
+    public function test_it_marks_mobile_live_chat_admin_reply_as_sent_without_queuing_whatsapp(): void
+    {
+        Queue::fake();
+
+        [$customer, $conversation] = $this->makeConversation(
+            phone: 'mlc:'.substr(hash('sha256', 'mobile-admin-1'), 0, 32),
+            channel: 'mobile_live_chat',
+        );
+
+        $admin = User::factory()->create([
+            'name' => 'Admin Mobile',
+            'is_chatbot_admin' => true,
+        ]);
+
+        $service = app(AdminConversationMessageService::class);
+        $result = $service->send($conversation, 'Halo dari live chat mobile.', $admin->id, 'live_chat_panel');
+
+        $this->assertSame('queued', $result['status']);
+        $this->assertSame('mobile_live_chat', $result['transport']);
+        $this->assertFalse($result['duplicate']);
+
+        $message = $result['message']->fresh();
+
+        $this->assertSame('admin', $message->sender_type->value);
+        $this->assertSame('outbound', $message->direction->value);
+        $this->assertSame('sent', $message->delivery_status?->value);
+        Queue::assertNotPushed(SendWhatsAppMessageJob::class);
+    }
+
     /**
      * @return array{0: Customer, 1: Conversation}
      */
-    private function makeConversation(string $phone = '+6281234567890'): array
+    private function makeConversation(string $phone = '+6281234567890', string $channel = 'whatsapp'): array
     {
         $customer = Customer::create([
             'name' => 'Nerry',
@@ -83,7 +112,7 @@ class AdminConversationMessageServiceTest extends TestCase
 
         $conversation = Conversation::create([
             'customer_id' => $customer->id,
-            'channel' => 'whatsapp',
+            'channel' => $channel,
             'status' => ConversationStatus::Active,
             'handoff_mode' => 'bot',
             'started_at' => now(),

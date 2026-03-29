@@ -14,8 +14,18 @@
                 <div class="truncate text-lg font-semibold text-slate-900">
                     {{ $selectedConversation->customer?->name ?? 'Unknown customer' }}
                 </div>
-                <div class="mt-1 text-sm text-slate-500">{{ $selectedConversation->customer?->phone_e164 ?? '-' }}</div>
+                <div class="mt-1 text-sm text-slate-500">{{ $selectedConversation->customer?->display_contact ?? '-' }}</div>
                 <div class="mt-3 flex flex-wrap items-center gap-2">
+                    <x-admin.chatbot.status-badge :value="$selectedConversation->channel_label" palette="sky" />
+                    @if (filled($selectedConversation->source_app))
+                        <x-admin.chatbot.status-badge :value="'Source: '.$selectedConversation->source_label" palette="indigo" />
+                    @endif
+                    @if ($selectedConversation->isMobileLiveChat() && $selectedConversation->last_read_at_customer)
+                        <x-admin.chatbot.status-badge :value="'Customer Read '. $selectedConversation->last_read_at_customer->diffForHumans()" palette="green" />
+                    @endif
+                    @if ($selectedConversation->last_read_at_admin)
+                        <x-admin.chatbot.status-badge :value="'Admin Opened '. $selectedConversation->last_read_at_admin->diffForHumans()" palette="slate" />
+                    @endif
                     <x-admin.chatbot.status-badge :value="$selectedModeLabel" :palette="$selectedModePalette" />
                     <x-admin.chatbot.status-badge :value="$selectedStatus" />
                     @if ($selectedConversation->needs_human)

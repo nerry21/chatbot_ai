@@ -102,9 +102,14 @@
                         <div class="mb-3 flex items-center justify-between gap-4">
                             <div>
                                 <div class="text-sm font-semibold text-slate-900">Admin Composer</div>
-                                <p class="mt-1 text-sm text-slate-500">Pesan manual akan otomatis mengamankan mode takeover sebelum dikirim ke WhatsApp.</p>
+                                <p class="mt-1 text-sm text-slate-500">
+                                    Pesan manual akan otomatis mengamankan mode takeover lalu dikirim sesuai channel conversation aktif.
+                                </p>
                             </div>
-                            <x-admin.chatbot.status-badge :value="$selectedConversation->isAdminTakeover() ? 'Takeover Active' : 'Will Take Over'" :palette="$selectedConversation->isAdminTakeover() ? 'orange' : 'slate'" size="sm" />
+                            <div class="flex flex-wrap items-center justify-end gap-2">
+                                <x-admin.chatbot.status-badge :value="$selectedConversation->channel_label" palette="sky" size="sm" />
+                                <x-admin.chatbot.status-badge :value="$selectedConversation->isAdminTakeover() ? 'Takeover Active' : 'Will Take Over'" :palette="$selectedConversation->isAdminTakeover() ? 'orange' : 'slate'" size="sm" />
+                            </div>
                         </div>
 
                         <div class="rounded-[24px] border border-slate-200 bg-white px-4 py-3 transition focus-within:border-slate-300 focus-within:ring-4 focus-within:ring-slate-200/60">
@@ -127,7 +132,7 @@
 
                         <div class="mt-4 flex items-center justify-between gap-4">
                             <div class="text-xs text-slate-400">
-                                Status awal pesan akan tersimpan sebagai <span class="font-semibold text-slate-600">sending</span> lalu diperbarui oleh job pengiriman.
+                                Status pesan akan disesuaikan dengan channel aktif. WhatsApp memakai job sender, mobile live chat tersedia lewat polling app.
                             </div>
 
                             <button
@@ -135,7 +140,7 @@
                                 :disabled="busy || body.trim().length === 0"
                                 class="inline-flex items-center justify-center rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                                <span x-show="!busy">Kirim ke WhatsApp</span>
+                                <span x-show="!busy">{{ $selectedConversation->channel === 'mobile_live_chat' ? 'Kirim ke Live Chat' : 'Kirim ke WhatsApp' }}</span>
                                 <span x-show="busy">Mengirim...</span>
                             </button>
                         </div>

@@ -38,6 +38,13 @@ class LiveChatMessageController extends Controller
 
         return redirect()
             ->route('admin.chatbot.live-chats.show', $parameters)
-            ->with('success', 'Pesan admin berhasil diantrekan ke WhatsApp.');
+            ->with('success', $this->successMessage($result['transport'] ?? $conversation->channel));
+    }
+
+    private function successMessage(string $transport): string
+    {
+        return $transport === 'mobile_live_chat'
+            ? 'Pesan admin berhasil dikirim ke live chat pelanggan.'
+            : 'Pesan admin berhasil diantrekan ke customer.';
     }
 }

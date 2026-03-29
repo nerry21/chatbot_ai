@@ -23,6 +23,7 @@ use App\Services\Booking\BookingAssistantService;
 use App\Services\Booking\BookingFlowStateMachine;
 use App\Services\Chatbot\ConversationContextLoaderService;
 use App\Services\Chatbot\ConversationManagerService;
+use App\Services\Chatbot\ConversationOutboundRouterService;
 use App\Services\Chatbot\ConversationReplyGuardService;
 use App\Services\Chatbot\Guardrails\AdminTakeoverGuardService;
 use App\Services\Chatbot\Guardrails\HallucinationGuardService;
@@ -77,6 +78,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         BookingFlowStateMachine    $bookingFlow,
         ConversationReplyGuardService $replyGuard,
         ReplyOrchestratorService   $replyOrchestrator,
+        ConversationOutboundRouterService $outboundRouter,
         ContactTaggingService      $contactTagging,
         LeadPipelineService        $leadPipeline,
         AuditLogService            $audit,
@@ -529,7 +531,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
             // ── 9.5 Dispatch WhatsApp send job for the bot reply ────────────
             if ($outboundMessage !== null) {
-                SendWhatsAppMessageJob::dispatch($outboundMessage->id, WaLog::traceId());
+                $outboundRouter->dispatch($outboundMessage, WaLog::traceId());
             }
 
             if (($guardResult['close_conversation'] ?? false) || (($finalReply['meta']['close_conversation'] ?? false) === true)) {
@@ -626,7 +628,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'trace'           => $e->getTraceAsString(),
             ]);
 
-            $emergencyOutbound = $this->saveEmergencyFallback($conversation, $conversationManager);
+            $emergencyOutbound = $this->saveEmergencyFallback(
+                conversation: $conversation,
+                conversationManager: $conversationManager,
+                outboundRouter: $outboundRouter,
+            );
 
             $this->logLearningTurnSafely(
                 learningSignalLogger: $learningSignalLogger,
@@ -1289,6 +1295,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     private function saveEmergencyFallback(
         Conversation $conversation,
         ConversationManagerService $conversationManager,
+        ConversationOutboundRouterService $outboundRouter,
     ): ?ConversationMessage {
         try {
             $outbound = $conversationManager->appendOutboundMessage(
@@ -1297,8 +1304,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 rawPayload   : ['source' => 'emergency_fallback'],
             );
 
-            // Still attempt to send the fallback message to the customer.
-            SendWhatsAppMessageJob::dispatch($outbound->id, WaLog::traceId());
+            // Still attempt to deliver the fallback message through the active channel.
+            $outboundRouter->dispatch($outbound, WaLog::traceId());
 
             return $outbound;
         } catch (\Throwable $inner) {

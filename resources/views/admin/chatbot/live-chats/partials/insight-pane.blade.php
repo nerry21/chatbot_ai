@@ -17,7 +17,7 @@
             <div class="space-y-4">
                 <div>
                     <div class="text-base font-semibold text-slate-900">{{ $selectedConversation->customer?->name ?? 'Unknown customer' }}</div>
-                    <div class="mt-1 text-sm text-slate-500">{{ $selectedConversation->customer?->phone_e164 ?? '-' }}</div>
+                    <div class="mt-1 text-sm text-slate-500">{{ $selectedConversation->customer?->display_contact ?? '-' }}</div>
                 </div>
 
                 <div class="space-y-3">
@@ -93,6 +93,14 @@
         <x-admin.chatbot.panel title="Quick Details" description="Snapshot status conversation dan operasional terbaru." padding="sm">
             <div class="space-y-3 text-sm">
                 <div class="flex items-center justify-between gap-4">
+                    <span class="text-slate-500">Channel</span>
+                    <x-admin.chatbot.status-badge :value="$selectedConversation->channel_label" palette="sky" size="sm" />
+                </div>
+                <div class="flex items-center justify-between gap-4">
+                    <span class="text-slate-500">Source app</span>
+                    <span class="font-medium text-slate-900">{{ $selectedConversation->source_label ?? '-' }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-4">
                     <span class="text-slate-500">Assigned admin</span>
                     <span class="font-medium text-slate-900">
                         {{ $selectedConversation->assignedAdmin?->name ?? ($selectedConversation->assigned_admin_id ? 'Admin #' . $selectedConversation->assigned_admin_id : '-') }}
@@ -133,6 +141,14 @@
                 <div class="flex items-start justify-between gap-4">
                     <span class="text-slate-500">Last admin intervention</span>
                     <span class="max-w-[55%] text-right font-medium text-slate-900">{{ $selectedConversation->last_admin_intervention_at?->format('d M H:i') ?? '-' }}</span>
+                </div>
+                <div class="flex items-start justify-between gap-4">
+                    <span class="text-slate-500">Customer read</span>
+                    <span class="max-w-[55%] text-right font-medium text-slate-900">{{ $selectedConversation->last_read_at_customer?->format('d M H:i') ?? '-' }}</span>
+                </div>
+                <div class="flex items-start justify-between gap-4">
+                    <span class="text-slate-500">Admin opened</span>
+                    <span class="max-w-[55%] text-right font-medium text-slate-900">{{ $selectedConversation->last_read_at_admin?->format('d M H:i') ?? '-' }}</span>
                 </div>
             </div>
         </x-admin.chatbot.panel>

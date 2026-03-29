@@ -3,7 +3,6 @@
 namespace App\Services\Chatbot;
 
 use App\Enums\AuditActionType;
-use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\User;
@@ -17,6 +16,7 @@ class AdminConversationMessageService
     public function __construct(
         private readonly ConversationTakeoverService $takeoverService,
         private readonly ConversationManagerService $conversationManager,
+        private readonly ConversationOutboundRouterService $outboundRouter,
         private readonly AdminCorrectionLoggerService $adminCorrectionLogger,
         private readonly AuditLogService $audit,
     ) {}
@@ -26,6 +26,8 @@ class AdminConversationMessageService
      *     status: 'queued'|'duplicate'|'failed',
      *     message: ConversationMessage,
      *     duplicate: bool,
+     *     dispatch_status: string|null,
+     *     transport: string|null,
      *     error: string|null
      * }
      */
@@ -52,6 +54,8 @@ class AdminConversationMessageService
                     'status' => 'duplicate',
                     'message' => $existing,
                     'duplicate' => true,
+                    'dispatch_status' => null,
+                    'transport' => $conversation->channel,
                     'error' => null,
                 ];
             }
@@ -60,6 +64,8 @@ class AdminConversationMessageService
                 'status' => 'failed',
                 'message' => new ConversationMessage(),
                 'duplicate' => false,
+                'dispatch_status' => null,
+                'transport' => $conversation->channel,
                 'error' => 'Permintaan kirim sedang diproses. Silakan tunggu sebentar.',
             ];
         }
@@ -73,6 +79,8 @@ class AdminConversationMessageService
                     'status' => 'duplicate',
                     'message' => $existing,
                     'duplicate' => true,
+                    'dispatch_status' => null,
+                    'transport' => $conversation->channel,
                     'error' => null,
                 ];
             }
@@ -105,9 +113,9 @@ class AdminConversationMessageService
             );
 
             try {
-                SendWhatsAppMessageJob::dispatch($message->id, WaLog::traceId());
+                $this->outboundRouter->dispatch($message, WaLog::traceId());
             } catch (\Throwable $e) {
-                $message->markFailed('queue_dispatch_failed: '.$e->getMessage());
+                $message->markFailed('dispatch_failed: '.$e->getMessage());
 
                 $this->audit->record(AuditActionType::WhatsAppSendFailure, [
                     'actor_user_id' => $adminId,
@@ -119,6 +127,7 @@ class AdminConversationMessageService
                         'message_id' => $message->id,
                         'source' => $source,
                         'admin_id' => $adminId,
+                        'transport' => $conversation->channel,
                         'error' => $e->getMessage(),
                     ],
                 ]);
@@ -127,7 +136,9 @@ class AdminConversationMessageService
                     'status' => 'failed',
                     'message' => $message->fresh(),
                     'duplicate' => false,
-                    'error' => 'Pesan tersimpan, tetapi gagal masuk antrean pengiriman.',
+                    'dispatch_status' => 'failed',
+                    'transport' => $conversation->channel,
+                    'error' => 'Pesan tersimpan, tetapi gagal masuk jalur pengiriman.',
                 ];
             }
 
@@ -144,6 +155,8 @@ class AdminConversationMessageService
                     'source' => $source,
                     'text_preview' => mb_substr($normalizedText, 0, 120),
                     'message_fingerprint' => $fingerprint,
+                    'transport' => $conversation->channel,
+                    'dispatch_status' => $message->delivery_status?->value,
                     'delivery_status' => $message->delivery_status?->value,
                 ],
             ]);
@@ -152,6 +165,8 @@ class AdminConversationMessageService
                 'status' => 'queued',
                 'message' => $message->fresh(),
                 'duplicate' => false,
+                'dispatch_status' => $message->fresh()?->delivery_status?->value,
+                'transport' => $conversation->channel,
                 'error' => null,
             ];
         } finally {

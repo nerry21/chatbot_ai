@@ -14,6 +14,8 @@
     $unreadCount = (int) ($conversation->unread_messages_count ?? 0);
     $modeLabel = $conversation->currentOperationalModeLabel();
     $modePalette = $conversation->currentOperationalModePalette();
+    $channelLabel = $conversation->channel_label ?? ucfirst(str_replace('_', ' ', (string) $conversation->channel));
+    $sourceLabel = $conversation->source_label ?? $channelLabel;
     $routeParameters = array_merge(['conversation' => $conversation], request()->query());
 @endphp
 
@@ -27,7 +29,7 @@
                 {{ $conversation->customer?->name ?? 'Unknown customer' }}
             </div>
             <div class="mt-1 truncate text-xs {{ $selected ? 'text-slate-300' : 'text-slate-500' }}">
-                {{ $conversation->customer?->phone_e164 ?? '-' }}
+                {{ $conversation->customer?->display_contact ?? '-' }}
             </div>
         </div>
 
@@ -48,6 +50,10 @@
     </p>
 
     <div class="mt-4 flex flex-wrap items-center gap-2">
+        <x-admin.chatbot.status-badge :value="$channelLabel" palette="sky" size="sm" />
+        @if (filled($conversation->source_app))
+            <x-admin.chatbot.status-badge :value="'Source: '.$sourceLabel" palette="indigo" size="sm" />
+        @endif
         <x-admin.chatbot.status-badge :value="$modeLabel" :palette="$modePalette" size="sm" />
         <x-admin.chatbot.status-badge :value="$status" :palette="$selected ? 'slate' : null" size="sm" />
         @if ($conversation->assignedAdmin?->name)

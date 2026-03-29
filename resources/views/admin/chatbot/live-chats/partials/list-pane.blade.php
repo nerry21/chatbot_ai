@@ -30,6 +30,7 @@
                 class="w-full rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:bg-white focus:ring-4 focus:ring-slate-200/60"
             >
             <input type="hidden" name="scope" value="{{ $scope }}">
+            <input type="hidden" name="channel" value="{{ $channel }}">
         </div>
     </form>
 
@@ -39,6 +40,17 @@
                 'key' => $key,
                 'label' => $label,
                 'currentScope' => $scope,
+            ])
+        @endforeach
+    </div>
+
+    <div class="mt-3 flex flex-wrap gap-2">
+        @foreach ($channels as $key => $label)
+            @include('admin.chatbot.live-chats.partials.filter-pill', [
+                'key' => $key,
+                'label' => $label,
+                'queryKey' => 'channel',
+                'currentValue' => $channel,
             ])
         @endforeach
     </div>
