@@ -77,6 +77,11 @@ class Customer extends Model
         return $this->hasMany(LeadPipeline::class);
     }
 
+    public function bookingRequests(): HasMany
+    {
+        return $this->hasMany(BookingRequest::class);
+    }
+
     // -------------------------------------------------------------------------
     // Scopes
     // -------------------------------------------------------------------------
