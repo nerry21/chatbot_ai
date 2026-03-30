@@ -9,6 +9,9 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /** @mixin \App\Models\ConversationMessage */
 class ConversationMessageResource extends JsonResource
 {
+    /**
+     * @return array<string, mixed>
+     */
     public function toArray(Request $request): array
     {
         $direction = is_string($this->direction) ? $this->direction : $this->direction?->value;
@@ -22,12 +25,11 @@ class ConversationMessageResource extends JsonResource
             ?? data_get($this->raw_payload, 'audio_url');
         $audioId = data_get($this->raw_payload, 'audio.id');
 
-        if (
-            $direction === MessageDirection::Inbound->value
-            && in_array($deliveryStatus, [null, 'pending'], true)
-        ) {
+        if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
         }
+
+        $deliveryLabel = $this->deliveryLabel($deliveryStatus);
 
         return [
             'id' => $this->id,
@@ -41,16 +43,20 @@ class ConversationMessageResource extends JsonResource
             'message_text' => $this->message_text,
             'client_message_id' => $this->client_message_id,
             'channel_message_id' => $this->channel_message_id,
+            'wa_message_id' => $this->wa_message_id,
             'delivery_status' => $deliveryStatus,
-            'delivery_label' => $this->deliveryLabel($deliveryStatus),
+            'delivery_label' => $deliveryLabel,
+            'status_label' => $deliveryLabel,
             'delivery_error' => $this->delivery_error,
             'is_delivered_to_app' => $this->delivered_to_app_at !== null,
             'is_read_by_customer' => $this->read_at !== null,
             'is_fallback' => (bool) $this->is_fallback,
             'ai_intent' => $this->ai_intent,
             'read_at' => $this->read_at?->toIso8601String(),
+            'delivered_at' => $this->delivered_at?->toIso8601String(),
             'delivered_to_app_at' => $this->delivered_to_app_at?->toIso8601String(),
             'sent_at' => $this->sent_at?->toIso8601String(),
+            'failed_at' => $this->failed_at?->toIso8601String(),
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
             'interactive' => [
@@ -106,12 +112,25 @@ class ConversationMessageResource extends JsonResource
 
     private function deliveryLabel(?string $deliveryStatus): ?string
     {
+        if ($deliveryStatus === 'failed') {
+            return 'failed';
+        }
+
+        if ($this->read_at !== null) {
+            return 'read';
+        }
+
+        if (
+            $deliveryStatus === 'delivered'
+            || $this->delivered_at !== null
+            || $this->delivered_to_app_at !== null
+        ) {
+            return 'delivered';
+        }
+
         return match ($deliveryStatus) {
             'pending' => 'sending',
-            'sent', 'delivered' => $this->read_at
-                ? 'read'
-                : ($this->delivered_to_app_at ? 'delivered' : 'sent'),
-            'failed' => 'failed',
+            'sent' => 'sent',
             'skipped' => 'skipped',
             default => $deliveryStatus,
         };

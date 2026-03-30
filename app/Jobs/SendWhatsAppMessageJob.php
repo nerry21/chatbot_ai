@@ -4,7 +4,6 @@ namespace App\Jobs;
 
 use App\Enums\AuditActionType;
 use App\Enums\ConversationChannel;
-use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
 use App\Enums\SenderType;
 use App\Models\AdminNotification;
@@ -21,18 +20,17 @@ class SendWhatsAppMessageJob implements ShouldQueue
 {
     use Queueable, InteractsWithQueue, SerializesModels;
 
-    public int   $tries   = 3;
+    public int $tries = 3;
     public array $backoff = [30, 90, 300];
-    public int   $timeout = 60;
+    public int $timeout = 60;
 
     public function __construct(
-        public readonly int    $conversationMessageId,
+        public readonly int $conversationMessageId,
         public readonly string $traceId = '',
     ) {}
 
     public function handle(WhatsAppSenderService $sender, AuditLogService $audit): void
     {
-        // Restore trace ID from parent job/request
         if ($this->traceId !== '') {
             WaLog::setTrace($this->traceId);
         }
@@ -41,7 +39,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         WaLog::info('[Job:SendWA] Started', [
             'message_id' => $this->conversationMessageId,
-            'attempt'    => $this->attempts(),
+            'attempt' => $this->attempts(),
         ]);
 
         $message = ConversationMessage::with('conversation.customer')
@@ -51,91 +49,93 @@ class SendWhatsAppMessageJob implements ShouldQueue
             WaLog::warning('[Job:SendWA] Message not found', [
                 'message_id' => $this->conversationMessageId,
             ]);
+
             return;
         }
 
-        // ── Static guards — direction / sender_type / idempotency ───────────
+        $senderType = is_string($message->sender_type) ? $message->sender_type : $message->sender_type?->value;
 
         if ($message->direction !== MessageDirection::Outbound) {
-            WaLog::debug('[Job:SendWA] Skipped — not outbound', [
+            WaLog::debug('[Job:SendWA] Skipped - not outbound', [
                 'message_id' => $message->id,
             ]);
+
             return;
         }
 
         if (! in_array($message->sender_type, [SenderType::Bot, SenderType::Admin, SenderType::Agent], true)) {
-            WaLog::debug('[Job:SendWA] Skipped — sender_type not bot/agent', [
-                'message_id'  => $message->id,
-                'sender_type' => $message->sender_type->value,
+            WaLog::debug('[Job:SendWA] Skipped - sender_type not bot/agent', [
+                'message_id' => $message->id,
+                'sender_type' => $senderType,
             ]);
+
             return;
         }
 
-        // Idempotent guard: already successfully sent
         if (! empty($message->wa_message_id)) {
-            WaLog::debug('[Job:SendWA] Skipped — already has wa_message_id', [
-                'message_id'    => $message->id,
+            WaLog::debug('[Job:SendWA] Skipped - already has wa_message_id', [
+                'message_id' => $message->id,
                 'wa_message_id' => $message->wa_message_id,
             ]);
+
             return;
         }
 
-        // Idempotent guard: already in terminal delivery status
         if ($message->delivery_status?->isTerminal()) {
-            WaLog::debug('[Job:SendWA] Skipped — already in terminal delivery status', [
-                'message_id'      => $message->id,
+            WaLog::debug('[Job:SendWA] Skipped - already in terminal delivery status', [
+                'message_id' => $message->id,
                 'delivery_status' => $message->delivery_status?->value,
             ]);
+
             return;
         }
-
-        // ── Track this attempt (Tahap 9) ─────────────────────────────────────
 
         $message->incrementSendAttempt();
 
-        // Hard cap: if send_attempts now exceeds the configured maximum, give up.
-        // This prevents runaway retries if someone keeps resending without
-        // resetting the counter through proper channels.
         $maxAttempts = config('chatbot.reliability.max_send_attempts', 3);
         if ($message->send_attempts > $maxAttempts) {
             $message->markSkipped('max_attempts_exceeded');
 
             $audit->record(AuditActionType::WhatsAppSendSkipped, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
+                'auditable_type' => ConversationMessage::class,
+                'auditable_id' => $message->id,
                 'conversation_id' => $message->conversation_id,
-                'message'         => "Dilewati — melebihi batas maksimal percobaan ({$maxAttempts}).",
-                'context'         => [
-                    'message_id'   => $message->id,
-                    'send_attempts'=> $message->send_attempts,
+                'message' => "Dilewati - melebihi batas maksimal percobaan ({$maxAttempts}).",
+                'context' => [
+                    'message_id' => $message->id,
+                    'send_attempts' => $message->send_attempts,
                     'max_attempts' => $maxAttempts,
                 ],
             ]);
 
-            WaLog::warning('[Job:SendWA] Skipped — max send attempts exceeded', [
-                'message_id'    => $message->id,
+            WaLog::warning('[Job:SendWA] Skipped - max send attempts exceeded', [
+                'message_id' => $message->id,
                 'send_attempts' => $message->send_attempts,
-                'max_attempts'  => $maxAttempts,
+                'max_attempts' => $maxAttempts,
             ]);
+
             return;
         }
 
-        // ── Content guards ───────────────────────────────────────────────────
-
         if (empty($message->message_text)) {
             $message->markSkipped('empty_text');
+
             $audit->record(AuditActionType::WhatsAppSendSkipped, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
+                'auditable_type' => ConversationMessage::class,
+                'auditable_id' => $message->id,
                 'conversation_id' => $message->conversation_id,
-                'message'         => 'Dilewati — teks pesan kosong.',
-                'context'         => ['reason' => 'empty_text', 'message_id' => $message->id],
+                'message' => 'Dilewati - teks pesan kosong.',
+                'context' => [
+                    'reason' => 'empty_text',
+                    'message_id' => $message->id,
+                ],
             ]);
+
             return;
         }
 
         $conversation = $message->conversation;
-        $customer     = $conversation?->customer;
+        $customer = $conversation?->customer;
 
         if (! $conversation?->isWhatsApp()) {
             $message->markSkipped('wrong_channel_dispatch', [
@@ -146,11 +146,11 @@ class SendWhatsAppMessageJob implements ShouldQueue
             ]);
 
             $audit->record(AuditActionType::WhatsAppSendSkipped, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
+                'auditable_type' => ConversationMessage::class,
+                'auditable_id' => $message->id,
                 'conversation_id' => $message->conversation_id,
-                'message'         => 'Pengiriman WhatsApp dilewati karena channel percakapan bukan WhatsApp.',
-                'context'         => [
+                'message' => 'Pengiriman WhatsApp dilewati karena channel percakapan bukan WhatsApp.',
+                'context' => [
                     'reason' => 'wrong_channel_dispatch',
                     'message_id' => $message->id,
                     'channel' => $conversation?->channel,
@@ -162,59 +162,66 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         if ($customer === null || empty($customer->phone_e164)) {
             $message->markSkipped('no_valid_customer_phone');
+
             $audit->record(AuditActionType::WhatsAppSendSkipped, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
+                'auditable_type' => ConversationMessage::class,
+                'auditable_id' => $message->id,
                 'conversation_id' => $message->conversation_id,
-                'message'         => 'Dilewati — customer atau nomor telepon tidak valid.',
-                'context'         => ['reason' => 'no_valid_customer_phone', 'message_id' => $message->id],
+                'message' => 'Dilewati - customer atau nomor telepon tidak valid.',
+                'context' => [
+                    'reason' => 'no_valid_customer_phone',
+                    'message_id' => $message->id,
+                ],
             ]);
-            WaLog::warning('[Job:SendWA] Skipped — no valid customer phone', [
-                'message_id'      => $message->id,
+
+            WaLog::warning('[Job:SendWA] Skipped - no valid customer phone', [
+                'message_id' => $message->id,
                 'conversation_id' => $message->conversation_id,
             ]);
+
             return;
         }
 
-        // ── Attempt to send ──────────────────────────────────────────────────
-
         $audit->record(AuditActionType::WhatsAppSendAttempt, [
-            'auditable_type'  => ConversationMessage::class,
-            'auditable_id'    => $message->id,
+            'auditable_type' => ConversationMessage::class,
+            'auditable_id' => $message->id,
             'conversation_id' => $conversation->id,
-            'message'         => "Mencoba mengirim pesan ke {$customer->phone_e164} (percobaan ke-{$message->send_attempts})",
-            'context'         => [
-                'message_id'    => $message->id,
-                'sender_type'   => $message->sender_type->value,
-                'phone'         => $customer->phone_e164,
+            'message' => "Mencoba mengirim pesan ke {$customer->phone_e164} (percobaan ke-{$message->send_attempts})",
+            'context' => [
+                'message_id' => $message->id,
+                'sender_type' => $senderType,
+                'phone' => $customer->phone_e164,
                 'send_attempts' => $message->send_attempts,
-                'text_preview'  => $message->textPreview(80),
+                'text_preview' => $message->textPreview(80),
             ],
         ]);
 
         $result = $sender->sendMessage(
             toPhoneE164: $customer->phone_e164,
-            text: $message->message_text,
+            text: (string) $message->message_text,
             messageType: $message->message_type,
             providerPayload: is_array($message->raw_payload['outbound_payload'] ?? null)
                 ? $message->raw_payload['outbound_payload']
                 : [],
             meta: [
                 'conversation_id' => $conversation->id,
-                'message_id'      => $message->id,
-                'sender_type'     => $message->sender_type->value,
+                'message_id' => $message->id,
+                'sender_type' => $senderType,
             ],
         );
 
-        // ── Handle result ────────────────────────────────────────────────────
-
         if ($result['status'] === 'sent') {
-            $waMessageId = $result['response']['messages'][0]['id'] ?? null;
-            $deliveryMeta = is_array($result['response']['_delivery'] ?? null)
-                ? $result['response']['_delivery']
+            $responsePayload = is_array($result['response'] ?? null) ? $result['response'] : [];
+            $waMessageId = data_get($responsePayload, 'messages.0.id');
+            $deliveryMeta = is_array($responsePayload['_delivery'] ?? null)
+                ? $responsePayload['_delivery']
                 : [];
             $sentType = (string) ($deliveryMeta['sent_type'] ?? $message->message_type);
-            $fallbackUsed = (bool) ($deliveryMeta['interactive_text_fallback_used'] ?? false);
+            $fallbackUsed = (bool) (
+                ($deliveryMeta['interactive_text_fallback_used'] ?? false)
+                || ($deliveryMeta['reengagement_template_fallback_used'] ?? false)
+            );
+            $templateFallbackUsed = (bool) ($deliveryMeta['reengagement_template_fallback_used'] ?? false);
 
             $message->markSent($waMessageId, ['wa_send_result' => $result]);
             $message->forceFill([
@@ -222,29 +229,31 @@ class SendWhatsAppMessageJob implements ShouldQueue
             ])->save();
 
             $audit->record(AuditActionType::WhatsAppSendSuccess, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
+                'auditable_type' => ConversationMessage::class,
+                'auditable_id' => $message->id,
                 'conversation_id' => $conversation->id,
-                'message'         => "Pesan berhasil dikirim ke {$customer->phone_e164}",
-                'context'         => [
-                    'message_id'    => $message->id,
+                'message' => "Pesan berhasil dikirim ke {$customer->phone_e164}",
+                'context' => [
+                    'message_id' => $message->id,
                     'wa_message_id' => $waMessageId,
                     'send_attempts' => $message->send_attempts,
-                    'sent_type'     => $sentType,
+                    'sent_type' => $sentType,
                     'fallback_used' => $fallbackUsed,
+                    'template_fallback_used' => $templateFallbackUsed,
                 ],
             ]);
 
             WaLog::info('[Job:SendWA] Sent successfully', [
-                'message_id'    => $message->id,
+                'message_id' => $message->id,
                 'wa_message_id' => $waMessageId,
                 'send_attempts' => $message->send_attempts,
-                'sent_type'     => $sentType,
+                'sent_type' => $sentType,
                 'fallback_used' => $fallbackUsed,
-                'duration_ms'   => (int) round(microtime(true) * 1000) - $jobStartMs,
+                'template_fallback_used' => $templateFallbackUsed,
+                'duration_ms' => (int) round(microtime(true) * 1000) - $jobStartMs,
             ]);
 
-            if ($fallbackUsed) {
+            if ((bool) ($deliveryMeta['interactive_text_fallback_used'] ?? false)) {
                 WaLog::warning('[Job:SendWA] Interactive payload fell back to plain text', [
                     'message_id' => $message->id,
                     'requested_type' => $deliveryMeta['requested_type'] ?? $message->message_type,
@@ -253,53 +262,69 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 ]);
             }
 
-        } elseif ($result['status'] === 'skipped') {
+            if ($templateFallbackUsed) {
+                WaLog::warning('[Job:SendWA] 24h session closed, message fell back to approved template', [
+                    'message_id' => $message->id,
+                    'requested_type' => $deliveryMeta['requested_type'] ?? $message->message_type,
+                    'sent_type' => $sentType,
+                    'error_code' => $deliveryMeta['reengagement_error_code'] ?? null,
+                    'error' => $deliveryMeta['reengagement_error'] ?? null,
+                ]);
+            }
+
+            return;
+        }
+
+        if ($result['status'] === 'skipped') {
             $message->markSkipped('sender_disabled', ['wa_send_result' => $result]);
 
             $audit->record(AuditActionType::WhatsAppSendSkipped, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
+                'auditable_type' => ConversationMessage::class,
+                'auditable_id' => $message->id,
                 'conversation_id' => $conversation->id,
-                'message'         => 'Pengiriman dilewati — WhatsApp sender tidak aktif atau belum dikonfigurasi.',
-                'context'         => ['message_id' => $message->id, 'reason' => 'sender_disabled'],
-            ]);
-
-            WaLog::debug('[Job:SendWA] Skipped — sender not enabled', [
-                'message_id' => $message->id,
-            ]);
-
-        } else {
-            // 'failed' or 'error'
-            $errorText = $result['error'] ?? 'Unknown error';
-
-            $message->markFailed($errorText, ['wa_send_result' => $result]);
-
-            $audit->record(AuditActionType::WhatsAppSendFailure, [
-                'auditable_type'  => ConversationMessage::class,
-                'auditable_id'    => $message->id,
-                'conversation_id' => $conversation->id,
-                'message'         => "Pengiriman WhatsApp gagal ke {$customer->phone_e164}: {$errorText}",
-                'context'         => [
-                    'message_id'    => $message->id,
-                    'error'         => $errorText,
-                    'status'        => $result['status'],
-                    'send_attempts' => $message->send_attempts,
+                'message' => 'Pengiriman dilewati - WhatsApp sender tidak aktif atau belum dikonfigurasi.',
+                'context' => [
+                    'message_id' => $message->id,
+                    'reason' => 'sender_disabled',
                 ],
             ]);
 
-            WaLog::warning('[Job:SendWA] Send failed', [
-                'message_id'    => $message->id,
-                'status'        => $result['status'],
-                'error'         => $errorText,
-                'send_attempts' => $message->send_attempts,
+            WaLog::debug('[Job:SendWA] Skipped - sender not enabled', [
+                'message_id' => $message->id,
             ]);
 
-            if (
-                config('chatbot.notifications.enabled', true)
-                && config('chatbot.notifications.create_on_message_failed', true)
-            ) {
-                $this->createFailureNotification($message, $customer->phone_e164, $errorText, $conversation->id);
-            }
+            return;
+        }
+
+        $errorText = $result['error'] ?? 'Unknown error';
+
+        $message->markFailed($errorText, ['wa_send_result' => $result]);
+
+        $audit->record(AuditActionType::WhatsAppSendFailure, [
+            'auditable_type' => ConversationMessage::class,
+            'auditable_id' => $message->id,
+            'conversation_id' => $conversation->id,
+            'message' => "Pengiriman WhatsApp gagal ke {$customer->phone_e164}: {$errorText}",
+            'context' => [
+                'message_id' => $message->id,
+                'error' => $errorText,
+                'status' => $result['status'],
+                'send_attempts' => $message->send_attempts,
+            ],
+        ]);
+
+        WaLog::warning('[Job:SendWA] Send failed', [
+            'message_id' => $message->id,
+            'status' => $result['status'],
+            'error' => $errorText,
+            'send_attempts' => $message->send_attempts,
+        ]);
+
+        if (
+            config('chatbot.notifications.enabled', true)
+            && config('chatbot.notifications.create_on_message_failed', true)
+        ) {
+            $this->createFailureNotification($message, $customer->phone_e164, $errorText, $conversation->id);
         }
     }
 
@@ -307,9 +332,9 @@ class SendWhatsAppMessageJob implements ShouldQueue
     {
         WaLog::error('[Job:SendWA] Permanently failed after retries', [
             'message_id' => $this->conversationMessageId,
-            'error'      => $exception->getMessage(),
-            'file'       => $exception->getFile() . ':' . $exception->getLine(),
-            'trace'      => $exception->getTraceAsString(),
+            'error' => $exception->getMessage(),
+            'file' => $exception->getFile() . ':' . $exception->getLine(),
+            'trace' => $exception->getTraceAsString(),
         ]);
 
         $message = ConversationMessage::find($this->conversationMessageId);
@@ -317,10 +342,6 @@ class SendWhatsAppMessageJob implements ShouldQueue
             $message->markFailed('Job failed permanently: ' . $exception->getMessage());
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
 
     private function createFailureNotification(
         ConversationMessage $message,
@@ -330,9 +351,9 @@ class SendWhatsAppMessageJob implements ShouldQueue
     ): void {
         try {
             AdminNotification::create([
-                'type'    => 'whatsapp_failed',
-                'title'   => 'Pengiriman WhatsApp gagal',
-                'body'    => implode("\n", [
+                'type' => 'whatsapp_failed',
+                'title' => 'Pengiriman WhatsApp gagal',
+                'body' => implode("\n", [
                     "Pesan ke {$customerPhone} gagal dikirim.",
                     'Percakapan  : #' . $conversationId,
                     'Percobaan ke: ' . $message->send_attempts,
@@ -340,11 +361,11 @@ class SendWhatsAppMessageJob implements ShouldQueue
                     'Error       : ' . $error,
                 ]),
                 'payload' => [
-                    'message_id'      => $message->id,
+                    'message_id' => $message->id,
                     'conversation_id' => $conversationId,
-                    'customer_phone'  => $customerPhone,
-                    'error'           => $error,
-                    'send_attempts'   => $message->send_attempts,
+                    'customer_phone' => $customerPhone,
+                    'error' => $error,
+                    'send_attempts' => $message->send_attempts,
                 ],
                 'is_read' => false,
             ]);

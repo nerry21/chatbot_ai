@@ -98,6 +98,45 @@ class WhatsAppMessageParserTest extends TestCase
         $this->assertSame('benar', $messages[0]['message_text']);
     }
 
+    public function test_it_extracts_statuses_from_webhook_payload(): void
+    {
+        $parser = app(WhatsAppMessageParser::class);
+
+        $statuses = $parser->extractStatuses([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => [
+                            'display_phone_number' => '6281234567890',
+                            'phone_number_id' => '123456',
+                        ],
+                        'statuses' => [[
+                            'id' => 'wamid.status.1',
+                            'recipient_id' => '6281234567890',
+                            'status' => 'delivered',
+                            'timestamp' => '1710000003',
+                            'conversation' => [
+                                'id' => 'conversation-1',
+                            ],
+                            'pricing' => [
+                                'billable' => true,
+                            ],
+                            'errors' => [],
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $this->assertCount(1, $statuses);
+        $this->assertSame('wamid.status.1', $statuses[0]['wa_message_id']);
+        $this->assertSame('delivered', $statuses[0]['status']);
+        $this->assertSame('6281234567890', $statuses[0]['recipient_id']);
+        $this->assertSame('123456', $statuses[0]['metadata']['phone_number_id']);
+    }
+
     /**
      * @param  array<string, mixed>  $message
      * @return array<string, mixed>

@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ConversationMessage extends Model
 {
@@ -31,36 +32,30 @@ class ConversationMessage extends Model
         'sender_user_id',
         'read_at',
         'sent_at',
-        // Delivery status columns (Tahap 8)
         'delivery_status',
         'delivery_error',
         'delivered_at',
         'delivered_to_app_at',
         'failed_at',
-        // Retry tracking columns (Tahap 9)
         'send_attempts',
         'last_send_attempt_at',
     ];
 
     protected $casts = [
-        'direction'       => MessageDirection::class,
-        'sender_type'     => SenderType::class,
+        'direction' => MessageDirection::class,
+        'sender_type' => SenderType::class,
         'delivery_status' => MessageDeliveryStatus::class,
-        'raw_payload'     => 'array',
-        'ai_confidence'   => 'decimal:4',
-        'is_fallback'     => 'boolean',
-        'read_at'               => 'datetime',
-        'sent_at'               => 'datetime',
-        'delivered_at'          => 'datetime',
-        'delivered_to_app_at'   => 'datetime',
-        'failed_at'             => 'datetime',
-        'last_send_attempt_at'  => 'datetime',
-        'send_attempts'         => 'integer',
+        'raw_payload' => 'array',
+        'ai_confidence' => 'decimal:4',
+        'is_fallback' => 'boolean',
+        'read_at' => 'datetime',
+        'sent_at' => 'datetime',
+        'delivered_at' => 'datetime',
+        'delivered_to_app_at' => 'datetime',
+        'failed_at' => 'datetime',
+        'last_send_attempt_at' => 'datetime',
+        'send_attempts' => 'integer',
     ];
-
-    // -------------------------------------------------------------------------
-    // Relations
-    // -------------------------------------------------------------------------
 
     public function conversation(): BelongsTo
     {
@@ -72,14 +67,10 @@ class ConversationMessage extends Model
         return $this->belongsTo(User::class, 'sender_user_id');
     }
 
-    public function bookingIntents(): \Illuminate\Database\Eloquent\Relations\HasMany
+    public function bookingIntents(): HasMany
     {
         return $this->hasMany(BookingIntent::class, 'conversation_message_id');
     }
-
-    // -------------------------------------------------------------------------
-    // Scopes
-    // -------------------------------------------------------------------------
 
     public function scopeInbound(Builder $query): Builder
     {
@@ -101,10 +92,6 @@ class ConversationMessage extends Model
         return $query->where('delivery_status', $status);
     }
 
-    // -------------------------------------------------------------------------
-    // Direction helpers
-    // -------------------------------------------------------------------------
-
     public function isInbound(): bool
     {
         return $this->direction === MessageDirection::Inbound;
@@ -125,36 +112,32 @@ class ConversationMessage extends Model
         return $this->delivered_to_app_at !== null;
     }
 
-    // -------------------------------------------------------------------------
-    // Delivery status helpers (Tahap 8)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Mark the message as pending delivery.
-     * Called before a send attempt is made.
-     */
     public function markPending(): void
     {
         $this->update([
             'delivery_status' => MessageDeliveryStatus::Pending,
-            'delivery_error'  => null,
+            'delivery_error' => null,
+            'failed_at' => null,
         ]);
     }
 
     /**
-     * Mark the message as successfully sent to the WhatsApp provider.
-     * For Tahap 8, delivered_at is set equal to sent_at (no provider webhook yet).
-     *
-     * @param  array<string, mixed>  $providerPayload  Raw API response to merge into raw_payload
+     * @param array<string, mixed> $providerPayload
      */
     public function markSent(?string $waMessageId = null, array $providerPayload = []): void
     {
-        $now     = now();
+        $rawPayload = is_array($this->raw_payload) ? $this->raw_payload : [];
+
+        if ($providerPayload !== []) {
+            $rawPayload = array_merge($rawPayload, $providerPayload);
+        }
+
         $updates = [
             'delivery_status' => MessageDeliveryStatus::Sent,
-            'delivery_error'  => null,
-            'sent_at'         => $now,
-            'delivered_at'    => $now, // Optimistic: treat sent = delivered until webhook support
+            'delivery_error' => null,
+            'sent_at' => $this->sent_at ?? now(),
+            'raw_payload' => $rawPayload,
+            'failed_at' => null,
         ];
 
         if ($waMessageId !== null) {
@@ -162,56 +145,82 @@ class ConversationMessage extends Model
             $updates['channel_message_id'] = $waMessageId;
         }
 
-        if (! empty($providerPayload)) {
-            $updates['raw_payload'] = array_merge($this->raw_payload ?? [], $providerPayload);
-        }
-
         $this->update($updates);
     }
 
     /**
-     * Mark the message as permanently failed to deliver.
-     *
-     * @param  array<string, mixed>  $providerPayload  Raw error response to merge into raw_payload
+     * @param array<string, mixed> $providerPayload
+     */
+    public function markDelivered(?CarbonInterface $deliveredAt = null, array $providerPayload = []): void
+    {
+        $rawPayload = is_array($this->raw_payload) ? $this->raw_payload : [];
+
+        if ($providerPayload !== []) {
+            $rawPayload = array_merge($rawPayload, $providerPayload);
+        }
+
+        $this->update([
+            'delivery_status' => MessageDeliveryStatus::Delivered,
+            'delivery_error' => null,
+            'delivered_at' => $deliveredAt ?? now(),
+            'sent_at' => $this->sent_at ?? now(),
+            'raw_payload' => $rawPayload,
+            'failed_at' => null,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $providerPayload
      */
     public function markFailed(?string $error = null, array $providerPayload = []): void
     {
-        $updates = [
-            'delivery_status' => MessageDeliveryStatus::Failed,
-            'delivery_error'  => $error,
-            'failed_at'       => now(),
-        ];
+        $rawPayload = is_array($this->raw_payload) ? $this->raw_payload : [];
 
-        if (! empty($providerPayload)) {
-            $updates['raw_payload'] = array_merge($this->raw_payload ?? [], $providerPayload);
+        if ($providerPayload !== []) {
+            $rawPayload = array_merge($rawPayload, $providerPayload);
         }
 
-        $this->update($updates);
+        $this->update([
+            'delivery_status' => MessageDeliveryStatus::Failed,
+            'delivery_error' => $error,
+            'failed_at' => now(),
+            'raw_payload' => $rawPayload,
+        ]);
     }
 
     /**
-     * Mark the message as skipped (e.g. sender disabled, empty text, no customer phone).
-     *
-     * @param  array<string, mixed>  $providerPayload  Optional context to merge into raw_payload
+     * @param array<string, mixed> $providerPayload
      */
     public function markSkipped(?string $reason = null, array $providerPayload = []): void
     {
-        $updates = [
-            'delivery_status' => MessageDeliveryStatus::Skipped,
-            'delivery_error'  => $reason,
-        ];
+        $rawPayload = is_array($this->raw_payload) ? $this->raw_payload : [];
 
-        if (! empty($providerPayload)) {
-            $updates['raw_payload'] = array_merge($this->raw_payload ?? [], $providerPayload);
+        if ($providerPayload !== []) {
+            $rawPayload = array_merge($rawPayload, $providerPayload);
         }
 
-        $this->update($updates);
+        $this->update([
+            'delivery_status' => MessageDeliveryStatus::Skipped,
+            'delivery_error' => $reason,
+            'raw_payload' => $rawPayload,
+            'failed_at' => null,
+        ]);
     }
 
     public function markRead(?CarbonInterface $readAt = null): void
     {
+        $timestamp = $readAt ?? now();
+
         $this->update([
-            'read_at' => $readAt ?? now(),
+            'read_at' => $timestamp,
+            'delivery_status' => $this->delivery_status === MessageDeliveryStatus::Failed
+                ? MessageDeliveryStatus::Failed
+                : MessageDeliveryStatus::Delivered,
+            'delivered_at' => $this->delivered_at ?? $timestamp,
+            'sent_at' => $this->sent_at ?? $timestamp,
+            'delivery_error' => $this->delivery_status === MessageDeliveryStatus::Failed
+                ? $this->delivery_error
+                : null,
         ]);
     }
 
@@ -222,31 +231,12 @@ class ConversationMessage extends Model
         ]);
     }
 
-    // -------------------------------------------------------------------------
-    // Retry / resend helpers (Tahap 9)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Increment the send_attempts counter and record the attempt timestamp.
-     * Called at the start of each SendWhatsAppMessageJob execution.
-     */
     public function incrementSendAttempt(): void
     {
         $this->increment('send_attempts');
         $this->update(['last_send_attempt_at' => now()]);
     }
 
-    /**
-     * Whether this message is eligible for a manual resend from the admin dashboard.
-     *
-     * Rules:
-     *  - Must be outbound and sent by bot or agent.
-     *  - Already successfully sent (Sent/Delivered) → not resendable.
-     *  - Failed delivery → resendable.
-     *  - Skipped due to sender_disabled or no_valid_customer_phone → resendable
-     *    (admin may have fixed the configuration since).
-     *  - All other Skipped reasons (e.g. empty_text, max_attempts_exceeded) → not resendable.
-     */
     public function isResendable(): bool
     {
         if ($this->direction !== MessageDirection::Outbound) {
@@ -266,7 +256,6 @@ class ConversationMessage extends Model
             return true;
         }
 
-        // Skipped for recoverable operational reasons
         if ($this->delivery_status === MessageDeliveryStatus::Skipped
             && in_array($this->delivery_error, ['sender_disabled', 'no_valid_customer_phone'], true)) {
             return true;
@@ -275,14 +264,6 @@ class ConversationMessage extends Model
         return false;
     }
 
-    // -------------------------------------------------------------------------
-    // Other helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * Return a truncated preview of the message text.
-     * Useful for summaries and logging without exposing full content.
-     */
     public function textPreview(int $maxLength = 100): string
     {
         $text = $this->message_text ?? '';
@@ -291,16 +272,12 @@ class ConversationMessage extends Model
             return $text;
         }
 
-        return mb_substr($text, 0, $maxLength) . '…';
+        return mb_substr($text, 0, $maxLength) . '...';
     }
 
-    /**
-     * Stamp this message with the AI-classified intent and confidence score.
-     * Used after IntentClassifierService runs on an inbound message.
-     */
     public function tagWithAiResult(string $intent, float $confidence): bool
     {
-        $this->ai_intent     = $intent;
+        $this->ai_intent = $intent;
         $this->ai_confidence = $confidence;
 
         return $this->save();

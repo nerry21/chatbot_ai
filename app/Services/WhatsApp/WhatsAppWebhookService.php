@@ -2,6 +2,7 @@
 
 namespace App\Services\WhatsApp;
 
+use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
 use App\Enums\SenderType;
 use App\Jobs\ProcessIncomingWhatsAppMessage;
@@ -12,9 +13,9 @@ use App\Services\Chatbot\ConversationManagerService;
 use App\Services\OpenAiChatService;
 use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Database\QueryException;
 use Throwable;
 
 class WhatsAppWebhookService
@@ -28,8 +29,6 @@ class WhatsAppWebhookService
     }
 
     /**
-     * Process a full incoming webhook payload.
-     *
      * @param array<string, mixed> $payload
      */
     public function handle(array $payload): void
@@ -42,11 +41,26 @@ class WhatsAppWebhookService
             return;
         }
 
+        $statuses = $this->parser->extractStatuses($payload);
         $messages = $this->parser->extractMessages($payload);
 
-        WaLog::info('[WebhookService] Payload parsed — processing messages', [
+        WaLog::info('[WebhookService] Payload parsed - processing messages', [
             'message_count' => count($messages),
+            'status_count' => count($statuses),
         ]);
+
+        foreach ($statuses as $parsedStatus) {
+            try {
+                $this->processSingleStatus($parsedStatus);
+            } catch (Throwable $e) {
+                WaLog::error('[WebhookService] Failed to process outbound status', [
+                    'wa_message_id' => $parsedStatus['wa_message_id'] ?? null,
+                    'status' => $parsedStatus['status'] ?? null,
+                    'error' => $e->getMessage(),
+                    'file' => $e->getFile() . ':' . $e->getLine(),
+                ]);
+            }
+        }
 
         foreach ($messages as $parsedMessage) {
             try {
@@ -60,6 +74,84 @@ class WhatsAppWebhookService
                     'trace' => $e->getTraceAsString(),
                 ]);
             }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $parsedStatus
+     */
+    private function processSingleStatus(array $parsedStatus): void
+    {
+        $waMessageId = $this->normalizeWaMessageId($parsedStatus['wa_message_id'] ?? null);
+        $status = trim((string) ($parsedStatus['status'] ?? ''));
+        $timestamp = $this->parseTimestamp($parsedStatus['timestamp'] ?? null);
+
+        if ($waMessageId === null || $status === '') {
+            return;
+        }
+
+        $message = ConversationMessage::query()
+            ->where('wa_message_id', $waMessageId)
+            ->where('direction', MessageDirection::Outbound->value)
+            ->first();
+
+        if (! $message instanceof ConversationMessage) {
+            WaLog::warning('[WebhookService] Outbound status received for unknown message', [
+                'wa_message_id' => $waMessageId,
+                'status' => $status,
+            ]);
+
+            return;
+        }
+
+        $rawPayload = is_array($message->raw_payload) ? $message->raw_payload : [];
+        $rawPayload['wa_webhook_status'] = [
+            'status' => $status,
+            'timestamp' => $timestamp?->toIso8601String(),
+            'recipient_id' => $parsedStatus['recipient_id'] ?? null,
+            'conversation' => $parsedStatus['conversation'] ?? null,
+            'pricing' => $parsedStatus['pricing'] ?? null,
+            'errors' => is_array($parsedStatus['errors'] ?? null) ? $parsedStatus['errors'] : [],
+            'metadata' => is_array($parsedStatus['metadata'] ?? null) ? $parsedStatus['metadata'] : [],
+            'raw_status' => $parsedStatus['raw_status'] ?? null,
+        ];
+
+        if ($status === 'sent') {
+            $message->markSent($waMessageId, $rawPayload);
+            $message->forceFill([
+                'delivery_status' => MessageDeliveryStatus::Sent,
+                'sent_at' => $timestamp ?? ($message->sent_at ?? now()),
+                'raw_payload' => $rawPayload,
+            ])->save();
+
+            return;
+        }
+
+        if ($status === 'delivered') {
+            $message->markDelivered($timestamp ?? now(), $rawPayload);
+
+            return;
+        }
+
+        if ($status === 'read') {
+            if ($message->delivery_status !== MessageDeliveryStatus::Delivered) {
+                $message->markDelivered($timestamp ?? now(), $rawPayload);
+            }
+
+            $message->markRead($timestamp ?? now());
+            $message->forceFill([
+                'raw_payload' => $rawPayload,
+            ])->save();
+
+            return;
+        }
+
+        if ($status === 'failed') {
+            $errorText = $this->formatStatusErrors(
+                is_array($parsedStatus['errors'] ?? null) ? $parsedStatus['errors'] : []
+            );
+
+            $message->markFailed($errorText, $rawPayload);
         }
     }
 
@@ -85,7 +177,7 @@ class WhatsAppWebhookService
         }
 
         if ($rawWaId === null || trim((string) $rawWaId) === '') {
-            WaLog::warning('[WebhookService] Message has no sender wa_id — skipping', [
+            WaLog::warning('[WebhookService] Message has no sender wa_id - skipping', [
                 'wa_message_id' => $messageId,
                 'type' => $type,
             ]);
@@ -96,7 +188,7 @@ class WhatsAppWebhookService
         $phoneE164 = $this->phoneService->toE164((string) $rawWaId);
 
         if ($phoneE164 === '') {
-            WaLog::warning('[WebhookService] Failed to normalize sender phone — skipping', [
+            WaLog::warning('[WebhookService] Failed to normalize sender phone - skipping', [
                 'wa_message_id' => $messageId,
                 'raw_wa_id' => $rawWaId,
                 'type' => $type,
@@ -108,7 +200,7 @@ class WhatsAppWebhookService
         $existingMessage = $this->findExistingInboundMessage($messageId);
 
         if ($existingMessage !== null) {
-            WaLog::info('[WebhookService] Duplicate inbound skipped — wa_message_id already processed', [
+            WaLog::info('[WebhookService] Duplicate inbound skipped - wa_message_id already processed', [
                 'wa_message_id' => $messageId,
                 'existing_message_id' => $existingMessage->id,
                 'existing_conversation_id' => $existingMessage->conversation_id,
@@ -129,7 +221,6 @@ class WhatsAppWebhookService
         $openAiSeed = $this->buildOpenAiSeed(
             parsedMessage: $parsedMessage,
             messageText: is_string($text) ? $text : null,
-            phoneE164: $phoneE164,
             sentAt: $sentAt,
         );
 
@@ -167,9 +258,7 @@ class WhatsAppWebhookService
                     sentAt: $sentAt,
                     rawPayload: is_array($parsedMessage['raw_payload'] ?? null)
                         ? $parsedMessage['raw_payload']
-                        : (is_array($parsedMessage['raw_message'] ?? null)
-                            ? $parsedMessage['raw_message']
-                            : []),
+                        : (is_array($parsedMessage['raw_message'] ?? null) ? $parsedMessage['raw_message'] : []),
                     openAiSeed: $openAiSeed,
                 );
 
@@ -194,7 +283,7 @@ class WhatsAppWebhookService
             if ($this->isDuplicateWaMessageException($e, $messageId)) {
                 $duplicateMessage = $this->findExistingInboundMessage($messageId);
 
-                WaLog::info('[WebhookService] Duplicate inbound skipped — unique constraint hit', [
+                WaLog::info('[WebhookService] Duplicate inbound skipped - unique constraint hit', [
                     'wa_message_id' => $messageId,
                     'existing_message_id' => $duplicateMessage?->id,
                     'existing_conversation_id' => $duplicateMessage?->conversation_id,
@@ -262,6 +351,7 @@ class WhatsAppWebhookService
             'ai_confidence' => $aiConfidence,
             'is_fallback' => false,
             'sent_at' => $sentAt ?? now(),
+            'delivery_status' => MessageDeliveryStatus::Sent,
         ]);
 
         return $message;
@@ -329,13 +419,12 @@ class WhatsAppWebhookService
     }
 
     /**
-     * @param  array<string, mixed>  $parsedMessage
+     * @param array<string, mixed> $parsedMessage
      * @return array<string, mixed>
      */
     private function buildOpenAiSeed(
         array $parsedMessage,
         ?string $messageText,
-        string $phoneE164,
         ?Carbon $sentAt,
     ): array {
         if (! $this->shouldBuildOpenAiSeed($messageText)) {
@@ -418,8 +507,35 @@ class WhatsAppWebhookService
         }
 
         $confidence = (float) $value;
-        $confidence = max(0.0, min(1.0, $confidence));
 
-        return $confidence;
+        return max(0.0, min(1.0, $confidence));
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $errors
+     */
+    private function formatStatusErrors(array $errors): string
+    {
+        $parts = [];
+
+        foreach ($errors as $error) {
+            $code = $error['code'] ?? null;
+            $title = trim((string) ($error['title'] ?? ''));
+            $message = trim((string) ($error['message'] ?? ''));
+            $details = trim((string) data_get($error, 'error_data.details', ''));
+
+            $piece = collect([
+                $code !== null ? '[' . $code . ']' : null,
+                $title !== '' ? $title : null,
+                $message !== '' ? $message : null,
+                $details !== '' ? $details : null,
+            ])->filter()->implode(' ');
+
+            if ($piece !== '') {
+                $parts[] = $piece;
+            }
+        }
+
+        return $parts !== [] ? implode(' | ', $parts) : 'WhatsApp provider reported failed status.';
     }
 }

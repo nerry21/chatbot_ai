@@ -35,9 +35,13 @@ return [
     ],
 
     'whatsapp' => [
-        'verify_token'    => env('WHATSAPP_VERIFY_TOKEN'),
+        'verify_token' => env('WHATSAPP_VERIFY_TOKEN'),
         'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
-        'access_token'    => env('WHATSAPP_ACCESS_TOKEN'),
+        'access_token' => env('WHATSAPP_ACCESS_TOKEN'),
+        'reengagement_template_enabled' => (bool) env('WHATSAPP_REENGAGEMENT_TEMPLATE_ENABLED', true),
+        'reengagement_template_name' => env('WHATSAPP_REENGAGEMENT_TEMPLATE_NAME', ''),
+        'reengagement_template_language' => env('WHATSAPP_REENGAGEMENT_TEMPLATE_LANGUAGE', 'id'),
+        'reengagement_template_components_json' => env('WHATSAPP_REENGAGEMENT_TEMPLATE_COMPONENTS_JSON', ''),
     ],
 
     'openai' => [

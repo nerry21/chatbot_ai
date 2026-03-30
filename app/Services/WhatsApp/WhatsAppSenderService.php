@@ -4,6 +4,7 @@ namespace App\Services\WhatsApp;
 
 use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 
 class WhatsAppSenderService
@@ -31,11 +32,20 @@ class WhatsAppSenderService
             && $this->phoneNumberId !== '';
     }
 
+    /**
+     * @param array<string, mixed> $meta
+     * @return array{status:string,provider:string,response:array|null,error:string|null}
+     */
     public function sendText(string $toPhoneE164, string $text, array $meta = []): array
     {
         return $this->sendMessage($toPhoneE164, $text, 'text', [], $meta);
     }
 
+    /**
+     * @param array<string, mixed> $providerPayload
+     * @param array<string, mixed> $meta
+     * @return array{status:string,provider:string,response:array|null,error:string|null,requested_type?:string,sent_type?:string,fallback_used?:bool}
+     */
     public function sendMessage(
         string $toPhoneE164,
         string $text,
@@ -95,13 +105,14 @@ class WhatsAppSenderService
                 return $this->result('sent', $response->json());
             }
 
-            $errorMsg = $response->json('error.message') ?? $response->body();
+            $errorMsg = (string) ($response->json('error.message') ?? $response->body());
+            $errorCode = (int) ($response->json('error.code') ?? 0);
 
-            if ($this->shouldFallbackInteractiveToText($resolvedType, $response->status(), (string) $errorMsg)) {
+            if ($this->shouldFallbackInteractiveToText($resolvedType, $response->status(), $errorMsg)) {
                 WaLog::warning('[Sender] Interactive send rejected, retrying as text fallback', array_merge([
                     'to' => WaLog::maskPhone($normalizedE164),
                     'http_status' => $response->status(),
-                    'error_msg' => mb_substr((string) $errorMsg, 0, 300),
+                    'error_msg' => mb_substr($errorMsg, 0, 300),
                     'duration_ms' => $durationMs,
                 ], $meta));
 
@@ -121,7 +132,7 @@ class WhatsAppSenderService
                     'sent_type' => $fallbackResult['status'] === 'sent' ? 'text' : ($fallbackResult['sent_type'] ?? 'text'),
                     'interactive_text_fallback_used' => true,
                     'interactive_http_status' => $response->status(),
-                    'interactive_error' => (string) $errorMsg,
+                    'interactive_error' => $errorMsg,
                 ];
                 $fallbackResult['response'] = $fallbackResponse;
                 $fallbackResult['requested_type'] = 'interactive';
@@ -131,14 +142,53 @@ class WhatsAppSenderService
                 return $fallbackResult;
             }
 
+            if ($this->shouldFallbackReengagementTemplate($resolvedType, $errorCode, $errorMsg)) {
+                WaLog::warning('[Sender] Text send rejected by 24h rule, retrying with template fallback', array_merge([
+                    'to' => WaLog::maskPhone($normalizedE164),
+                    'http_status' => $response->status(),
+                    'error_code' => $errorCode,
+                    'error_msg' => mb_substr($errorMsg, 0, 300),
+                    'duration_ms' => $durationMs,
+                ], $meta));
+
+                $fallbackResult = $this->sendTemplateReengagement(
+                    toPhoneE164: $toPhoneE164,
+                    meta: array_merge($meta, ['fallback_from' => $resolvedType]),
+                );
+
+                $fallbackResponse = is_array($fallbackResult['response'] ?? null)
+                    ? $fallbackResult['response']
+                    : [];
+
+                $fallbackResponse['_delivery'] = array_merge(
+                    is_array($fallbackResponse['_delivery'] ?? null) ? $fallbackResponse['_delivery'] : [],
+                    [
+                        'requested_type' => $resolvedType,
+                        'sent_type' => $fallbackResult['status'] === 'sent' ? 'template' : ($fallbackResult['sent_type'] ?? 'template'),
+                        'reengagement_template_fallback_used' => true,
+                        'reengagement_http_status' => $response->status(),
+                        'reengagement_error_code' => $errorCode,
+                        'reengagement_error' => $errorMsg,
+                    ],
+                );
+
+                $fallbackResult['response'] = $fallbackResponse;
+                $fallbackResult['requested_type'] = $resolvedType;
+                $fallbackResult['sent_type'] = $fallbackResult['status'] === 'sent' ? 'template' : ($fallbackResult['sent_type'] ?? 'template');
+                $fallbackResult['fallback_used'] = true;
+
+                return $fallbackResult;
+            }
+
             WaLog::warning('[Sender] Send failed', array_merge([
                 'to' => WaLog::maskPhone($normalizedE164),
                 'http_status' => $response->status(),
-                'error_msg' => mb_substr((string) $errorMsg, 0, 300),
+                'error_code' => $errorCode,
+                'error_msg' => mb_substr($errorMsg, 0, 300),
                 'duration_ms' => $durationMs,
             ], $meta));
 
-            return $this->result('failed', $response->json(), (string) $errorMsg);
+            return $this->result('failed', $response->json(), $errorMsg);
         } catch (\Throwable $e) {
             WaLog::error('[Sender] Exception during HTTP send', array_merge([
                 'to' => WaLog::maskPhone($normalizedE164 !== '' ? $normalizedE164 : $toPhoneE164),
@@ -149,6 +199,82 @@ class WhatsAppSenderService
         }
     }
 
+    /**
+     * @param array<string, mixed> $meta
+     * @return array{status:string,provider:string,response:array|null,error:string|null,requested_type?:string,sent_type?:string,fallback_used?:bool}
+     */
+    public function sendTemplateReengagement(string $toPhoneE164, array $meta = []): array
+    {
+        $normalizedE164 = $this->phoneService->toE164($toPhoneE164);
+        $to = $this->phoneService->toDigits($toPhoneE164);
+
+        if (! $this->isEnabled()) {
+            return $this->result('skipped');
+        }
+
+        if ($normalizedE164 === '' || ! $this->phoneService->isValidE164($normalizedE164) || $to === '') {
+            return $this->result('failed', null, 'Invalid recipient phone number.');
+        }
+
+        $templateName = trim((string) config('services.whatsapp.reengagement_template_name', ''));
+        $languageCode = trim((string) config('services.whatsapp.reengagement_template_language', 'id'));
+        $componentsJson = (string) config('services.whatsapp.reengagement_template_components_json', '');
+
+        if ($templateName === '') {
+            return $this->result('failed', null, 'Fallback template belum dikonfigurasi.');
+        }
+
+        $components = [];
+        if ($componentsJson !== '') {
+            $decoded = json_decode($componentsJson, true);
+            if (is_array($decoded)) {
+                $components = $decoded;
+            }
+        }
+
+        $endpoint = "{$this->graphBaseUrl}/{$this->phoneNumberId}/messages";
+        $requestBody = [
+            'messaging_product' => 'whatsapp',
+            'to' => $to,
+            'type' => 'template',
+            'template' => array_filter([
+                'name' => $templateName,
+                'language' => ['code' => $languageCode !== '' ? $languageCode : 'id'],
+                'components' => $components !== [] ? $components : null,
+            ], static fn (mixed $value): bool => $value !== null),
+        ];
+
+        try {
+            $response = Http::withToken($this->accessToken)
+                ->timeout($this->timeoutSeconds)
+                ->post($endpoint, $requestBody);
+
+            if ($response->successful()) {
+                $body = $response->json() ?? [];
+                $body['_delivery'] = array_merge(
+                    is_array($body['_delivery'] ?? null) ? $body['_delivery'] : [],
+                    [
+                        'sent_type' => 'template',
+                        'template_name' => $templateName,
+                        'template_language' => $languageCode,
+                    ],
+                );
+
+                return $this->result('sent', $body);
+            }
+
+            $errorMsg = (string) ($response->json('error.message') ?? $response->body());
+
+            return $this->result('failed', $response->json(), $errorMsg);
+        } catch (\Throwable $e) {
+            return $this->result('error', null, $e->getMessage());
+        }
+    }
+
+    /**
+     * @param array<string, mixed>|null $response
+     * @return array{status:string,provider:string,response:array|null,error:string|null}
+     */
     private function result(string $status, ?array $response = null, ?string $error = null): array
     {
         return [
@@ -159,6 +285,10 @@ class WhatsAppSenderService
         ];
     }
 
+    /**
+     * @param array<string, mixed> $providerPayload
+     * @return array<string, mixed>
+     */
     private function buildRequestBody(string $to, string $text, string $messageType, array $providerPayload): array
     {
         if ($messageType === 'interactive') {
@@ -180,15 +310,16 @@ class WhatsAppSenderService
         }
 
         if ($messageType === 'audio') {
+            $audio = is_array($providerPayload['audio'] ?? null) ? $providerPayload['audio'] : [];
+
             return [
                 'messaging_product' => 'whatsapp',
                 'to' => $to,
                 'type' => 'audio',
                 'audio' => array_filter([
-                    'link' => data_get($providerPayload, 'audio.link'),
-                    'id' => data_get($providerPayload, 'audio.id'),
-                    'voice' => data_get($providerPayload, 'audio.voice', true),
-                ], static fn (mixed $value): bool => $value !== null && $value !== ''),
+                    'id' => Arr::get($audio, 'id'),
+                    'link' => Arr::get($audio, 'link'),
+                ], static fn (mixed $value): bool => filled($value)),
             ];
         }
 
@@ -203,6 +334,9 @@ class WhatsAppSenderService
         ];
     }
 
+    /**
+     * @param array<string, mixed> $providerPayload
+     */
     private function resolveMessageType(string $messageType, array $providerPayload): string
     {
         if (
@@ -225,7 +359,10 @@ class WhatsAppSenderService
         if (
             $messageType === 'audio'
             && is_array($providerPayload['audio'] ?? null)
-            && (filled($providerPayload['audio']['link'] ?? null) || filled($providerPayload['audio']['id'] ?? null))
+            && (
+                filled($providerPayload['audio']['id'] ?? null)
+                || filled($providerPayload['audio']['link'] ?? null)
+            )
         ) {
             return 'audio';
         }
@@ -268,5 +405,25 @@ class WhatsAppSenderService
         }
 
         return false;
+    }
+
+    private function shouldFallbackReengagementTemplate(string $resolvedType, int $errorCode, string $errorMessage): bool
+    {
+        if (! in_array($resolvedType, ['text', 'audio', 'contacts', 'interactive'], true)) {
+            return false;
+        }
+
+        if (! (bool) config('services.whatsapp.reengagement_template_enabled', true)) {
+            return false;
+        }
+
+        if ($errorCode === 131047) {
+            return true;
+        }
+
+        $normalized = mb_strtolower(trim($errorMessage), 'UTF-8');
+
+        return str_contains($normalized, 're-engagement')
+            || str_contains($normalized, '24 hours have passed');
     }
 }

@@ -2,8 +2,14 @@
 
 namespace App\Services\WhatsApp;
 
+use Carbon\Carbon;
+
 class WhatsAppMessageParser
 {
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int, array<string, mixed>>
+     */
     public function extractMessages(array $payload): array
     {
         $messages = [];
@@ -17,30 +23,30 @@ class WhatsAppMessageParser
                     continue;
                 }
 
-                $value        = $change['value'] ?? [];
-                $rawMessages  = $value['messages'] ?? [];
-                $contacts     = $value['contacts'] ?? [];
-                $metadata     = $value['metadata'] ?? [];
+                $value = $change['value'] ?? [];
+                $rawMessages = $value['messages'] ?? [];
+                $contacts = $value['contacts'] ?? [];
+                $metadata = $value['metadata'] ?? [];
                 $contactMap = $this->indexContactsByWaId($contacts);
 
                 foreach ($rawMessages as $msg) {
-                    $waId    = $msg['from'] ?? null;
+                    $waId = $msg['from'] ?? null;
                     $contact = $contactMap[$waId] ?? null;
                     $interactiveReply = $this->extractInteractiveReply($msg);
 
                     $messages[] = [
-                        'wa_message_id'  => $msg['id'] ?? null,
-                        'from_wa_id'     => $waId,
-                        'from_name'      => $contact['profile']['name'] ?? null,
-                        'message_type'   => $msg['type'] ?? 'unknown',
-                        'message_text'   => $this->extractText($msg, $interactiveReply),
-                        'timestamp'      => isset($msg['timestamp'])
-                            ? \Carbon\Carbon::createFromTimestamp((int) $msg['timestamp'])
+                        'wa_message_id' => $msg['id'] ?? null,
+                        'from_wa_id' => $waId,
+                        'from_name' => $contact['profile']['name'] ?? null,
+                        'message_type' => $msg['type'] ?? 'unknown',
+                        'message_text' => $this->extractText($msg, $interactiveReply),
+                        'timestamp' => isset($msg['timestamp'])
+                            ? Carbon::createFromTimestamp((int) $msg['timestamp'])
                             : null,
                         'interactive_reply' => $interactiveReply,
-                        'raw_message'    => $msg,
-                        'raw_payload'    => $this->buildRawPayload($msg, $metadata, $interactiveReply),
-                        'metadata'       => $metadata,
+                        'raw_message' => $msg,
+                        'raw_payload' => $this->buildRawPayload($msg, $metadata, $interactiveReply),
+                        'metadata' => $metadata,
                     ];
                 }
             }
@@ -49,6 +55,48 @@ class WhatsAppMessageParser
         return $messages;
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int, array<string, mixed>>
+     */
+    public function extractStatuses(array $payload): array
+    {
+        $statuses = [];
+        $entries = $payload['entry'] ?? [];
+
+        foreach ($entries as $entry) {
+            foreach (($entry['changes'] ?? []) as $change) {
+                if (($change['field'] ?? '') !== 'messages') {
+                    continue;
+                }
+
+                $value = $change['value'] ?? [];
+                $metadata = $value['metadata'] ?? [];
+
+                foreach (($value['statuses'] ?? []) as $status) {
+                    $statuses[] = [
+                        'wa_message_id' => $status['id'] ?? null,
+                        'recipient_id' => $status['recipient_id'] ?? null,
+                        'status' => $status['status'] ?? null,
+                        'timestamp' => isset($status['timestamp'])
+                            ? Carbon::createFromTimestamp((int) $status['timestamp'])
+                            : null,
+                        'conversation' => is_array($status['conversation'] ?? null) ? $status['conversation'] : null,
+                        'pricing' => is_array($status['pricing'] ?? null) ? $status['pricing'] : null,
+                        'errors' => is_array($status['errors'] ?? null) ? $status['errors'] : [],
+                        'raw_status' => $status,
+                        'metadata' => $metadata,
+                    ];
+                }
+            }
+        }
+
+        return $statuses;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
     public function isValidWebhookPayload(array $payload): bool
     {
         return isset($payload['object'])
@@ -57,11 +105,15 @@ class WhatsAppMessageParser
             && is_array($payload['entry']);
     }
 
+    /**
+     * @param array<string, mixed> $msg
+     * @param array<string, mixed>|null $interactiveReply
+     */
     public function extractText(array $msg, ?array $interactiveReply = null): ?string
     {
         $type = $msg['type'] ?? null;
 
-        return match($type) {
+        return match ($type) {
             'text' => $msg['text']['body'] ?? null,
             'button' => $msg['button']['text'] ?? null,
             'interactive' => $this->interactiveReplyText($interactiveReply ?? $this->extractInteractiveReply($msg)),
@@ -70,18 +122,28 @@ class WhatsAppMessageParser
         };
     }
 
+    /**
+     * @param array<int, array<string, mixed>> $contacts
+     * @return array<string, array<string, mixed>>
+     */
     private function indexContactsByWaId(array $contacts): array
     {
         $map = [];
+
         foreach ($contacts as $contact) {
             $waId = $contact['wa_id'] ?? null;
             if ($waId !== null) {
                 $map[$waId] = $contact;
             }
         }
+
         return $map;
     }
 
+    /**
+     * @param array<string, mixed> $msg
+     * @return array<string, mixed>|null
+     */
     private function extractInteractiveReply(array $msg): ?array
     {
         if (($msg['type'] ?? null) !== 'interactive') {
@@ -111,6 +173,9 @@ class WhatsAppMessageParser
         return null;
     }
 
+    /**
+     * @param array<string, mixed>|null $interactiveReply
+     */
     private function interactiveReplyText(?array $interactiveReply): ?string
     {
         $id = trim((string) ($interactiveReply['id'] ?? ''));
@@ -132,6 +197,7 @@ class WhatsAppMessageParser
         }
 
         $title = trim((string) ($interactiveReply['title'] ?? ''));
+
         if ($title !== '') {
             return $title;
         }
@@ -148,6 +214,12 @@ class WhatsAppMessageParser
         );
     }
 
+    /**
+     * @param array<string, mixed> $msg
+     * @param array<string, mixed> $metadata
+     * @param array<string, mixed>|null $interactiveReply
+     * @return array<string, mixed>
+     */
     private function buildRawPayload(array $msg, array $metadata, ?array $interactiveReply): array
     {
         $payload = $msg;
