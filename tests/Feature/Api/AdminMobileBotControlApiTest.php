@@ -68,6 +68,59 @@ class AdminMobileBotControlApiTest extends TestCase
         $this->assertSame($admin->id, $updatedConversation?->assigned_admin_id);
     }
 
+    public function test_admin_can_turn_bot_on_again_after_manual_off(): void
+    {
+        $admin = $this->createAdmin(['email' => 'reactivate-admin@example.com']);
+        $token = $this->loginAdmin($admin);
+        $conversation = $this->createConversation(conversationAttributes: [
+            'handoff_mode' => 'admin',
+            'handoff_admin_id' => $admin->id,
+            'assigned_admin_id' => $admin->id,
+            'bot_paused' => true,
+            'bot_paused_reason' => 'human_takeover',
+            'needs_human' => true,
+            'bot_auto_resume_enabled' => true,
+            'bot_auto_resume_at' => now()->addMinutes(15),
+            'bot_last_admin_reply_at' => now(),
+            'last_admin_intervention_at' => now(),
+        ]);
+
+        $turnOn = $this->withToken($token)->postJson(
+            route('api.admin-mobile.conversations.bot-control.on', ['conversation' => $conversation]),
+        );
+
+        $turnOn->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.bot_enabled', true)
+            ->assertJsonPath('data.bot_paused', false)
+            ->assertJsonPath('data.human_takeover', false)
+            ->assertJsonPath('data.bot.bot_auto_resume_enabled', false);
+
+        $detail = $this->withToken($token)->getJson(
+            route('api.admin-mobile.conversations.show', ['conversation' => $conversation]),
+        );
+
+        $detail->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.conversation.bot_control.enabled', true)
+            ->assertJsonPath('data.conversation.bot_control.human_takeover', false);
+
+        $poll = $this->withToken($token)->getJson(
+            route('api.admin-mobile.conversations.poll', ['conversation' => $conversation]),
+        );
+
+        $poll->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.conversation.bot_control.enabled', true);
+
+        $updatedConversation = $conversation->fresh();
+
+        $this->assertFalse($updatedConversation?->isAutomationSuppressed() ?? true);
+        $this->assertSame('bot', $updatedConversation?->handoff_mode);
+        $this->assertFalse((bool) $updatedConversation?->bot_paused);
+        $this->assertFalse((bool) $updatedConversation?->bot_auto_resume_enabled);
+    }
+
     public function test_sending_contact_also_arms_bot_auto_resume_for_manual_takeover(): void
     {
         Queue::fake();
