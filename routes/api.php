@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AdminMobile\AuthController as AdminMobileAuthController;
+use App\Http\Controllers\Api\AdminMobile\BotControlController as AdminMobileBotControlController;
 use App\Http\Controllers\Api\AdminMobile\ContactController as AdminMobileContactController;
 use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
 use App\Http\Controllers\Api\AdminMobile\WorkspaceController as AdminMobileWorkspaceController;
@@ -60,6 +61,10 @@ Route::prefix('admin-mobile')
             Route::get('conversations/{conversation}/poll', [AdminMobileWorkspaceController::class, 'pollConversation'])->name('conversations.poll');
             Route::post('conversations/{conversation}/reply', [AdminMobileReplyController::class, 'store'])->name('conversations.reply');
             Route::post('conversations/{conversation}/send-contact', [AdminMobileContactController::class, 'store'])->name('conversations.send-contact');
+            Route::get('conversations/{conversation}/bot-control', [AdminMobileBotControlController::class, 'status'])->name('conversations.bot-control.status');
+            Route::post('conversations/{conversation}/bot-control/on', [AdminMobileBotControlController::class, 'turnOn'])->name('conversations.bot-control.on');
+            Route::post('conversations/{conversation}/bot-control/off', [AdminMobileBotControlController::class, 'turnOff'])->name('conversations.bot-control.off');
+            Route::post('conversations/{conversation}/bot-mode', [AdminMobileBotControlController::class, 'store'])->name('conversations.bot-mode');
             Route::post('contacts', [AdminMobileContactController::class, 'create'])->name('contacts.store');
             Route::get('poll/list', [AdminMobileWorkspaceController::class, 'pollList'])->name('poll.list');
             Route::get('dashboard/summary', [AdminMobileWorkspaceController::class, 'dashboardSummary'])->name('dashboard.summary');

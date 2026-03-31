@@ -49,6 +49,9 @@ class Conversation extends Model
         'close_reason',
         'reopened_at',
         'reopened_by',
+        'bot_auto_resume_enabled',
+        'bot_auto_resume_at',
+        'bot_last_admin_reply_at',
     ];
 
     protected $casts = [
@@ -68,6 +71,9 @@ class Conversation extends Model
         'urgent_marked_at' => 'datetime',
         'closed_at' => 'datetime',
         'reopened_at' => 'datetime',
+        'bot_auto_resume_enabled' => 'boolean',
+        'bot_auto_resume_at' => 'datetime',
+        'bot_last_admin_reply_at' => 'datetime',
     ];
 
     // -------------------------------------------------------------------------
@@ -330,6 +336,8 @@ class Conversation extends Model
             'assigned_admin_id' => null,
             'released_to_bot_at' => now(),
             'last_admin_intervention_at' => now(),
+            'bot_auto_resume_enabled' => false,
+            'bot_auto_resume_at' => null,
             'needs_human'      => false,
         ];
 
@@ -338,6 +346,31 @@ class Conversation extends Model
         }
 
         $this->update($updates);
+    }
+
+    public function shouldAutoResumeBot(): bool
+    {
+        return $this->isAdminTakeover()
+            && (bool) ($this->bot_auto_resume_enabled ?? false)
+            && $this->bot_auto_resume_at !== null
+            && $this->bot_auto_resume_at->lte(now());
+    }
+
+    public function armBotAutoResume(int $minutes = 15): void
+    {
+        $this->update([
+            'bot_auto_resume_enabled' => true,
+            'bot_auto_resume_at' => now()->addMinutes($minutes),
+            'bot_last_admin_reply_at' => now(),
+        ]);
+    }
+
+    public function clearBotAutoResume(): void
+    {
+        $this->update([
+            'bot_auto_resume_enabled' => false,
+            'bot_auto_resume_at' => null,
+        ]);
     }
 
     // -------------------------------------------------------------------------

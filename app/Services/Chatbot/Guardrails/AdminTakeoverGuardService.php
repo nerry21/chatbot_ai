@@ -3,12 +3,19 @@
 namespace App\Services\Chatbot\Guardrails;
 
 use App\Models\Conversation;
+use App\Services\Chatbot\BotAutomationToggleService;
 
 class AdminTakeoverGuardService
 {
+    public function __construct(
+        private readonly ?BotAutomationToggleService $botToggleService = null,
+    ) {}
+
     public function shouldSuppressAutomation(Conversation $conversation): bool
     {
-        return $conversation->isAutomationSuppressed();
+        $normalizedConversation = $this->botToggleService?->ensureAutoResumed($conversation) ?? $conversation;
+
+        return $normalizedConversation->isAutomationSuppressed();
     }
 
     /**
@@ -25,6 +32,8 @@ class AdminTakeoverGuardService
      */
     public function context(Conversation $conversation): array
     {
+        $conversation = $this->botToggleService?->ensureAutoResumed($conversation) ?? $conversation;
+
         return [
             'admin_takeover' => $this->shouldSuppressAutomation($conversation),
             'handoff_admin_id' => $conversation->handoff_admin_id,

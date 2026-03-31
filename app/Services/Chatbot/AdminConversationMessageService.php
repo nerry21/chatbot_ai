@@ -15,6 +15,7 @@ class AdminConversationMessageService
 {
     public function __construct(
         private readonly ConversationTakeoverService $takeoverService,
+        private readonly BotAutomationToggleService $botToggleService,
         private readonly ConversationManagerService $conversationManager,
         private readonly ConversationOutboundRouterService $outboundRouter,
         private readonly AdminCorrectionLoggerService $adminCorrectionLogger,
@@ -93,13 +94,11 @@ class AdminConversationMessageService
                 ];
             }
 
-            if (! $conversation->isAdminTakeover() || (int) ($conversation->assigned_admin_id ?? 0) !== $adminId) {
-                $conversation = $this->takeoverService->takeOver(
-                    conversation: $conversation,
-                    adminId: $adminId,
-                    reason: 'admin_manual_reply',
-                );
-            }
+            $conversation = $this->botToggleService->registerAdminReply(
+                conversation: $conversation,
+                adminId: $adminId,
+                autoResumeMinutes: $this->botToggleService->autoResumeMinutes(),
+            );
 
             $adminName = User::query()->whereKey($adminId)->value('name');
             $message = $this->conversationManager->appendAdminOutboundMessage(

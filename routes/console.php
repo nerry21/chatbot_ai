@@ -39,3 +39,9 @@ Schedule::command('chatbot:cleanup --dry-run=0')
     ->withoutOverlapping()
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/chatbot-cleanup.log'));
+
+Schedule::command('chatbot:reactivate-timed-out-bots --limit=100')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->appendOutputTo(storage_path('logs/chatbot-bot-auto-resume.log'));

@@ -21,6 +21,7 @@ use App\Services\AI\UnderstandingResultAdapterService;
 use App\Services\AI\Learning\LearningSignalLoggerService;
 use App\Services\Booking\BookingAssistantService;
 use App\Services\Booking\BookingFlowStateMachine;
+use App\Services\Chatbot\BotAutomationToggleService;
 use App\Services\Chatbot\ConversationContextLoaderService;
 use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Chatbot\ConversationOutboundRouterService;
@@ -62,6 +63,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     public function handle(
         ConversationContextLoaderService $contextLoader,
         AdminTakeoverGuardService $adminTakeoverGuard,
+        BotAutomationToggleService $botToggleService,
         PolicyGuardService $policyGuard,
         HallucinationGuardService $hallucinationGuard,
         GroundedResponseFactsBuilderService $groundedFactsBuilder,
@@ -159,6 +161,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         }
 
         try {
+            $conversation = $botToggleService->resumeIfDue($conversation);
             // ── 1.5 Guard: admin takeover — bot pipeline suppressed ─────────
             // This guard MUST run before ANY AI pipeline step.
             // When handoff_mode = 'admin', the conversation is owned by a human;

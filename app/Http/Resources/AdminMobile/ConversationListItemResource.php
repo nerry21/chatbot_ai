@@ -20,6 +20,10 @@ class ConversationListItemResource extends JsonResource
         $lastMessageSenderType = (string) ($this->last_message_sender_type ?? '');
         $lastMessagePreview = trim((string) ($this->last_message_preview ?? ''));
         $mergedConversationIds = collect($this->merged_conversation_ids ?? [])->values()->all();
+        $resumeAt = $this->bot_auto_resume_at?->toIso8601String()
+            ?? ($this->isAutomationSuppressed() && $this->last_admin_intervention_at !== null
+                ? $this->last_admin_intervention_at->copy()->addMinutes((int) config('chatbot.admin_mobile.bot_auto_resume_after_minutes', 15))->toIso8601String()
+                : null);
 
         return [
             'id' => $this->id,
@@ -42,6 +46,11 @@ class ConversationListItemResource extends JsonResource
                 ?? Str::headline((string) $status),
             'operational_mode' => $this->currentOperationalMode(),
             'operational_mode_label' => $this->currentOperationalModeLabel(),
+            'bot_enabled' => ! $this->isAutomationSuppressed(),
+            'bot_paused' => (bool) $this->bot_paused,
+            'bot_paused_reason' => $this->bot_paused_reason,
+            'bot_auto_resume_after_minutes' => (int) config('chatbot.admin_mobile.bot_auto_resume_after_minutes', 15),
+            'bot_auto_resume_at' => $resumeAt,
             'operational_mode_palette' => $this->currentOperationalModePalette(),
             'needs_human' => (bool) $this->needs_human,
             'is_urgent' => (bool) $this->is_urgent,
@@ -62,6 +71,14 @@ class ConversationListItemResource extends JsonResource
                 'label' => $lastMessageAt?->diffForHumans(),
             ],
             'badges' => $this->badges($status),
+            'bot_control' => [
+                'enabled' => ! $this->isAdminTakeover() && ! $this->isBotPaused(),
+                'paused' => (bool) $this->bot_paused,
+                'human_takeover' => $this->isAdminTakeover(),
+                'auto_resume_enabled' => (bool) ($this->bot_auto_resume_enabled ?? false),
+                'auto_resume_at' => $resumeAt,
+                'last_admin_reply_at' => $this->bot_last_admin_reply_at?->toIso8601String(),
+            ],
         ];
     }
 

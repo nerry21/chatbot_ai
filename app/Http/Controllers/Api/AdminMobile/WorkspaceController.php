@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\ConversationState;
+use App\Services\Chatbot\BotAutomationToggleService;
 use App\Services\Chatbot\ConversationInsightService;
 use App\Services\Chatbot\ConversationReadService;
 use App\Services\Mobile\MobileConversationService;
@@ -44,6 +45,7 @@ class WorkspaceController extends Controller
         private readonly ConversationReadService $readService,
         private readonly ConversationInsightService $insightService,
         private readonly MobileConversationService $mobileConversationService,
+        private readonly BotAutomationToggleService $botToggleService,
     ) {}
 
     public function workspace(Request $request): JsonResponse
@@ -53,6 +55,8 @@ class WorkspaceController extends Controller
         $paginator = $this->conversationListQuery($query['scope'], $query['search'], $query['channel'], $userId)
             ->paginate($query['per_page'], ['*'], 'page', $query['page'])
             ->withQueryString();
+
+        $this->normalizePaginatorConversations($paginator, $userId);
 
         return $this->successResponse('Workspace admin mobile berhasil diambil.', [
             'workspace' => [
@@ -74,6 +78,8 @@ class WorkspaceController extends Controller
         $paginator = $this->conversationListQuery($query['scope'], $query['search'], $query['channel'], $userId)
             ->paginate($query['per_page'], ['*'], 'page', $query['page'])
             ->withQueryString();
+
+        $this->normalizePaginatorConversations($paginator, $userId);
 
         return $this->successResponse('Daftar percakapan admin mobile berhasil diambil.', [
             'conversations' => $paginator->getCollection()->map(fn (Conversation $conversation): array => $this->conversationListItem($conversation, $userId))->values()->all(),
@@ -138,6 +144,8 @@ class WorkspaceController extends Controller
         $paginator = $this->conversationListQuery($query['scope'], $query['search'], $query['channel'], $userId)
             ->paginate($query['per_page'], ['*'], 'page', $query['page'])
             ->withQueryString();
+
+        $this->normalizePaginatorConversations($paginator, $userId);
 
         return $this->successResponse('Polling list admin mobile berhasil.', [
             'conversations' => $paginator->getCollection()->map(fn (Conversation $conversation): array => $this->conversationListItem($conversation, $userId))->values()->all(),
@@ -293,8 +301,34 @@ class WorkspaceController extends Controller
             ->limit(1);
     }
 
+    private function normalizePaginatorConversations(LengthAwarePaginator $paginator, int $userId): void
+    {
+        $normalized = $paginator->getCollection()->map(function (Conversation $conversation) use ($userId): Conversation {
+            $attributes = [
+                'last_message_preview' => $conversation->getAttribute('last_message_preview'),
+                'last_message_sender_type' => $conversation->getAttribute('last_message_sender_type'),
+                'unread_messages_count' => $conversation->getAttribute('unread_messages_count'),
+            ];
+
+            $conversation = $this->botToggleService->ensureAutoResumed($conversation, $userId);
+            $conversation->loadMissing(['customer', 'assignedAdmin']);
+
+            foreach ($attributes as $key => $value) {
+                if ($value !== null && $conversation->getAttribute($key) === null) {
+                    $conversation->setAttribute($key, $value);
+                }
+            }
+
+            return $conversation;
+        });
+
+        $paginator->setCollection($normalized);
+    }
+
     private function loadConversationDetail(Conversation $conversation): Conversation
     {
+        $conversation = $this->botToggleService->ensureAutoResumed($conversation);
+
         $conversation->load([
             'customer.tags',
             'assignedAdmin',
@@ -341,6 +375,15 @@ class WorkspaceController extends Controller
             'status_label' => $conversation->status?->label() ?? ucfirst((string) $conversation->status?->value),
             'operational_mode' => $conversation->currentOperationalMode(),
             'operational_mode_label' => $conversation->currentOperationalModeLabel(),
+            'bot_enabled' => ! $conversation->isAutomationSuppressed(),
+            'bot_paused' => (bool) $conversation->bot_paused,
+            'handoff_mode' => (string) ($conversation->handoff_mode ?? 'bot'),
+            'bot_paused_reason' => $conversation->bot_paused_reason,
+            'last_admin_intervention_at' => $conversation->last_admin_intervention_at?->toIso8601String(),
+            'bot_auto_resume_after_minutes' => (int) config('chatbot.admin_mobile.bot_auto_resume_after_minutes', 15),
+            'bot_auto_resume_at' => $conversation->isAutomationSuppressed() && $conversation->last_admin_intervention_at !== null
+                ? $conversation->last_admin_intervention_at->copy()->addMinutes((int) config('chatbot.admin_mobile.bot_auto_resume_after_minutes', 15))->toIso8601String()
+                : null,
             'unread_count' => $unreadCount,
             'badges' => array_values(array_filter([
                 $conversation->currentOperationalModeLabel(),
@@ -366,6 +409,7 @@ class WorkspaceController extends Controller
                 'phone' => (string) ($customer?->display_contact ?? '-'),
                 'display_contact' => (string) ($customer?->display_contact ?? '-'),
             ],
+            'bot' => $this->botToggleService->statePayload($conversation),
             'quick_details' => [
                 'channel' => $listItem['channel_label'],
                 'status' => $listItem['status_label'],
