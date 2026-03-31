@@ -42,6 +42,8 @@ class ConversationDetailResource extends JsonResource
             'latest_message' => $latestMessage !== null
                 ? new ConversationMessageResource($latestMessage)
                 : null,
+            'merged_conversation_count' => (int) ($this->merged_conversation_count ?? 1),
+            'merged_conversation_ids' => collect($this->merged_conversation_ids ?? [])->values()->all(),
         ]);
     }
 }

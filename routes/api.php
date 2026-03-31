@@ -60,6 +60,7 @@ Route::prefix('admin-mobile')
             Route::get('conversations/{conversation}/poll', [AdminMobileWorkspaceController::class, 'pollConversation'])->name('conversations.poll');
             Route::post('conversations/{conversation}/reply', [AdminMobileReplyController::class, 'store'])->name('conversations.reply');
             Route::post('conversations/{conversation}/send-contact', [AdminMobileContactController::class, 'store'])->name('conversations.send-contact');
+            Route::post('contacts', [AdminMobileContactController::class, 'create'])->name('contacts.store');
             Route::get('poll/list', [AdminMobileWorkspaceController::class, 'pollList'])->name('poll.list');
             Route::get('dashboard/summary', [AdminMobileWorkspaceController::class, 'dashboardSummary'])->name('dashboard.summary');
             Route::get('meta/filters', [AdminMobileWorkspaceController::class, 'metaFilters'])->name('meta.filters');

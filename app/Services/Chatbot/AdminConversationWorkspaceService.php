@@ -2,6 +2,7 @@
 
 namespace App\Services\Chatbot;
 
+use App\Enums\ConversationChannel;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\ConversationState;
@@ -104,14 +105,22 @@ class AdminConversationWorkspaceService
     public function listData(int $userId, array $filters = []): array
     {
         $normalized = $this->normalizeFilters($filters);
-        $conversations = $this->conversationListQuery(
+
+        $rawConversations = $this->conversationListQuery(
             scope: $normalized['scope'],
             search: $normalized['search'],
             channel: $normalized['channel'],
             userId: $userId,
             sortBy: $normalized['sort_by'],
             sortDir: $normalized['sort_dir'],
-        )->paginate($normalized['per_page'])->withQueryString();
+        )->get();
+
+        $aggregated = $this->aggregateConversationCollection($rawConversations, $userId);
+        $conversations = $this->paginateCollection(
+            items: $aggregated,
+            perPage: $normalized['per_page'],
+            page: request()->integer('page', 1),
+        );
 
         return [
             'scope' => $normalized['scope'],
@@ -139,7 +148,10 @@ class AdminConversationWorkspaceService
             ),
             'conversations' => $conversations,
             'pagination' => $this->paginationMeta($conversations),
-            'selectedConversationId' => $normalized['selected_conversation_id'],
+            'selectedConversationId' => $this->resolveSelectedConversationIdFromCollection(
+                preferredConversationId: $normalized['selected_conversation_id'],
+                listedConversations: $conversations->getCollection(),
+            ),
             'lastUpdatedAt' => now()->toIso8601String(),
         ];
     }
@@ -155,17 +167,9 @@ class AdminConversationWorkspaceService
         $conversation = $this->loadConversationDetail($conversation, $userId);
 
         if ($markRead) {
-            $this->readService->markAsRead($conversation, $userId);
-            $conversationForReadStamp = Conversation::query()->find($conversation->id);
-
-            if ($conversationForReadStamp !== null) {
-                $this->mobileConversationService->touchAdminRead($conversationForReadStamp);
-                $conversation->last_read_at_admin = $conversationForReadStamp->fresh()?->last_read_at_admin ?? now();
-            } else {
-                $conversation->last_read_at_admin = now();
-            }
-
+            $this->markConversationGroupAsRead($conversation, $userId);
             $conversation->setAttribute('unread_messages_count', 0);
+            $conversation->last_read_at_admin = now();
         }
 
         $messageGroups = $this->groupedMessagesByDate($conversation->messages);
@@ -218,11 +222,12 @@ class AdminConversationWorkspaceService
         int $userId,
         ?int $afterMessageId = null,
     ): array {
-        $detail = $this->conversationDetailData($conversation, $userId, false);
-        $selectedConversation = $detail['selectedConversation'];
+        $selectedConversation = $this->loadConversationDetail($conversation, $userId);
+        $groupConversationIds = $this->conversationGroupIds($selectedConversation);
 
-        $messagesQuery = $selectedConversation->messages()
-            ->with('senderUser');
+        $messagesQuery = ConversationMessage::query()
+            ->with('senderUser')
+            ->whereIn('conversation_id', $groupConversationIds);
 
         if ($afterMessageId !== null) {
             $messages = $messagesQuery
@@ -232,6 +237,7 @@ class AdminConversationWorkspaceService
                 ->get();
         } else {
             $messages = $messagesQuery
+                ->orderByDesc('sent_at')
                 ->orderByDesc('id')
                 ->limit((int) config('chatbot.admin_mobile.max_messages_per_fetch', 120))
                 ->get()
@@ -244,9 +250,9 @@ class AdminConversationWorkspaceService
             'messages' => $messages,
             'messageGroups' => $this->groupedMessagesByDate($messages),
             'threadGroups' => $this->threadGroups($this->groupedMessagesByDate($messages)),
-            'latestMessageId' => $selectedConversation->messages()->max('id'),
+            'latestMessageId' => ConversationMessage::query()->whereIn('conversation_id', $groupConversationIds)->max('id'),
             'deltaCount' => $messages->count(),
-            'unreadCount' => $this->readService->unreadCountForConversation($selectedConversation, $userId),
+            'unreadCount' => $this->groupUnreadCount($groupConversationIds, $userId),
             'lastUpdatedAt' => now()->toIso8601String(),
             'pollIntervalMs' => (int) config('chatbot.admin_mobile.poll_interval_ms', 3000),
         ];
@@ -348,7 +354,18 @@ class AdminConversationWorkspaceService
                 $this->applyScope($scopeQuery, $scope, $userId);
             }
 
-            $scopeTotals[$scope] = (int) $scopeQuery->count('conversations.id');
+            $scopeTotals[$scope] = $this->aggregateConversationCollection(
+                $scopeQuery
+                    ->with(['customer', 'assignedAdmin'])
+                    ->select('conversations.*')
+                    ->selectSub($this->latestMessagePreviewSubquery(), 'last_message_preview')
+                    ->selectSub($this->latestMessageSenderSubquery(), 'last_message_sender_type')
+                    ->selectSub($this->readService->unreadCountSubquery($userId), 'unread_messages_count')
+                    ->orderByDesc('conversations.last_message_at')
+                    ->orderByDesc('conversations.id')
+                    ->get(),
+                $userId,
+            )->count();
         }
 
         return [
@@ -420,8 +437,7 @@ class AdminConversationWorkspaceService
         int $userId,
         string $sortBy,
         string $sortDir,
-    ): Builder
-    {
+    ): Builder {
         $sortColumn = self::SORT_COLUMNS[$sortBy] ?? self::SORT_COLUMNS['last_message_at'];
         $query = Conversation::query()
             ->with(['customer', 'assignedAdmin'])
@@ -517,7 +533,13 @@ class AdminConversationWorkspaceService
         ?int $selectedConversationId = null,
     ): ?Conversation {
         if ($selectedConversation !== null) {
-            return $selectedConversation;
+            $resolvedId = $this->representativeConversationIdForConversation($selectedConversation)
+                ?? $selectedConversation->id;
+
+            /** @var Conversation|null $listedMatch */
+            $listedMatch = $conversations->getCollection()->firstWhere('id', $resolvedId);
+
+            return $listedMatch ?? Conversation::query()->find($resolvedId);
         }
 
         if ($selectedConversationId !== null) {
@@ -528,7 +550,12 @@ class AdminConversationWorkspaceService
                 return $listedConversation;
             }
 
-            return Conversation::query()->find($selectedConversationId);
+            $resolvedId = $this->representativeConversationIdByConversationId($selectedConversationId) ?? $selectedConversationId;
+
+            /** @var Conversation|null $resolvedListedConversation */
+            $resolvedListedConversation = $conversations->getCollection()->firstWhere('id', $resolvedId);
+
+            return $resolvedListedConversation ?? Conversation::query()->find($resolvedId);
         }
 
         /** @var Conversation|null $firstConversation */
@@ -553,8 +580,11 @@ class AdminConversationWorkspaceService
             ])
             ->findOrFail($conversation->id);
 
-        $messages = $conversation->messages()
+        $groupConversationIds = $this->conversationGroupIds($conversation);
+
+        $messages = ConversationMessage::query()
             ->with('senderUser')
+            ->whereIn('conversation_id', $groupConversationIds)
             ->orderByDesc('sent_at')
             ->orderByDesc('id')
             ->limit((int) config('chatbot.admin_mobile.max_messages_per_fetch', 120))
@@ -562,19 +592,21 @@ class AdminConversationWorkspaceService
             ->sortByDesc(fn (ConversationMessage $message) => $message->sent_at?->timestamp ?? $message->id)
             ->values();
 
+        $latestMessage = $messages->first();
+
         $conversation->setRelation('messages', $messages);
-        $conversation->setAttribute(
-            'unread_messages_count',
-            $this->readService->unreadCountForConversation($conversation, $userId),
-        );
+        $conversation->setAttribute('unread_messages_count', $this->groupUnreadCount($groupConversationIds, $userId));
         $conversation->setAttribute(
             'last_message_preview',
-            (string) ($conversation->last_message_preview ?? ($messages->first()?->message_text ?? '')),
+            (string) ($latestMessage?->message_text ?? $conversation->last_message_preview ?? ''),
         );
         $conversation->setAttribute(
             'last_message_sender_type',
-            (string) ($conversation->last_message_sender_type ?? $this->messageSenderType($messages->first())),
+            (string) ($latestMessage !== null ? $this->messageSenderType($latestMessage) : ($conversation->last_message_sender_type ?? '')),
         );
+        $conversation->setAttribute('merged_conversation_ids', $groupConversationIds->values()->all());
+        $conversation->setAttribute('merged_conversation_count', $groupConversationIds->count());
+        $conversation->setAttribute('merge_key', $this->conversationMergeKey($conversation));
 
         return $conversation;
     }
@@ -722,5 +754,214 @@ class AdminConversationWorkspaceService
         return is_string($message->sender_type)
             ? $message->sender_type
             : (string) $message->sender_type?->value;
+    }
+
+    /**
+     * @param  Collection<int, Conversation>  $conversations
+     * @return Collection<int, Conversation>
+     */
+    private function aggregateConversationCollection(Collection $conversations, int $userId): Collection
+    {
+        return $conversations
+            ->groupBy(fn (Conversation $conversation): string => $this->conversationMergeKey($conversation))
+            ->map(function (Collection $group) use ($userId): Conversation {
+                /** @var Conversation $representative */
+                $representative = $group
+                    ->sortByDesc(fn (Conversation $conversation): int => $conversation->last_message_at?->timestamp ?? $conversation->id)
+                    ->first();
+
+                $groupIds = $group->pluck('id')->filter()->map(fn (mixed $id): int => (int) $id)->values();
+                $representative->setAttribute('merged_conversation_ids', $groupIds->all());
+                $representative->setAttribute('merged_conversation_count', $groupIds->count());
+                $representative->setAttribute('merge_key', $this->conversationMergeKey($representative));
+                $representative->setAttribute(
+                    'unread_messages_count',
+                    $this->groupUnreadCount($groupIds, $userId, $group),
+                );
+
+                $latestConversation = $group
+                    ->sortByDesc(fn (Conversation $conversation): int => $conversation->last_message_at?->timestamp ?? $conversation->id)
+                    ->first();
+
+                if ($latestConversation !== null) {
+                    $representative->last_message_at = $latestConversation->last_message_at;
+                    $representative->setAttribute(
+                        'last_message_preview',
+                        (string) ($latestConversation->last_message_preview ?? $representative->last_message_preview ?? ''),
+                    );
+                    $representative->setAttribute(
+                        'last_message_sender_type',
+                        (string) ($latestConversation->last_message_sender_type ?? $representative->last_message_sender_type ?? ''),
+                    );
+                }
+
+                return $representative;
+            })
+            ->sortByDesc(fn (Conversation $conversation): int => $conversation->last_message_at?->timestamp ?? $conversation->id)
+            ->values();
+    }
+
+    private function conversationMergeKey(Conversation $conversation): string
+    {
+        $channel = (string) $conversation->channel;
+
+        if ($channel !== ConversationChannel::WhatsApp->value) {
+            return $channel.':conversation:'.$conversation->id;
+        }
+
+        $customer = $conversation->relationLoaded('customer') ? $conversation->customer : $conversation->customer()->first();
+        $phone = trim((string) ($customer?->phone_e164 ?? ''));
+
+        if ($phone !== '') {
+            return $channel.':phone:'.mb_strtolower($phone, 'UTF-8');
+        }
+
+        return $channel.':customer:'.(string) $conversation->customer_id;
+    }
+
+    /**
+     * @return Collection<int, int>
+     */
+    private function conversationGroupIds(Conversation $conversation): Collection
+    {
+        $existing = collect($conversation->getAttribute('merged_conversation_ids'))
+            ->filter(fn (mixed $id): bool => is_numeric($id))
+            ->map(fn (mixed $id): int => (int) $id)
+            ->values();
+
+        if ($existing->isNotEmpty()) {
+            return $existing;
+        }
+
+        if ((string) $conversation->channel !== ConversationChannel::WhatsApp->value) {
+            return collect([(int) $conversation->id]);
+        }
+
+        $phone = trim((string) ($conversation->customer?->phone_e164 ?? ''));
+
+        if ($phone === '') {
+            return collect([(int) $conversation->id]);
+        }
+
+        return Conversation::query()
+            ->where('channel', ConversationChannel::WhatsApp->value)
+            ->whereHas('customer', fn (Builder $query) => $query->where('phone_e164', $phone))
+            ->orderByDesc('last_message_at')
+            ->orderByDesc('id')
+            ->pluck('id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->values();
+    }
+
+    /**
+     * @param  Collection<int, int>  $conversationIds
+     * @param  Collection<int, Conversation>|null  $loadedConversations
+     */
+    private function groupUnreadCount(Collection $conversationIds, int $userId, ?Collection $loadedConversations = null): int
+    {
+        if ($conversationIds->isEmpty()) {
+            return 0;
+        }
+
+        if ($loadedConversations !== null && $loadedConversations->isNotEmpty()) {
+            return (int) $loadedConversations->sum(function (Conversation $conversation) use ($userId): int {
+                $preloaded = $conversation->getAttribute('unread_messages_count');
+
+                if (is_numeric($preloaded)) {
+                    return (int) $preloaded;
+                }
+
+                return $this->readService->unreadCountForConversation($conversation, $userId);
+            });
+        }
+
+        return Conversation::query()
+            ->whereIn('id', $conversationIds)
+            ->get()
+            ->sum(fn (Conversation $conversation): int => $this->readService->unreadCountForConversation($conversation, $userId));
+    }
+
+    private function markConversationGroupAsRead(Conversation $conversation, int $userId): void
+    {
+        $groupConversations = Conversation::query()
+            ->whereIn('id', $this->conversationGroupIds($conversation))
+            ->get();
+
+        foreach ($groupConversations as $groupConversation) {
+            $this->readService->markAsRead($groupConversation, $userId);
+            $this->mobileConversationService->touchAdminRead($groupConversation);
+        }
+    }
+
+    private function representativeConversationIdForConversation(Conversation $conversation): ?int
+    {
+        if ((string) $conversation->channel !== ConversationChannel::WhatsApp->value) {
+            return $conversation->id;
+        }
+
+        $phone = trim((string) ($conversation->customer?->phone_e164 ?? ''));
+
+        if ($phone === '') {
+            return $conversation->id;
+        }
+
+        return Conversation::query()
+            ->where('channel', ConversationChannel::WhatsApp->value)
+            ->whereHas('customer', fn (Builder $query) => $query->where('phone_e164', $phone))
+            ->orderByDesc('last_message_at')
+            ->orderByDesc('id')
+            ->value('id');
+    }
+
+    private function representativeConversationIdByConversationId(int $conversationId): ?int
+    {
+        $conversation = Conversation::query()->with('customer')->find($conversationId);
+
+        if (! $conversation instanceof Conversation) {
+            return null;
+        }
+
+        return $this->representativeConversationIdForConversation($conversation);
+    }
+
+    /**
+     * @param  Collection<int, Conversation>  $listedConversations
+     */
+    private function resolveSelectedConversationIdFromCollection(?int $preferredConversationId, Collection $listedConversations): ?int
+    {
+        if ($preferredConversationId !== null) {
+            $resolvedId = $this->representativeConversationIdByConversationId($preferredConversationId)
+                ?? $preferredConversationId;
+
+            if ($listedConversations->contains(fn (Conversation $conversation): bool => (int) $conversation->id === $resolvedId)) {
+                return $resolvedId;
+            }
+        }
+
+        /** @var Conversation|null $first */
+        $first = $listedConversations->first();
+
+        return $first?->id;
+    }
+
+    /**
+     * @param  Collection<int, Conversation>  $items
+     */
+    private function paginateCollection(Collection $items, int $perPage, int $page): LengthAwarePaginator
+    {
+        $page = max($page, 1);
+        $total = $items->count();
+        $results = $items->slice(($page - 1) * $perPage, $perPage)->values();
+
+        return new LengthAwarePaginator(
+            $results,
+            $total,
+            $perPage,
+            $page,
+            [
+                'path' => request()->url(),
+                'query' => request()->query(),
+            ],
+        );
     }
 }

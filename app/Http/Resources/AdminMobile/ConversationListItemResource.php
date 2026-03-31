@@ -19,11 +19,19 @@ class ConversationListItemResource extends JsonResource
         $lastMessageAt = $this->last_message_at;
         $lastMessageSenderType = (string) ($this->last_message_sender_type ?? '');
         $lastMessagePreview = trim((string) ($this->last_message_preview ?? ''));
+        $mergedConversationIds = collect($this->merged_conversation_ids ?? [])->values()->all();
 
         return [
             'id' => $this->id,
+            'merge_key' => $this->merge_key,
+            'merged_conversation_count' => (int) ($this->merged_conversation_count ?? max(1, count($mergedConversationIds))),
+            'merged_conversation_ids' => $mergedConversationIds,
             'customer' => $this->relationLoaded('customer') && $this->customer !== null
                 ? new CustomerProfileResource($this->customer)
+                : null,
+            'customer_id' => (int) ($this->customer_id ?? 0),
+            'customer_phone_e164' => $this->relationLoaded('customer') && $this->customer !== null
+                ? $this->customer->phone_e164
                 : null,
             'channel' => $this->channel,
             'channel_label' => $this->channel_label,
@@ -79,6 +87,14 @@ class ConversationListItemResource extends JsonResource
                 'palette' => 'slate',
             ],
         ];
+
+        if ((int) ($this->merged_conversation_count ?? 1) > 1) {
+            $badges[] = [
+                'key' => 'merged',
+                'label' => (int) $this->merged_conversation_count.' sesi digabung',
+                'palette' => 'emerald',
+            ];
+        }
 
         if (filled($this->source_app)) {
             $badges[] = [
