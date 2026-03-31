@@ -372,6 +372,7 @@ return [
         'default_per_page' => (int) env('ADMIN_MOBILE_DEFAULT_PER_PAGE', 18),
         'max_per_page' => (int) env('ADMIN_MOBILE_MAX_PER_PAGE', 50),
         'auth_token_ttl_days' => (int) env('ADMIN_MOBILE_AUTH_TOKEN_TTL_DAYS', 30),
+        'bot_auto_resume_after_minutes' => (int) env('ADMIN_MOBILE_BOT_AUTO_RESUME_AFTER_MINUTES', 15),
     ],
 
     /*

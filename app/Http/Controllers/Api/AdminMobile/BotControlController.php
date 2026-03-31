@@ -34,6 +34,7 @@ class BotControlController extends Controller
             'bot_enabled' => (bool) ($state['bot_enabled'] ?? false),
             'bot_paused' => (bool) ($state['bot_paused'] ?? false),
             'human_takeover' => (string) ($state['handoff_mode'] ?? 'bot') === 'admin',
+            'bot_auto_resume_after_minutes' => (int) ($state['bot_auto_resume_after_minutes'] ?? $this->botToggleService->autoResumeMinutes()),
             'bot_auto_resume_enabled' => (bool) ($state['bot_auto_resume_enabled'] ?? false),
             'bot_auto_resume_at' => $state['bot_auto_resume_at'] ?? null,
             'last_admin_reply_at' => $state['bot_last_admin_reply_at'] ?? null,
@@ -62,6 +63,7 @@ class BotControlController extends Controller
             'bot_enabled' => true,
             'bot_paused' => false,
             'human_takeover' => false,
+            'bot_auto_resume_after_minutes' => (int) ($state['bot_auto_resume_after_minutes'] ?? $this->botToggleService->autoResumeMinutes()),
             'bot_auto_resume_enabled' => false,
             'bot_auto_resume_at' => null,
             'bot' => $state,
@@ -89,6 +91,7 @@ class BotControlController extends Controller
             'bot_enabled' => false,
             'bot_paused' => true,
             'human_takeover' => true,
+            'bot_auto_resume_after_minutes' => (int) ($state['bot_auto_resume_after_minutes'] ?? $minutes),
             'bot_auto_resume_enabled' => true,
             'bot_auto_resume_at' => $state['bot_auto_resume_at'] ?? null,
             'last_admin_reply_at' => $state['bot_last_admin_reply_at'] ?? null,
@@ -127,6 +130,7 @@ class BotControlController extends Controller
                 : 'Bot dimatikan. Admin mengambil alih percakapan ini.',
             [
                 'conversation_id' => (int) $conversation->id,
+                'bot_auto_resume_after_minutes' => (int) ($state['bot_auto_resume_after_minutes'] ?? $this->botToggleService->autoResumeMinutes()),
                 'bot' => $state,
             ],
         );

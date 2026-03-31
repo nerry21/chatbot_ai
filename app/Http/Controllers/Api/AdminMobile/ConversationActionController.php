@@ -22,10 +22,10 @@ use App\Models\User;
 use App\Services\AdminMobile\AdminMobileAuthService;
 use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\AdminConversationWorkspaceService;
+use App\Services\Chatbot\BotAutomationToggleService;
 use App\Services\Chatbot\ConversationReadService;
 use App\Services\Chatbot\ConversationStatusService;
 use App\Services\Chatbot\ConversationTagService;
-use App\Services\Chatbot\ConversationTakeoverService;
 use App\Services\Chatbot\InternalNoteService;
 use App\Services\Mobile\MobileConversationService;
 use Illuminate\Http\JsonResponse;
@@ -40,9 +40,9 @@ class ConversationActionController extends Controller
         private readonly AdminMobileAuthService $adminMobileAuthService,
         private readonly AdminConversationWorkspaceService $workspaceService,
         private readonly AdminConversationMessageService $messageService,
+        private readonly BotAutomationToggleService $botToggleService,
         private readonly ConversationReadService $readService,
         private readonly MobileConversationService $mobileConversationService,
-        private readonly ConversationTakeoverService $takeoverService,
         private readonly ConversationTagService $tagService,
         private readonly InternalNoteService $noteService,
         private readonly ConversationStatusService $statusService,
@@ -125,9 +125,10 @@ class ConversationActionController extends Controller
         Conversation $conversation,
     ): JsonResponse {
         $user = $this->adminMobileAuthService->currentUser($request);
-        $updatedConversation = $this->takeoverService->takeOver(
+        $updatedConversation = $this->botToggleService->registerAdminTakeover(
             conversation: $conversation,
             adminId: $user->id,
+            autoResumeMinutes: $this->botToggleService->autoResumeMinutes(),
             reason: 'admin_mobile_takeover',
         );
         $detail = $this->workspaceService->conversationDetailData($updatedConversation, $user->id, false);
@@ -148,9 +149,9 @@ class ConversationActionController extends Controller
         Conversation $conversation,
     ): JsonResponse {
         $user = $this->adminMobileAuthService->currentUser($request);
-        $updatedConversation = $this->takeoverService->releaseToBot(
+        $updatedConversation = $this->botToggleService->turnBotOn(
             conversation: $conversation,
-            adminId: $user->id,
+            actorAdminId: $user->id,
             reason: 'admin_mobile_release',
         );
         $detail = $this->workspaceService->conversationDetailData($updatedConversation, $user->id, false);

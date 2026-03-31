@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Cache;
 class AdminConversationContactService
 {
     public function __construct(
-        private readonly ConversationTakeoverService $takeoverService,
+        private readonly BotAutomationToggleService $botToggleService,
         private readonly ConversationOutboundRouterService $outboundRouter,
         private readonly AuditLogService $audit,
     ) {}
@@ -111,13 +111,12 @@ class AdminConversationContactService
                 ];
             }
 
-            if (! $conversation->isAdminTakeover() || (int) ($conversation->assigned_admin_id ?? 0) !== $adminId) {
-                $conversation = $this->takeoverService->takeOver(
-                    conversation: $conversation,
-                    adminId: $adminId,
-                    reason: 'admin_send_contact',
-                );
-            }
+            $conversation = $this->botToggleService->registerAdminTakeover(
+                conversation: $conversation,
+                adminId: $adminId,
+                autoResumeMinutes: $this->botToggleService->autoResumeMinutes(),
+                reason: 'admin_send_contact',
+            );
 
             $adminName = User::query()->whereKey($adminId)->value('name');
 

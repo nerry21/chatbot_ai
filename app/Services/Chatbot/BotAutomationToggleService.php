@@ -41,45 +41,36 @@ class BotAutomationToggleService
         ?int $autoResumeMinutes = null,
         ?string $reason = null,
     ): Conversation {
-        $conversation = $this->takeoverService->takeOver(
+        return $this->registerAdminTakeover(
             conversation: $conversation,
             adminId: $actorAdminId,
+            autoResumeMinutes: $autoResumeMinutes,
             reason: $reason ?: 'bot_toggle_off',
         );
+    }
 
-        $minutes = $autoResumeMinutes ?? $this->autoResumeMinutes();
-
-        $conversation->forceFill([
-            'bot_auto_resume_enabled' => true,
-            'bot_auto_resume_at' => now()->addMinutes($minutes),
-            'bot_last_admin_reply_at' => now(),
-            'last_admin_intervention_at' => now(),
-        ])->save();
-
-        return $conversation->fresh(['customer', 'assignedAdmin', 'handoffAdmin']) ?? $conversation;
+    public function registerAdminTakeover(
+        Conversation $conversation,
+        ?int $adminId = null,
+        ?int $autoResumeMinutes = null,
+        string $reason = 'admin_manual_takeover',
+    ): Conversation {
+        return $this->registerAdminActivity(
+            conversation: $conversation,
+            adminId: $adminId,
+            autoResumeMinutes: $autoResumeMinutes,
+            reason: $reason,
+        );
     }
 
     public function registerAdminReply(Conversation $conversation, int $adminId, ?int $autoResumeMinutes = null): Conversation
     {
-        if (! $conversation->isAdminTakeover() || (int) ($conversation->assigned_admin_id ?? 0) !== $adminId) {
-            $conversation = $this->takeoverService->takeOver(
-                conversation: $conversation,
-                adminId: $adminId,
-                reason: 'admin_manual_reply',
-            );
-        }
-
-        $minutes = $autoResumeMinutes ?? $this->autoResumeMinutes();
-
-        $conversation->forceFill([
-            'bot_auto_resume_enabled' => true,
-            'bot_auto_resume_at' => now()->addMinutes($minutes),
-            'bot_last_admin_reply_at' => now(),
-            'last_admin_intervention_at' => now(),
-            'assigned_admin_id' => $adminId,
-        ])->save();
-
-        return $conversation->fresh(['customer', 'assignedAdmin', 'handoffAdmin']) ?? $conversation;
+        return $this->registerAdminActivity(
+            conversation: $conversation,
+            adminId: $adminId,
+            autoResumeMinutes: $autoResumeMinutes,
+            reason: 'admin_manual_reply',
+        );
     }
 
     public function shouldSuppressBot(Conversation $conversation): bool
@@ -166,6 +157,37 @@ class BotAutomationToggleService
         }
 
         $conversation->forceFill($updates)->save();
+    }
+
+    private function registerAdminActivity(
+        Conversation $conversation,
+        ?int $adminId = null,
+        ?int $autoResumeMinutes = null,
+        string $reason = 'admin_manual_activity',
+    ): Conversation {
+        $effectiveAdminId = $adminId ?? $conversation->assigned_admin_id;
+        $shouldRefreshTakeover = ! $conversation->isAdminTakeover()
+            || ($adminId !== null && (int) ($conversation->assigned_admin_id ?? 0) !== $adminId);
+
+        if ($shouldRefreshTakeover) {
+            $conversation = $this->takeoverService->takeOver(
+                conversation: $conversation,
+                adminId: $effectiveAdminId,
+                reason: $reason,
+            );
+        }
+
+        $minutes = $autoResumeMinutes ?? $this->autoResumeMinutes();
+
+        $conversation->forceFill([
+            'bot_auto_resume_enabled' => true,
+            'bot_auto_resume_at' => now()->addMinutes($minutes),
+            'bot_last_admin_reply_at' => now(),
+            'last_admin_intervention_at' => now(),
+            'assigned_admin_id' => $effectiveAdminId,
+        ])->save();
+
+        return $conversation->fresh(['customer', 'assignedAdmin', 'handoffAdmin']) ?? $conversation;
     }
 
     /**

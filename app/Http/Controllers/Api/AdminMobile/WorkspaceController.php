@@ -359,6 +359,21 @@ class WorkspaceController extends Controller
         $customerName = trim((string) ($customer?->name ?: 'Customer'));
         $lastMessageAt = $conversation->last_message_at;
         $unreadCount = (int) ($conversation->unread_messages_count ?? $this->readService->unreadCountForConversation($conversation, $userId));
+        $autoResumeMinutes = $this->botToggleService->autoResumeMinutes();
+        $resumeAt = $conversation->bot_auto_resume_at?->toIso8601String()
+            ?? ($conversation->isAutomationSuppressed() && $conversation->last_admin_intervention_at !== null
+                ? $conversation->last_admin_intervention_at->copy()->addMinutes($autoResumeMinutes)->toIso8601String()
+                : null);
+        $isAdminTakeover = $conversation->isAdminTakeover();
+        $botControl = [
+            'enabled' => ! $conversation->isAutomationSuppressed(),
+            'paused' => (bool) $conversation->bot_paused,
+            'human_takeover' => $isAdminTakeover,
+            'auto_resume_enabled' => (bool) ($conversation->bot_auto_resume_enabled ?? false),
+            'auto_resume_at' => $resumeAt,
+            'last_admin_reply_at' => $conversation->bot_last_admin_reply_at?->toIso8601String(),
+            'auto_resume_after_minutes' => $autoResumeMinutes,
+        ];
 
         return [
             'id' => (int) $conversation->id,
@@ -375,16 +390,17 @@ class WorkspaceController extends Controller
             'status_label' => $conversation->status?->label() ?? ucfirst((string) $conversation->status?->value),
             'operational_mode' => $conversation->currentOperationalMode(),
             'operational_mode_label' => $conversation->currentOperationalModeLabel(),
-            'bot_enabled' => ! $conversation->isAutomationSuppressed(),
+            'bot_enabled' => (bool) $botControl['enabled'],
             'bot_paused' => (bool) $conversation->bot_paused,
             'handoff_mode' => (string) ($conversation->handoff_mode ?? 'bot'),
             'bot_paused_reason' => $conversation->bot_paused_reason,
             'last_admin_intervention_at' => $conversation->last_admin_intervention_at?->toIso8601String(),
-            'bot_auto_resume_after_minutes' => (int) config('chatbot.admin_mobile.bot_auto_resume_after_minutes', 15),
-            'bot_auto_resume_at' => $conversation->isAutomationSuppressed() && $conversation->last_admin_intervention_at !== null
-                ? $conversation->last_admin_intervention_at->copy()->addMinutes((int) config('chatbot.admin_mobile.bot_auto_resume_after_minutes', 15))->toIso8601String()
-                : null,
+            'bot_auto_resume_after_minutes' => $autoResumeMinutes,
+            'bot_auto_resume_enabled' => (bool) ($conversation->bot_auto_resume_enabled ?? false),
+            'bot_auto_resume_at' => $resumeAt,
             'unread_count' => $unreadCount,
+            'is_admin_takeover' => $isAdminTakeover,
+            'bot_control' => $botControl,
             'badges' => array_values(array_filter([
                 $conversation->currentOperationalModeLabel(),
                 $conversation->is_urgent ? 'Urgent' : null,
@@ -400,6 +416,7 @@ class WorkspaceController extends Controller
     {
         $customer = $conversation->customer;
         $listItem = $this->conversationListItem($conversation, $userId);
+        $botState = $this->botToggleService->statePayload($conversation);
 
         return array_merge($listItem, [
             'customer' => [
@@ -409,7 +426,19 @@ class WorkspaceController extends Controller
                 'phone' => (string) ($customer?->display_contact ?? '-'),
                 'display_contact' => (string) ($customer?->display_contact ?? '-'),
             ],
-            'bot' => $this->botToggleService->statePayload($conversation),
+            'bot' => $botState,
+            'bot_control' => array_merge(
+                is_array($listItem['bot_control'] ?? null) ? $listItem['bot_control'] : [],
+                [
+                    'enabled' => (bool) ($botState['bot_enabled'] ?? false),
+                    'paused' => (bool) ($botState['bot_paused'] ?? false),
+                    'human_takeover' => (string) ($botState['handoff_mode'] ?? 'bot') === 'admin',
+                    'auto_resume_enabled' => (bool) ($botState['bot_auto_resume_enabled'] ?? false),
+                    'auto_resume_at' => $botState['bot_auto_resume_at'] ?? null,
+                    'last_admin_reply_at' => $botState['bot_last_admin_reply_at'] ?? null,
+                    'auto_resume_after_minutes' => (int) ($botState['bot_auto_resume_after_minutes'] ?? $this->botToggleService->autoResumeMinutes()),
+                ],
+            ),
             'quick_details' => [
                 'channel' => $listItem['channel_label'],
                 'status' => $listItem['status_label'],
