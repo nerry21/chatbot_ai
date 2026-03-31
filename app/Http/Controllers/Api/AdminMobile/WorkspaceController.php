@@ -2,10 +2,9 @@
 
 namespace App\Http\Controllers\Api\AdminMobile;
 
-use App\Enums\MessageDirection;
-use App\Enums\SenderType;
 use App\Http\Controllers\Api\AdminMobile\Concerns\RespondsWithAdminMobileJson;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\AdminMobile\ConversationMessageResource;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\ConversationState;
@@ -340,6 +339,7 @@ class WorkspaceController extends Controller
         ]);
 
         $messages = $conversation->messages()
+            ->with('senderUser')
             ->orderBy('sent_at')
             ->orderBy('id')
             ->limit(120)
@@ -478,26 +478,7 @@ class WorkspaceController extends Controller
      */
     private function threadMessagePayload(ConversationMessage $message): array
     {
-        $senderLabel = match ((string) $message->sender_type?->value) {
-            SenderType::Admin->value, SenderType::Agent->value => 'Admin',
-            SenderType::Bot->value => 'Bot',
-            default => 'Customer',
-        };
-
-        return [
-            'id' => (int) $message->id,
-            'message_id' => (int) $message->id,
-            'sender_type' => (string) ($message->sender_type?->value ?? ''),
-            'direction' => (string) ($message->direction?->value ?? ''),
-            'sender_label' => $senderLabel,
-            'message_text' => (string) ($message->message_text ?? ''),
-            'text' => (string) ($message->message_text ?? ''),
-            'sent_at' => $message->sent_at?->toIso8601String() ?? $message->created_at?->toIso8601String(),
-            'created_at' => $message->created_at?->toIso8601String(),
-            'is_mine' => in_array((string) ($message->direction?->value ?? ''), [MessageDirection::Outbound->value], true),
-            'delivery_status' => (string) ($message->delivery_status?->value ?? ''),
-            'status_label' => ucfirst((string) ($message->delivery_status?->value ?? 'sent')),
-        ];
+        return ConversationMessageResource::make($message)->resolve();
     }
 
     /**

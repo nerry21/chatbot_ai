@@ -255,6 +255,55 @@ class AdminMobileReadApiTest extends TestCase
             ->assertJsonPath('success', false);
     }
 
+    public function test_admin_mobile_messages_and_poll_include_image_media_payload(): void
+    {
+        $admin = User::factory()->create([
+            'name' => 'Media Admin',
+            'email' => 'media-admin@example.com',
+            'password' => Hash::make('super-secret'),
+            'is_chatbot_admin' => true,
+        ]);
+
+        $token = $this->loginAdmin($admin, 'super-secret');
+        [$conversation] = $this->seedWorkspaceConversation($admin);
+
+        ConversationMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => MessageDirection::Outbound,
+            'sender_type' => SenderType::Admin,
+            'message_type' => 'image',
+            'message_text' => 'Foto timbangan terbaru',
+            'raw_payload' => [
+                'outbound_payload' => [
+                    'image' => [
+                        'link' => 'https://spesial.online/storage/conversation-media/images/timbangan.jpg',
+                    ],
+                ],
+                'media_caption' => 'Foto timbangan terbaru',
+                'mime_type' => 'image/jpeg',
+            ],
+            'sent_at' => now()->subMinutes(2),
+            'delivery_status' => MessageDeliveryStatus::Sent,
+        ]);
+
+        $messages = $this->withToken($token)->getJson(route('api.admin-mobile.conversations.messages.index', [
+            'conversation' => $conversation,
+        ]));
+
+        $messages->assertOk()
+            ->assertJsonPath('data.messages.2.message_type', 'image')
+            ->assertJsonPath('data.messages.2.media.image_url', 'https://spesial.online/storage/conversation-media/images/timbangan.jpg')
+            ->assertJsonPath('data.messages.2.media.caption', 'Foto timbangan terbaru');
+
+        $poll = $this->withToken($token)->getJson(route('api.admin-mobile.conversations.poll', [
+            'conversation' => $conversation,
+        ]));
+
+        $poll->assertOk()
+            ->assertJsonPath('data.messages.2.message_type', 'image')
+            ->assertJsonPath('data.messages.2.media.image_url', 'https://spesial.online/storage/conversation-media/images/timbangan.jpg');
+    }
+
     public function test_mobile_customer_token_cannot_access_admin_mobile_routes(): void
     {
         $register = $this->postJson(route('api.mobile.auth.register'), [
