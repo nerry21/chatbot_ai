@@ -24,6 +24,10 @@ class ConversationMessageResource extends JsonResource
             ?? data_get($this->raw_payload, 'audio.link')
             ?? data_get($this->raw_payload, 'audio_url');
         $audioId = data_get($this->raw_payload, 'audio.id');
+        $imageLink = data_get($this->raw_payload, 'outbound_payload.image.link')
+            ?? data_get($this->raw_payload, 'image.link')
+            ?? data_get($this->raw_payload, 'image_url');
+        $imageId = data_get($this->raw_payload, 'image.id');
 
         if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
@@ -76,10 +80,14 @@ class ConversationMessageResource extends JsonResource
                 'is_booking_review' => filled(data_get($this->raw_payload, 'review_hash')),
             ],
             'media' => [
+                'image_url' => $imageLink,
+                'image_id' => $imageId,
                 'audio_url' => $audioLink,
                 'audio_id' => $audioId,
                 'mime_type' => data_get($this->raw_payload, 'mime_type'),
                 'caption' => data_get($this->raw_payload, 'media_caption'),
+                'original_name' => data_get($this->raw_payload, 'media_original_name'),
+                'size_bytes' => data_get($this->raw_payload, 'media_size_bytes'),
                 'is_voice_note' => (bool) (data_get($this->raw_payload, 'outbound_payload.audio.voice')
                     ?? data_get($this->raw_payload, 'audio.voice')
                     ?? ($this->message_type === 'audio')),

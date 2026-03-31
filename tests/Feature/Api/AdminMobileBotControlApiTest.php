@@ -5,11 +5,14 @@ namespace Tests\Feature\Api;
 use App\Enums\ConversationStatus;
 use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Conversation;
+use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class AdminMobileBotControlApiTest extends TestCase
@@ -94,6 +97,43 @@ class AdminMobileBotControlApiTest extends TestCase
             'message_text' => $emojiMessage,
         ]);
 
+        Queue::assertPushed(SendWhatsAppMessageJob::class, 1);
+    }
+
+    public function test_admin_reply_route_can_upload_gallery_image_for_whatsapp_delivery(): void
+    {
+        Storage::fake('public');
+        Queue::fake();
+
+        $admin = $this->createAdmin(['email' => 'gallery-admin@example.com']);
+        $token = $this->loginAdmin($admin);
+        $conversation = $this->createConversation(channel: 'whatsapp');
+        $image = UploadedFile::fake()->image('timbangan.jpg', 1200, 900);
+
+        $response = $this->withToken($token)->post(
+            route('api.admin-mobile.conversations.reply', ['conversation' => $conversation]),
+            [
+                'message_type' => 'image',
+                'caption' => 'Foto timbangan terbaru',
+                'image_file' => $image,
+            ],
+        );
+
+        $response->assertCreated()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.notice', 'Gambar admin berhasil diantrekan ke WhatsApp.')
+            ->assertJsonPath('data.transport', 'whatsapp')
+            ->assertJsonPath('data.duplicate', false);
+
+        /** @var ConversationMessage $message */
+        $message = ConversationMessage::query()->latest('id')->firstOrFail();
+
+        $this->assertSame('image', $message->message_type);
+        $this->assertSame('Foto timbangan terbaru', $message->message_text);
+        $this->assertNotEmpty(data_get($message->raw_payload, 'outbound_payload.image.link'));
+        $this->assertStringContainsString('/storage/conversation-media/images/', (string) data_get($message->raw_payload, 'outbound_payload.image.link'));
+
+        Storage::disk('public')->assertExists((string) data_get($message->raw_payload, 'media_storage_path'));
         Queue::assertPushed(SendWhatsAppMessageJob::class, 1);
     }
 

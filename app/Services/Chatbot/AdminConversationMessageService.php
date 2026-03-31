@@ -42,9 +42,11 @@ class AdminConversationMessageService
         array $outboundPayload = [],
     ): array {
         $normalizedText = trim(preg_replace('/\s+/u', ' ', $text) ?? $text);
-        $dedupeSeed = $messageType === 'audio'
-            ? (string) data_get($outboundPayload, 'audio.link', '')
-            : mb_strtolower($normalizedText, 'UTF-8');
+        $dedupeSeed = match ($messageType) {
+            'audio' => (string) data_get($outboundPayload, 'audio.link', ''),
+            'image' => (string) data_get($outboundPayload, 'image.link', ''),
+            default => mb_strtolower($normalizedText, 'UTF-8'),
+        };
 
         $fingerprint = hash('sha256', implode('|', [
             (string) $conversation->id,
@@ -120,7 +122,19 @@ class AdminConversationMessageService
                     ],
                     'media_caption' => data_get($outboundPayload, 'caption'),
                     'mime_type' => data_get($outboundPayload, 'mime_type'),
-                ] : []),
+                ] : ($messageType === 'image' ? [
+                    'outbound_payload' => [
+                        'image' => [
+                            'link' => (string) data_get($outboundPayload, 'image.link', ''),
+                        ],
+                    ],
+                    'media_caption' => data_get($outboundPayload, 'caption'),
+                    'mime_type' => data_get($outboundPayload, 'mime_type'),
+                    'media_original_name' => data_get($outboundPayload, 'original_name'),
+                    'media_size_bytes' => data_get($outboundPayload, 'size_bytes'),
+                    'media_storage_disk' => data_get($outboundPayload, 'storage_disk'),
+                    'media_storage_path' => data_get($outboundPayload, 'storage_path'),
+                ] : [])),
             );
 
             $this->adminCorrectionLogger->captureForAdminReply(

@@ -323,6 +323,22 @@ class WhatsAppSenderService
             ];
         }
 
+        if ($messageType === 'image') {
+            $image = is_array($providerPayload['image'] ?? null) ? $providerPayload['image'] : [];
+            $caption = trim((string) ($providerPayload['caption'] ?? $text));
+
+            return [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'image',
+                'image' => array_filter([
+                    'id' => Arr::get($image, 'id'),
+                    'link' => Arr::get($image, 'link'),
+                    'caption' => $caption !== '' ? $caption : null,
+                ], static fn (mixed $value): bool => filled($value)),
+            ];
+        }
+
         return [
             'messaging_product' => 'whatsapp',
             'to' => $to,
@@ -367,6 +383,17 @@ class WhatsAppSenderService
             return 'audio';
         }
 
+        if (
+            $messageType === 'image'
+            && is_array($providerPayload['image'] ?? null)
+            && (
+                filled($providerPayload['image']['id'] ?? null)
+                || filled($providerPayload['image']['link'] ?? null)
+            )
+        ) {
+            return 'image';
+        }
+
         return 'text';
     }
 
@@ -409,7 +436,7 @@ class WhatsAppSenderService
 
     private function shouldFallbackReengagementTemplate(string $resolvedType, int $errorCode, string $errorMessage): bool
     {
-        if (! in_array($resolvedType, ['text', 'audio', 'contacts', 'interactive'], true)) {
+        if (! in_array($resolvedType, ['text', 'audio', 'image', 'contacts', 'interactive'], true)) {
             return false;
         }
 

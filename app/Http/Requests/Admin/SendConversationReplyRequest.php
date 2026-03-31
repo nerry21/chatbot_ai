@@ -15,9 +15,10 @@ class SendConversationReplyRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'message_type' => ['nullable', 'string', Rule::in(['text', 'audio'])],
+            'message_type' => ['nullable', 'string', Rule::in(['text', 'audio', 'image'])],
             'message' => ['nullable', 'string', 'min:1', 'max:4096', 'required_if:message_type,text'],
             'audio_url' => ['nullable', 'url', 'max:2048', 'required_if:message_type,audio'],
+            'image_file' => ['nullable', 'file', 'image', 'max:5120', 'required_if:message_type,image'],
             'mime_type' => ['nullable', 'string', 'max:120'],
             'voice' => ['nullable', 'boolean'],
             'caption' => ['nullable', 'string', 'max:1000'],
@@ -31,6 +32,9 @@ class SendConversationReplyRequest extends FormRequest
             'message.max' => 'Pesan terlalu panjang (maksimal 4096 karakter).',
             'audio_url.required_if' => 'URL voice note wajib diisi.',
             'audio_url.url' => 'URL voice note tidak valid.',
+            'image_file.required_if' => 'Gambar wajib dipilih dari galeri.',
+            'image_file.image' => 'File yang dipilih harus berupa gambar.',
+            'image_file.max' => 'Ukuran gambar maksimal 5 MB.',
             'message_type.in' => 'Jenis pesan tidak didukung.',
         ];
     }

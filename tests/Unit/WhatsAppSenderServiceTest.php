@@ -113,4 +113,46 @@ class WhatsAppSenderServiceTest extends TestCase
         $this->assertSame('template', $requests[1]['type'] ?? null);
         $this->assertCount(2, $requests);
     }
+
+    public function test_it_sends_image_message_with_link_and_caption(): void
+    {
+        config()->set('chatbot.whatsapp.enabled', true);
+        config()->set('chatbot.whatsapp.access_token', 'test-token');
+        config()->set('chatbot.whatsapp.phone_number_id', '123456789');
+
+        $requests = [];
+
+        Http::fake(function ($request) use (&$requests) {
+            $body = json_decode($request->body(), true);
+            $requests[] = $body;
+
+            return Http::response([
+                'messages' => [
+                    ['id' => 'wamid.image-001'],
+                ],
+            ], 200);
+        });
+
+        $service = app(WhatsAppSenderService::class);
+
+        $result = $service->sendMessage(
+            toPhoneE164: '+6281234567890',
+            text: 'Foto timbangan terbaru',
+            messageType: 'image',
+            providerPayload: [
+                'image' => [
+                    'link' => 'https://example.com/storage/conversation-media/images/timbangan.jpg',
+                ],
+                'caption' => 'Foto timbangan terbaru',
+            ],
+        );
+
+        $this->assertSame('sent', $result['status']);
+        $this->assertSame('image', $requests[0]['type'] ?? null);
+        $this->assertSame(
+            'https://example.com/storage/conversation-media/images/timbangan.jpg',
+            $requests[0]['image']['link'] ?? null,
+        );
+        $this->assertSame('Foto timbangan terbaru', $requests[0]['image']['caption'] ?? null);
+    }
 }

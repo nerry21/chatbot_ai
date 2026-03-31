@@ -9,7 +9,9 @@ use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\ConversationReadService;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Storage;
 
 class ReplyController extends Controller
 {
@@ -37,9 +39,18 @@ class ReplyController extends Controller
         }
 
         $messageType = (string) ($validated['message_type'] ?? 'text');
+        if ($messageType === 'image' && ! $conversation->isWhatsApp()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Galeri saat ini hanya didukung untuk conversation WhatsApp.',
+            ], 422);
+        }
+
         $text = $messageType === 'audio'
             ? (string) (($validated['caption'] ?? '') ?: '[Voice note admin]')
-            : (string) ($validated['message'] ?? '');
+            : ($messageType === 'image'
+                ? (string) (($validated['caption'] ?? '') ?: '[Gambar admin]')
+                : (string) ($validated['message'] ?? ''));
 
         $outboundPayload = $messageType === 'audio'
             ? [
@@ -50,7 +61,9 @@ class ReplyController extends Controller
                 'mime_type' => $validated['mime_type'] ?? null,
                 'caption' => $validated['caption'] ?? null,
             ]
-            : [];
+            : ($messageType === 'image'
+                ? $this->storeImagePayload($request->file('image_file'), (string) ($validated['caption'] ?? ''))
+                : []);
 
         $result = $this->messageService->send(
             conversation: $conversation,
@@ -81,9 +94,11 @@ class ReplyController extends Controller
             : (
                 $messageType === 'audio'
                     ? 'Voice note admin berhasil diantrekan ke WhatsApp.'
+                    : ($messageType === 'image'
+                        ? 'Gambar admin berhasil diantrekan ke WhatsApp.'
                     : ($conversation->channel === 'mobile_live_chat'
                         ? 'Balasan admin berhasil dikirim ke live chat.'
-                        : 'Balasan admin berhasil diantrekan ke WhatsApp.')
+                        : 'Balasan admin berhasil diantrekan ke WhatsApp.'))
             );
 
         return $this->successResponse($notice, [
@@ -94,5 +109,30 @@ class ReplyController extends Controller
             'duplicate' => $duplicate,
             'delivery_status' => (string) ($result['dispatch_status'] ?? ''),
         ], $duplicate ? 200 : 201);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function storeImagePayload(?UploadedFile $imageFile, string $caption): array
+    {
+        if (! $imageFile instanceof UploadedFile) {
+            return [];
+        }
+
+        $storedPath = $imageFile->store('conversation-media/images', 'public');
+        $publicUrl = Storage::disk('public')->url($storedPath);
+
+        return [
+            'image' => [
+                'link' => $publicUrl,
+            ],
+            'caption' => $caption !== '' ? $caption : null,
+            'mime_type' => $imageFile->getClientMimeType(),
+            'original_name' => $imageFile->getClientOriginalName(),
+            'size_bytes' => $imageFile->getSize(),
+            'storage_disk' => 'public',
+            'storage_path' => $storedPath,
+        ];
     }
 }
