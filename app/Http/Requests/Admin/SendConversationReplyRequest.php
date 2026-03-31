@@ -38,10 +38,31 @@ class SendConversationReplyRequest extends FormRequest
     protected function prepareForValidation(): void
     {
         $messageType = strtolower(trim((string) $this->input('message_type', 'text')));
+        $message = $this->normalizeTextInput($this->input('message'));
+        $caption = $this->normalizeTextInput($this->input('caption'));
 
-        $this->merge([
+        $payload = [
             'message_type' => $messageType === '' ? 'text' : $messageType,
             'voice' => filter_var($this->input('voice', true), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? true,
-        ]);
+        ];
+
+        if ($message !== null) {
+            $payload['message'] = $message;
+        }
+
+        if ($caption !== null) {
+            $payload['caption'] = $caption;
+        }
+
+        $this->merge($payload);
+    }
+
+    private function normalizeTextInput(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return trim((string) $value);
     }
 }

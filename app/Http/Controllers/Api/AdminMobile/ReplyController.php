@@ -24,6 +24,8 @@ class ReplyController extends Controller
         SendConversationReplyRequest $request,
         Conversation $conversation,
     ): JsonResponse {
+        $validated = $request->validated();
+
         /** @var User|null $user */
         $user = $request->attributes->get('admin_mobile_user');
 
@@ -34,19 +36,19 @@ class ReplyController extends Controller
             ], 401);
         }
 
-        $messageType = (string) $request->input('message_type', 'text');
+        $messageType = (string) ($validated['message_type'] ?? 'text');
         $text = $messageType === 'audio'
-            ? (string) ($request->input('caption') ?: '[Voice note admin]')
-            : (string) $request->input('message');
+            ? (string) (($validated['caption'] ?? '') ?: '[Voice note admin]')
+            : (string) ($validated['message'] ?? '');
 
         $outboundPayload = $messageType === 'audio'
             ? [
                 'audio' => [
-                    'link' => (string) $request->input('audio_url'),
-                    'voice' => (bool) $request->boolean('voice', true),
+                    'link' => (string) ($validated['audio_url'] ?? ''),
+                    'voice' => (bool) ($validated['voice'] ?? true),
                 ],
-                'mime_type' => $request->input('mime_type'),
-                'caption' => $request->input('caption'),
+                'mime_type' => $validated['mime_type'] ?? null,
+                'caption' => $validated['caption'] ?? null,
             ]
             : [];
 

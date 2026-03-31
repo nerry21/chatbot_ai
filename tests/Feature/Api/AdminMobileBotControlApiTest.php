@@ -3,6 +3,7 @@
 namespace Tests\Feature\Api;
 
 use App\Enums\ConversationStatus;
+use App\Jobs\SendWhatsAppMessageJob;
 use App\Models\Conversation;
 use App\Models\Customer;
 use App\Models\User;
@@ -66,6 +67,34 @@ class AdminMobileBotControlApiTest extends TestCase
         $this->assertTrue((bool) $updatedConversation?->bot_auto_resume_enabled);
         $this->assertNotNull($updatedConversation?->bot_auto_resume_at);
         $this->assertSame($admin->id, $updatedConversation?->assigned_admin_id);
+    }
+
+    public function test_admin_reply_route_preserves_emoji_message_for_whatsapp_delivery(): void
+    {
+        Queue::fake();
+
+        $admin = $this->createAdmin(['email' => 'emoji-admin@example.com']);
+        $token = $this->loginAdmin($admin);
+        $conversation = $this->createConversation(channel: 'whatsapp');
+        $emojiMessage = 'Siap admin bantu ya 🙂🙏';
+
+        $response = $this->withToken($token)->postJson(
+            route('api.admin-mobile.conversations.reply', ['conversation' => $conversation]),
+            ['message' => $emojiMessage],
+        );
+
+        $response->assertCreated()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.notice', 'Balasan admin berhasil diantrekan ke WhatsApp.')
+            ->assertJsonPath('data.transport', 'whatsapp')
+            ->assertJsonPath('data.duplicate', false);
+
+        $this->assertDatabaseHas('conversation_messages', [
+            'conversation_id' => $conversation->id,
+            'message_text' => $emojiMessage,
+        ]);
+
+        Queue::assertPushed(SendWhatsAppMessageJob::class, 1);
     }
 
     public function test_admin_can_turn_bot_on_again_after_manual_off(): void
