@@ -3,6 +3,7 @@
 namespace App\Http\Resources\AdminMobile;
 
 use App\Enums\MessageDirection;
+use App\Support\MediaUrlNormalizer;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -28,6 +29,7 @@ class ConversationMessageResource extends JsonResource
             ?? data_get($this->raw_payload, 'image.link')
             ?? data_get($this->raw_payload, 'image_url');
         $imageId = data_get($this->raw_payload, 'image.id');
+        $normalizedImageLink = MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
 
         if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
@@ -80,7 +82,7 @@ class ConversationMessageResource extends JsonResource
                 'is_booking_review' => filled(data_get($this->raw_payload, 'review_hash')),
             ],
             'media' => [
-                'image_url' => $imageLink,
+                'image_url' => $normalizedImageLink,
                 'image_id' => $imageId,
                 'audio_url' => $audioLink,
                 'audio_id' => $audioId,

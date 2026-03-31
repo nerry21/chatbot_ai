@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\ConversationReadService;
+use App\Support\MediaUrlNormalizer;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Storage;
@@ -121,11 +122,11 @@ class ReplyController extends Controller
         }
 
         $storedPath = $imageFile->store('conversation-media/images', 'public');
-        $publicUrl = Storage::disk('public')->url($storedPath);
+        $publicUrl = MediaUrlNormalizer::normalize(Storage::disk('public')->url($storedPath));
 
         return [
             'image' => [
-                'link' => $publicUrl,
+                'link' => $publicUrl ?? '',
             ],
             'caption' => $caption !== '' ? $caption : null,
             'mime_type' => $imageFile->getClientMimeType(),

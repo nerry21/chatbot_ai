@@ -267,6 +267,8 @@ class AdminMobileReadApiTest extends TestCase
         $token = $this->loginAdmin($admin, 'super-secret');
         [$conversation] = $this->seedWorkspaceConversation($admin);
 
+        config()->set('app.url', 'https://spesial.online');
+
         ConversationMessage::create([
             'conversation_id' => $conversation->id,
             'direction' => MessageDirection::Outbound,
@@ -276,7 +278,7 @@ class AdminMobileReadApiTest extends TestCase
             'raw_payload' => [
                 'outbound_payload' => [
                     'image' => [
-                        'link' => 'https://spesial.online/storage/conversation-media/images/timbangan.jpg',
+                        'link' => 'http://spesial.online/storage/conversation-media/images/timbangan.jpg',
                     ],
                 ],
                 'media_caption' => 'Foto timbangan terbaru',
@@ -286,7 +288,10 @@ class AdminMobileReadApiTest extends TestCase
             'delivery_status' => MessageDeliveryStatus::Sent,
         ]);
 
-        $messages = $this->withToken($token)->getJson(route('api.admin-mobile.conversations.messages.index', [
+        $messages = $this->withHeaders([
+            'X-Forwarded-Proto' => 'https',
+            'X-Forwarded-Host' => 'spesial.online',
+        ])->withToken($token)->getJson(route('api.admin-mobile.conversations.messages.index', [
             'conversation' => $conversation,
         ]));
 
@@ -295,7 +300,10 @@ class AdminMobileReadApiTest extends TestCase
             ->assertJsonPath('data.messages.2.media.image_url', 'https://spesial.online/storage/conversation-media/images/timbangan.jpg')
             ->assertJsonPath('data.messages.2.media.caption', 'Foto timbangan terbaru');
 
-        $poll = $this->withToken($token)->getJson(route('api.admin-mobile.conversations.poll', [
+        $poll = $this->withHeaders([
+            'X-Forwarded-Proto' => 'https',
+            'X-Forwarded-Host' => 'spesial.online',
+        ])->withToken($token)->getJson(route('api.admin-mobile.conversations.poll', [
             'conversation' => $conversation,
         ]));
 
