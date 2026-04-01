@@ -18,6 +18,7 @@ use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
 class SendWhatsAppMessageJob implements ShouldQueue
@@ -498,12 +499,35 @@ class SendWhatsAppMessageJob implements ShouldQueue
         [$storageDisk, $storagePath] = $this->storedImageLocationForDispatch($message, $rawPayload, $mediaService);
 
         if ($storageDisk !== '' && $storagePath !== '') {
+            $signedMediaUrl = $this->temporarySignedImageUrl($message);
+            if ($signedMediaUrl !== null) {
+                return $signedMediaUrl;
+            }
+
             return MediaUrlNormalizer::normalize(Storage::disk($storageDisk)->url($storagePath));
         }
 
         $imageLink = trim((string) data_get($rawPayload, 'outbound_payload.image.link', ''));
 
         return $imageLink !== '' ? MediaUrlNormalizer::normalize($imageLink) : null;
+    }
+
+    private function temporarySignedImageUrl(ConversationMessage $message): ?string
+    {
+        try {
+            return URL::temporarySignedRoute(
+                'api.admin-mobile.media.show',
+                now()->addHours(6),
+                ['message' => $message->id],
+            );
+        } catch (\Throwable $e) {
+            WaLog::warning('[Job:SendWA] Failed to generate signed image fallback URL', [
+                'message_id' => $message->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     /**
