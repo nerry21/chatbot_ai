@@ -25,6 +25,8 @@ class ReplyController extends Controller
         SendConversationReplyRequest $request,
         Conversation $conversation,
     ): JsonResponse {
+        abort(500, 'VOICE_NOTE_REPLY_CONTROLLER_KETEMBAK');
+
         $validated = $request->validated();
 
         /** @var User|null $user */
