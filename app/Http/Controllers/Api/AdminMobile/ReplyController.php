@@ -9,8 +9,8 @@ use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\ConversationReadService;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\UploadedFile;
 
 class ReplyController extends Controller
 {
@@ -46,29 +46,41 @@ class ReplyController extends Controller
             ], 422);
         }
 
-        $text = $messageType === 'audio'
-            ? (string) (($validated['caption'] ?? '') ?: '[Voice note admin]')
-            : ($messageType === 'image'
-                ? (string) (($validated['caption'] ?? '') ?: '[Gambar dari Admin Jet]')
-                : (string) ($validated['message'] ?? ''));
+        if ($messageType === 'audio' && ! $conversation->isWhatsApp()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Voice note saat ini hanya didukung untuk conversation WhatsApp.',
+            ], 422);
+        }
 
-        $outboundPayload = $messageType === 'audio'
-            ? $this->storeAudioPayload(
+        $text = match ($messageType) {
+            'audio' => (string) (($validated['caption'] ?? '') ?: '[Voice note admin]'),
+            'image' => (string) (($validated['caption'] ?? '') ?: '[Gambar dari Admin Jet]'),
+            default => (string) ($validated['message'] ?? ''),
+        };
+
+        $outboundPayload = match ($messageType) {
+            'audio' => $this->storeAudioPayload(
                 $request->file('audio_file'),
                 (string) ($validated['audio_url'] ?? ''),
                 (string) ($validated['caption'] ?? ''),
                 (bool) ($validated['voice'] ?? true),
                 $validated['mime_type'] ?? null,
-            )
-            : ($messageType === 'image'
-                ? $this->storeImagePayload($request->file('image_file'), (string) ($validated['caption'] ?? ''))
-                : []);
+            ),
+            'image' => $this->storeImagePayload(
+                $request->file('image_file'),
+                (string) ($validated['caption'] ?? ''),
+            ),
+            default => [],
+        };
 
         $result = $this->messageService->send(
             conversation: $conversation,
             text: $text,
             adminId: (int) $user->id,
-            source: $messageType === 'audio' ? 'admin_mobile_voice_note' : 'admin_mobile_omnichannel',
+            source: $messageType === 'audio'
+                ? 'admin_mobile_voice_note'
+                : 'admin_mobile_omnichannel',
             messageType: $messageType,
             outboundPayload: $outboundPayload,
         );
@@ -88,17 +100,16 @@ class ReplyController extends Controller
         }
 
         $duplicate = (bool) ($result['duplicate'] ?? false);
+
         $notice = $duplicate
             ? 'Pesan yang sama baru saja dikirim. Duplikat diabaikan.'
-            : (
-                $messageType === 'audio'
-                    ? 'Voice note admin berhasil diantrekan ke WhatsApp.'
-                    : ($messageType === 'image'
-                        ? 'Gambar dari Admin Jet berhasil diantrekan ke WhatsApp.'
-                        : ($conversation->channel === 'mobile_live_chat'
-                            ? 'Balasan admin berhasil dikirim ke live chat.'
-                            : 'Balasan admin berhasil diantrekan ke WhatsApp.'))
-            );
+            : match ($messageType) {
+                'audio' => 'Voice note admin berhasil diantrekan ke WhatsApp.',
+                'image' => 'Gambar dari Admin Jet berhasil diantrekan ke WhatsApp.',
+                default => $conversation->channel === 'mobile_live_chat'
+                    ? 'Balasan admin berhasil dikirim ke live chat.'
+                    : 'Balasan admin berhasil diantrekan ke WhatsApp.',
+            };
 
         return $this->successResponse($notice, [
             'notice' => $notice,
