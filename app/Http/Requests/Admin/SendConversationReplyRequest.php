@@ -37,12 +37,11 @@ class SendConversationReplyRequest extends FormRequest
                 'max:2048',
             ],
 
+            // sengaja dilonggarkan dulu agar voice note Flutter lolos
             'audio_file' => [
                 'nullable',
                 'file',
                 'max:16384',
-                'mimes:ogg,oga,opus,mp3,mpeg,m4a,aac,mp4,wav,webm',
-                'mimetypes:audio/ogg,audio/opus,application/ogg,audio/mpeg,audio/mp3,audio/mp4,audio/x-m4a,audio/aac,audio/wav,audio/webm,video/webm,application/octet-stream',
             ],
 
             'image_file' => [
@@ -62,16 +61,11 @@ class SendConversationReplyRequest extends FormRequest
     {
         return [
             'message.max' => 'Pesan terlalu panjang (maksimal 4096 karakter).',
-
             'audio_url.url' => 'URL voice note tidak valid.',
-            'audio_file.file' => 'Voice note harus berupa file audio.',
+            'audio_file.file' => 'Voice note harus berupa file.',
             'audio_file.max' => 'Ukuran voice note maksimal 16 MB.',
-            'audio_file.mimes' => 'Ekstensi voice note tidak didukung. Gunakan OGG, MP3, M4A, AAC, WAV, atau WEBM.',
-            'audio_file.mimetypes' => 'Format voice note tidak didukung. Gunakan OGG/OPUS, MP3, M4A, AAC, WAV, atau WEBM.',
-
             'image_file.image' => 'File yang dipilih harus berupa gambar.',
             'image_file.max' => 'Ukuran gambar maksimal 5 MB.',
-
             'message_type.in' => 'Jenis pesan tidak didukung.',
         ];
     }
