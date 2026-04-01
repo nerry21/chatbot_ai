@@ -11,7 +11,6 @@ use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\ConversationReadService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Storage;
 
 class ReplyController extends Controller
 {
@@ -39,6 +38,7 @@ class ReplyController extends Controller
         }
 
         $messageType = (string) ($validated['message_type'] ?? 'text');
+
         if ($messageType === 'image' && ! $conversation->isWhatsApp()) {
             return response()->json([
                 'success' => false,
@@ -49,7 +49,7 @@ class ReplyController extends Controller
         $text = $messageType === 'audio'
             ? (string) (($validated['caption'] ?? '') ?: '[Voice note admin]')
             : ($messageType === 'image'
-                ? (string) (($validated['caption'] ?? '') ?: '[Gambar admin]')
+                ? (string) (($validated['caption'] ?? '') ?: '[Gambar dari Admin Jet]')
                 : (string) ($validated['message'] ?? ''));
 
         $outboundPayload = $messageType === 'audio'
@@ -94,10 +94,10 @@ class ReplyController extends Controller
                 $messageType === 'audio'
                     ? 'Voice note admin berhasil diantrekan ke WhatsApp.'
                     : ($messageType === 'image'
-                        ? 'Gambar admin berhasil diantrekan ke WhatsApp.'
-                    : ($conversation->channel === 'mobile_live_chat'
-                        ? 'Balasan admin berhasil dikirim ke live chat.'
-                        : 'Balasan admin berhasil diantrekan ke WhatsApp.'))
+                        ? 'Gambar dari Admin Jet berhasil diantrekan ke WhatsApp.'
+                        : ($conversation->channel === 'mobile_live_chat'
+                            ? 'Balasan admin berhasil dikirim ke live chat.'
+                            : 'Balasan admin berhasil diantrekan ke WhatsApp.'))
             );
 
         return $this->successResponse($notice, [
@@ -110,9 +110,6 @@ class ReplyController extends Controller
         ], $duplicate ? 200 : 201);
     }
 
-    /**
-     * @return array<string, mixed>
-     */
     private function storeImagePayload(?UploadedFile $imageFile, string $caption): array
     {
         if (! $imageFile instanceof UploadedFile) {
@@ -120,6 +117,7 @@ class ReplyController extends Controller
         }
 
         $storedPath = $imageFile->store('conversation-media/images', 'public');
+
         return [
             'image' => [],
             'caption' => $caption !== '' ? $caption : null,
@@ -131,9 +129,6 @@ class ReplyController extends Controller
         ];
     }
 
-    /**
-     * @return array<string, mixed>
-     */
     private function storeAudioPayload(
         ?UploadedFile $audioFile,
         string $audioUrl,
