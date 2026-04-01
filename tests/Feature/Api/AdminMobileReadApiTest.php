@@ -19,6 +19,7 @@ use App\Models\CustomerTag;
 use App\Models\Escalation;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
@@ -366,6 +367,119 @@ class AdminMobileReadApiTest extends TestCase
 
         $response->assertOk();
         $response->assertHeader('content-type', 'image/jpeg');
+    }
+
+    public function test_admin_mobile_messages_include_signed_url_for_inbound_whatsapp_image_media_id(): void
+    {
+        $admin = User::factory()->create([
+            'name' => 'Inbound Media Admin',
+            'email' => 'inbound-media-admin@example.com',
+            'password' => Hash::make('super-secret'),
+            'is_chatbot_admin' => true,
+        ]);
+
+        $token = $this->loginAdmin($admin, 'super-secret');
+        [$conversation] = $this->seedWorkspaceConversation($admin);
+
+        config()->set('app.url', 'https://spesial.online');
+
+        $imageMessage = ConversationMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => MessageDirection::Inbound,
+            'sender_type' => SenderType::Customer,
+            'message_type' => 'image',
+            'message_text' => 'Foto mesin',
+            'raw_payload' => [
+                'image' => [
+                    'id' => 'wa-media-123',
+                    'mime_type' => 'image/jpeg',
+                    'caption' => 'Foto mesin',
+                ],
+                'mime_type' => 'image/jpeg',
+                'media_caption' => 'Foto mesin',
+            ],
+            'sent_at' => now()->subMinute(),
+            'delivery_status' => MessageDeliveryStatus::Sent,
+        ]);
+
+        $messages = $this->withHeaders([
+            'X-Forwarded-Proto' => 'https',
+            'X-Forwarded-Host' => 'spesial.online',
+        ])->withToken($token)->getJson(route('api.admin-mobile.conversations.messages.index', [
+            'conversation' => $conversation,
+        ]));
+
+        $messages->assertOk()
+            ->assertJsonPath('data.messages.2.message_type', 'image')
+            ->assertJsonPath('data.messages.2.media.image_id', 'wa-media-123')
+            ->assertJsonPath('data.messages.2.media.caption', 'Foto mesin');
+
+        $messageImageUrl = (string) data_get($messages->json(), 'data.messages.2.media.image_url');
+        $this->assertStringContainsString('/api/admin-mobile/media/messages/'.$imageMessage->id, $messageImageUrl);
+        $this->assertStringContainsString('signature=', $messageImageUrl);
+    }
+
+    public function test_admin_mobile_signed_media_endpoint_serves_whatsapp_image_from_media_id(): void
+    {
+        Storage::fake('public');
+        config()->set('app.url', 'https://spesial.online');
+        config()->set('chatbot.whatsapp.access_token', 'test-token');
+        config()->set('chatbot.whatsapp.graph_base_url', 'https://graph.facebook.com/v19.0');
+
+        Http::fake([
+            'https://graph.facebook.com/v19.0/wa-media-123' => Http::response([
+                'url' => 'https://lookaside.facebook.com/whatsapp/media/wa-media-123',
+                'mime_type' => 'image/jpeg',
+            ], 200),
+            'https://lookaside.facebook.com/whatsapp/media/wa-media-123' => Http::response(
+                'fake-whatsapp-image',
+                200,
+                ['Content-Type' => 'image/jpeg'],
+            ),
+        ]);
+
+        $message = ConversationMessage::create([
+            'conversation_id' => Conversation::create([
+                'customer_id' => Customer::create([
+                    'name' => 'Inbound Media Customer',
+                    'phone_e164' => '+628123450199',
+                    'status' => 'active',
+                ])->id,
+                'channel' => 'whatsapp',
+                'status' => ConversationStatus::Active,
+                'handoff_mode' => 'bot',
+                'started_at' => now()->subHour(),
+                'last_message_at' => now(),
+                'source_app' => 'web-dashboard',
+            ])->id,
+            'direction' => MessageDirection::Inbound,
+            'sender_type' => SenderType::Customer,
+            'message_type' => 'image',
+            'message_text' => 'Foto mesin',
+            'raw_payload' => [
+                'image' => [
+                    'id' => 'wa-media-123',
+                    'mime_type' => 'image/jpeg',
+                    'caption' => 'Foto mesin',
+                ],
+                'mime_type' => 'image/jpeg',
+            ],
+            'sent_at' => now(),
+            'delivery_status' => MessageDeliveryStatus::Sent,
+        ]);
+
+        $signedUrl = URL::signedRoute('api.admin-mobile.media.show', ['message' => $message->id]);
+        $path = (string) parse_url($signedUrl, PHP_URL_PATH);
+        $query = (string) parse_url($signedUrl, PHP_URL_QUERY);
+
+        $response = $this->get($path.($query !== '' ? '?'.$query : ''));
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'image/jpeg');
+
+        $freshMessage = $message->fresh();
+        $this->assertSame('public', data_get($freshMessage?->raw_payload, 'media_storage_disk'));
+        Storage::disk('public')->assertExists((string) data_get($freshMessage?->raw_payload, 'media_storage_path'));
     }
 
     public function test_mobile_customer_token_cannot_access_admin_mobile_routes(): void

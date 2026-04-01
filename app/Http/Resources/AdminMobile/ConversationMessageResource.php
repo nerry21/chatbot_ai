@@ -29,8 +29,9 @@ class ConversationMessageResource extends JsonResource
         $imageLink = data_get($this->raw_payload, 'outbound_payload.image.link')
             ?? data_get($this->raw_payload, 'image.link')
             ?? data_get($this->raw_payload, 'image_url');
-        $imageId = data_get($this->raw_payload, 'image.id');
-        $signedStoredImageLink = $this->signedStoredImageUrl();
+        $imageId = data_get($this->raw_payload, 'image.id')
+            ?? data_get($this->raw_payload, 'outbound_payload.image.id');
+        $signedStoredImageLink = $this->signedImageUrl();
         $normalizedImageLink = $signedStoredImageLink
             ?? MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
 
@@ -89,10 +90,14 @@ class ConversationMessageResource extends JsonResource
                 'image_id' => $imageId,
                 'audio_url' => $audioLink,
                 'audio_id' => $audioId,
-                'mime_type' => data_get($this->raw_payload, 'mime_type'),
-                'caption' => data_get($this->raw_payload, 'media_caption'),
+                'mime_type' => data_get($this->raw_payload, 'mime_type')
+                    ?? data_get($this->raw_payload, 'image.mime_type'),
+                'caption' => data_get($this->raw_payload, 'media_caption')
+                    ?? data_get($this->raw_payload, 'image.caption')
+                    ?? data_get($this->raw_payload, 'outbound_payload.image.caption'),
                 'original_name' => data_get($this->raw_payload, 'media_original_name'),
-                'size_bytes' => data_get($this->raw_payload, 'media_size_bytes'),
+                'size_bytes' => data_get($this->raw_payload, 'media_size_bytes')
+                    ?? data_get($this->raw_payload, 'image.file_size'),
                 'is_voice_note' => (bool) (data_get($this->raw_payload, 'outbound_payload.audio.voice')
                     ?? data_get($this->raw_payload, 'audio.voice')
                     ?? ($this->message_type === 'audio')),
@@ -149,12 +154,20 @@ class ConversationMessageResource extends JsonResource
         };
     }
 
-    private function signedStoredImageUrl(): ?string
+    private function signedImageUrl(): ?string
     {
         $storageDisk = trim((string) data_get($this->raw_payload, 'media_storage_disk', ''));
         $storagePath = trim((string) data_get($this->raw_payload, 'media_storage_path', ''));
+        $imageId = trim((string) (
+            data_get($this->raw_payload, 'image.id')
+            ?? data_get($this->raw_payload, 'outbound_payload.image.id')
+            ?? ''
+        ));
 
-        if ($this->message_type !== 'image' || $storageDisk === '' || $storagePath === '') {
+        if (
+            $this->message_type !== 'image'
+            || (($storageDisk === '' || $storagePath === '') && $imageId === '')
+        ) {
             return null;
         }
 

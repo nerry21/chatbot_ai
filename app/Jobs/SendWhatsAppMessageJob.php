@@ -117,7 +117,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
             return;
         }
 
-        if (empty($message->message_text)) {
+        if ($message->message_type === 'text' && empty($message->message_text)) {
             $message->markSkipped('empty_text');
 
             $audit->record(AuditActionType::WhatsAppSendSkipped, [

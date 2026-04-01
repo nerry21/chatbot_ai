@@ -118,6 +118,7 @@ class WhatsAppMessageParser
             'button' => $msg['button']['text'] ?? null,
             'interactive' => $this->interactiveReplyText($interactiveReply ?? $this->extractInteractiveReply($msg)),
             'audio' => '[Voice note]',
+            'image' => $msg['image']['caption'] ?? null,
             default => null,
         };
     }
@@ -226,6 +227,12 @@ class WhatsAppMessageParser
 
         if (($msg['type'] ?? null) === 'audio') {
             $payload['audio_url'] = null;
+        }
+
+        if (($msg['type'] ?? null) === 'image') {
+            $payload['media_caption'] = $msg['image']['caption'] ?? null;
+            $payload['mime_type'] = $msg['image']['mime_type'] ?? null;
+            $payload['media_size_bytes'] = $msg['image']['file_size'] ?? null;
         }
 
         if ($metadata !== []) {

@@ -137,6 +137,30 @@ class WhatsAppMessageParserTest extends TestCase
         $this->assertSame('123456', $statuses[0]['metadata']['phone_number_id']);
     }
 
+    public function test_it_extracts_image_message_with_caption_and_media_metadata(): void
+    {
+        $parser = app(WhatsAppMessageParser::class);
+
+        $messages = $parser->extractMessages($this->payloadWithMessage([
+            'from' => '6281234567890',
+            'id' => 'wamid.image.1',
+            'timestamp' => '1710000004',
+            'type' => 'image',
+            'image' => [
+                'id' => 'media-image-123',
+                'mime_type' => 'image/jpeg',
+                'caption' => 'Foto mesin',
+            ],
+        ]));
+
+        $this->assertCount(1, $messages);
+        $this->assertSame('image', $messages[0]['message_type']);
+        $this->assertSame('Foto mesin', $messages[0]['message_text']);
+        $this->assertSame('media-image-123', $messages[0]['raw_payload']['image']['id']);
+        $this->assertSame('image/jpeg', $messages[0]['raw_payload']['mime_type']);
+        $this->assertSame('Foto mesin', $messages[0]['raw_payload']['media_caption']);
+    }
+
     /**
      * @param  array<string, mixed>  $message
      * @return array<string, mixed>
