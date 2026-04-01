@@ -9,14 +9,54 @@ use RuntimeException;
 class WhatsAppMediaService
 {
     private readonly string $accessToken;
+    private readonly string $phoneNumberId;
     private readonly string $graphBaseUrl;
     private readonly int $timeoutSeconds;
 
     public function __construct()
     {
         $this->accessToken = (string) config('chatbot.whatsapp.access_token', '');
+        $this->phoneNumberId = (string) config('chatbot.whatsapp.phone_number_id', '');
         $this->graphBaseUrl = rtrim((string) config('chatbot.whatsapp.graph_base_url', 'https://graph.facebook.com/v19.0'), '/');
         $this->timeoutSeconds = (int) config('chatbot.whatsapp.send_timeout_seconds', 15);
+    }
+
+    public function uploadFromContents(string $contents, string $fileName, string $mimeType): string
+    {
+        if ($this->accessToken === '') {
+            throw new RuntimeException('WhatsApp access token is not configured.');
+        }
+
+        if ($this->phoneNumberId === '') {
+            throw new RuntimeException('WhatsApp phone number id is not configured.');
+        }
+
+        if ($contents === '') {
+            throw new RuntimeException('WhatsApp media contents are empty.');
+        }
+
+        $normalizedFileName = trim($fileName) !== '' ? trim($fileName) : 'upload.bin';
+        $normalizedMimeType = trim($mimeType) !== '' ? trim($mimeType) : 'application/octet-stream';
+
+        $response = Http::withToken($this->accessToken)
+            ->timeout($this->timeoutSeconds)
+            ->attach('file', $contents, $normalizedFileName, [
+                'Content-Type' => $normalizedMimeType,
+            ])
+            ->post("{$this->graphBaseUrl}/{$this->phoneNumberId}/media", [
+                'messaging_product' => 'whatsapp',
+            ]);
+
+        if (! $response->successful()) {
+            throw new RuntimeException($this->errorMessage($response, 'Failed to upload WhatsApp media content.'));
+        }
+
+        $uploadedMediaId = trim((string) $response->json('id', ''));
+        if ($uploadedMediaId === '') {
+            throw new RuntimeException('WhatsApp uploaded media id is missing.');
+        }
+
+        return $uploadedMediaId;
     }
 
     /**

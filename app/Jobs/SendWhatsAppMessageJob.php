@@ -9,6 +9,7 @@ use App\Enums\SenderType;
 use App\Models\AdminNotification;
 use App\Models\ConversationMessage;
 use App\Services\Support\AuditLogService;
+use App\Services\WhatsApp\WhatsAppMediaService;
 use App\Services\WhatsApp\WhatsAppSenderService;
 use App\Support\MediaUrlNormalizer;
 use App\Support\WaLog;
@@ -16,7 +17,8 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\URL;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class SendWhatsAppMessageJob implements ShouldQueue
 {
@@ -31,7 +33,11 @@ class SendWhatsAppMessageJob implements ShouldQueue
         public readonly string $traceId = '',
     ) {}
 
-    public function handle(WhatsAppSenderService $sender, AuditLogService $audit): void
+    public function handle(
+        WhatsAppSenderService $sender,
+        AuditLogService $audit,
+        WhatsAppMediaService $mediaService,
+    ): void
     {
         if ($this->traceId !== '') {
             WaLog::setTrace($this->traceId);
@@ -202,7 +208,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
             toPhoneE164: $customer->phone_e164,
             text: (string) $message->message_text,
             messageType: $message->message_type,
-            providerPayload: $this->providerPayloadForDispatch($message),
+            providerPayload: $this->providerPayloadForDispatch($message, $mediaService),
             meta: [
                 'conversation_id' => $conversation->id,
                 'message_id' => $message->id,
@@ -379,7 +385,10 @@ class SendWhatsAppMessageJob implements ShouldQueue
     /**
      * @return array<string, mixed>
      */
-    private function providerPayloadForDispatch(ConversationMessage $message): array
+    private function providerPayloadForDispatch(
+        ConversationMessage $message,
+        WhatsAppMediaService $mediaService,
+    ): array
     {
         $rawPayload = is_array($message->raw_payload) ? $message->raw_payload : [];
         $payload = is_array($rawPayload['outbound_payload'] ?? null)
@@ -391,11 +400,18 @@ class SendWhatsAppMessageJob implements ShouldQueue
         }
 
         $imagePayload = is_array($payload['image'] ?? null) ? $payload['image'] : [];
-        $signedImageUrl = $this->signedImageUrl($message, $rawPayload);
+        $uploadedImageId = $this->outboundImageMediaId($message, $rawPayload, $mediaService);
 
-        if ($signedImageUrl !== null) {
-            $imagePayload['link'] = $signedImageUrl;
-            unset($imagePayload['id']);
+        if ($uploadedImageId !== null) {
+            $imagePayload['id'] = $uploadedImageId;
+            unset($imagePayload['link']);
+        } else {
+            $publicImageUrl = $this->publicImageUrl($message, $rawPayload, $mediaService);
+
+            if ($publicImageUrl !== null) {
+                $imagePayload['link'] = $publicImageUrl;
+                unset($imagePayload['id']);
+            }
         }
 
         if ($imagePayload !== []) {
@@ -415,22 +431,155 @@ class SendWhatsAppMessageJob implements ShouldQueue
     /**
      * @param  array<string, mixed>  $rawPayload
      */
-    private function signedImageUrl(ConversationMessage $message, array $rawPayload): ?string
+    private function outboundImageMediaId(
+        ConversationMessage $message,
+        array $rawPayload,
+        WhatsAppMediaService $mediaService,
+    ): ?string {
+        $cachedMediaId = trim((string) data_get($rawPayload, 'whatsapp_outbound_media_id', ''));
+        if ($cachedMediaId !== '') {
+            return $cachedMediaId;
+        }
+
+        [$storageDisk, $storagePath, $latestRawPayload] = $this->storedImageLocationForDispatch(
+            $message,
+            $rawPayload,
+            $mediaService,
+        );
+
+        if ($storageDisk === '' || $storagePath === '' || ! Storage::disk($storageDisk)->exists($storagePath)) {
+            return null;
+        }
+
+        try {
+            $mimeType = trim((string) (
+                data_get($latestRawPayload, 'mime_type')
+                ?: Storage::disk($storageDisk)->mimeType($storagePath)
+                ?: 'application/octet-stream'
+            ));
+            $fileName = trim((string) (
+                data_get($latestRawPayload, 'media_original_name')
+                ?: basename($storagePath)
+            ));
+            $uploadedMediaId = $mediaService->uploadFromContents(
+                Storage::disk($storageDisk)->get($storagePath),
+                $fileName,
+                $mimeType,
+            );
+
+            $message->forceFill([
+                'raw_payload' => array_merge($latestRawPayload, [
+                    'whatsapp_outbound_media_id' => $uploadedMediaId,
+                ]),
+            ])->save();
+
+            return $uploadedMediaId;
+        } catch (\Throwable $e) {
+            WaLog::warning('[Job:SendWA] Failed to upload stored image media for outbound dispatch', [
+                'message_id' => $message->id,
+                'storage_disk' => $storageDisk,
+                'storage_path' => $storagePath,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawPayload
+     */
+    private function publicImageUrl(
+        ConversationMessage $message,
+        array $rawPayload,
+        WhatsAppMediaService $mediaService,
+    ): ?string
     {
-        $storageDisk = trim((string) data_get($rawPayload, 'media_storage_disk', ''));
-        $storagePath = trim((string) data_get($rawPayload, 'media_storage_path', ''));
+        [$storageDisk, $storagePath] = $this->storedImageLocationForDispatch($message, $rawPayload, $mediaService);
+
+        if ($storageDisk !== '' && $storagePath !== '') {
+            return MediaUrlNormalizer::normalize(Storage::disk($storageDisk)->url($storagePath));
+        }
+
+        $imageLink = trim((string) data_get($rawPayload, 'outbound_payload.image.link', ''));
+
+        return $imageLink !== '' ? MediaUrlNormalizer::normalize($imageLink) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawPayload
+     * @return array{0: string, 1: string, 2: array<string, mixed>}
+     */
+    private function storedImageLocationForDispatch(
+        ConversationMessage $message,
+        array $rawPayload,
+        WhatsAppMediaService $mediaService,
+    ): array {
         $imageId = trim((string) (
             data_get($rawPayload, 'image.id')
             ?? data_get($rawPayload, 'outbound_payload.image.id')
             ?? ''
         ));
 
-        if ($storageDisk === '' && $storagePath === '' && $imageId === '') {
-            return null;
+        $storageDisk = trim((string) data_get($rawPayload, 'media_storage_disk', ''));
+        $storagePath = trim((string) data_get($rawPayload, 'media_storage_path', ''));
+        $latestRawPayload = $rawPayload;
+
+        if (($storageDisk === '' || $storagePath === '') && $imageId !== '') {
+            [$storageDisk, $storagePath] = $this->cacheRemoteImageForDispatch(
+                $message,
+                $rawPayload,
+                $mediaService,
+                $imageId,
+            );
+
+            $freshMessage = $message->fresh();
+            $latestRawPayload = is_array($freshMessage?->raw_payload) ? $freshMessage->raw_payload : $rawPayload;
         }
 
-        return MediaUrlNormalizer::normalize(
-            URL::signedRoute('api.admin-mobile.media.show', ['message' => $message->id]),
-        );
+        return [$storageDisk, $storagePath, $latestRawPayload];
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawPayload
+     * @return array{0: string, 1: string}
+     */
+    private function cacheRemoteImageForDispatch(
+        ConversationMessage $message,
+        array $rawPayload,
+        WhatsAppMediaService $mediaService,
+        string $imageId,
+    ): array {
+        try {
+            $download = $mediaService->downloadByMediaId($imageId);
+            $safeFileName = Str::slug(pathinfo($download['file_name'], PATHINFO_FILENAME));
+            $extension = pathinfo($download['file_name'], PATHINFO_EXTENSION);
+            $storedFileName = trim($safeFileName) !== ''
+                ? $safeFileName.'.'.$extension
+                : $message->id.'.'.$extension;
+            $storedPath = 'conversation-media/images/outbound/'.$message->id.'-'.$storedFileName;
+
+            Storage::disk('public')->put($storedPath, $download['contents']);
+
+            $message->forceFill([
+                'raw_payload' => array_merge($rawPayload, [
+                    'media_storage_disk' => 'public',
+                    'media_storage_path' => $storedPath,
+                    'mime_type' => (string) ($download['mime_type'] ?? data_get($rawPayload, 'mime_type')),
+                    'media_original_name' => (string) ($download['file_name'] ?? basename($storedPath)),
+                    'media_size_bytes' => (int) ($download['size_bytes'] ?? 0),
+                ]),
+            ])->save();
+
+            return ['public', $storedPath];
+        } catch (\Throwable $e) {
+            WaLog::warning('[Job:SendWA] Failed to cache image media for outbound dispatch', [
+                'message_id' => $message->id,
+                'image_id' => $imageId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['', ''];
+        }
     }
 }
