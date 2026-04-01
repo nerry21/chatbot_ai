@@ -20,6 +20,8 @@ use App\Models\Escalation;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Tests\TestCase;
 
 class AdminMobileReadApiTest extends TestCase
@@ -269,7 +271,7 @@ class AdminMobileReadApiTest extends TestCase
 
         config()->set('app.url', 'https://spesial.online');
 
-        ConversationMessage::create([
+        $imageMessage = ConversationMessage::create([
             'conversation_id' => $conversation->id,
             'direction' => MessageDirection::Outbound,
             'sender_type' => SenderType::Admin,
@@ -283,6 +285,8 @@ class AdminMobileReadApiTest extends TestCase
                 ],
                 'media_caption' => 'Foto timbangan terbaru',
                 'mime_type' => 'image/jpeg',
+                'media_storage_disk' => 'public',
+                'media_storage_path' => 'conversation-media/images/timbangan.jpg',
             ],
             'sent_at' => now()->subMinutes(2),
             'delivery_status' => MessageDeliveryStatus::Sent,
@@ -298,8 +302,11 @@ class AdminMobileReadApiTest extends TestCase
 
         $messages->assertOk()
             ->assertJsonPath('data.messages.2.message_type', 'image')
-            ->assertJsonPath('data.messages.2.media.image_url', 'https://spesial.online/storage/conversation-media/images/timbangan.jpg')
             ->assertJsonPath('data.messages.2.media.caption', 'Foto timbangan terbaru');
+
+        $messageImageUrl = (string) data_get($messages->json(), 'data.messages.2.media.image_url');
+        $this->assertStringContainsString('/api/admin-mobile/media/messages/'.$imageMessage->id, $messageImageUrl);
+        $this->assertStringContainsString('signature=', $messageImageUrl);
 
         $poll = $this->withHeaders([
             'Origin' => 'http://localhost:3000',
@@ -310,8 +317,55 @@ class AdminMobileReadApiTest extends TestCase
         ]));
 
         $poll->assertOk()
-            ->assertJsonPath('data.messages.2.message_type', 'image')
-            ->assertJsonPath('data.messages.2.media.image_url', 'https://spesial.online/storage/conversation-media/images/timbangan.jpg');
+            ->assertJsonPath('data.messages.2.message_type', 'image');
+
+        $pollImageUrl = (string) data_get($poll->json(), 'data.messages.2.media.image_url');
+        $this->assertStringContainsString('/api/admin-mobile/media/messages/'.$imageMessage->id, $pollImageUrl);
+        $this->assertStringContainsString('signature=', $pollImageUrl);
+    }
+
+    public function test_admin_mobile_signed_media_endpoint_serves_stored_image(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('conversation-media/images/admin-preview.jpg', 'fake-image-content');
+
+        config()->set('app.url', 'https://spesial.online');
+
+        $message = ConversationMessage::create([
+            'conversation_id' => Conversation::create([
+                'customer_id' => Customer::create([
+                    'name' => 'Media Customer',
+                    'phone_e164' => '+628123450099',
+                    'status' => 'active',
+                ])->id,
+                'channel' => 'whatsapp',
+                'status' => ConversationStatus::Active,
+                'handoff_mode' => 'bot',
+                'started_at' => now()->subHour(),
+                'last_message_at' => now(),
+                'source_app' => 'web-dashboard',
+            ])->id,
+            'direction' => MessageDirection::Outbound,
+            'sender_type' => SenderType::Admin,
+            'message_type' => 'image',
+            'message_text' => 'Preview admin',
+            'raw_payload' => [
+                'mime_type' => 'image/jpeg',
+                'media_storage_disk' => 'public',
+                'media_storage_path' => 'conversation-media/images/admin-preview.jpg',
+                'media_original_name' => 'admin-preview.jpg',
+            ],
+            'sent_at' => now(),
+        ]);
+
+        $signedUrl = URL::signedRoute('api.admin-mobile.media.show', ['message' => $message->id]);
+        $path = (string) parse_url($signedUrl, PHP_URL_PATH);
+        $query = (string) parse_url($signedUrl, PHP_URL_QUERY);
+
+        $response = $this->get($path.($query !== '' ? '?'.$query : ''));
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'image/jpeg');
     }
 
     public function test_mobile_customer_token_cannot_access_admin_mobile_routes(): void

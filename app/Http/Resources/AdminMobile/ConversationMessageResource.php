@@ -6,6 +6,7 @@ use App\Enums\MessageDirection;
 use App\Support\MediaUrlNormalizer;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\URL;
 
 /** @mixin \App\Models\ConversationMessage */
 class ConversationMessageResource extends JsonResource
@@ -29,7 +30,9 @@ class ConversationMessageResource extends JsonResource
             ?? data_get($this->raw_payload, 'image.link')
             ?? data_get($this->raw_payload, 'image_url');
         $imageId = data_get($this->raw_payload, 'image.id');
-        $normalizedImageLink = MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
+        $signedStoredImageLink = $this->signedStoredImageUrl();
+        $normalizedImageLink = $signedStoredImageLink
+            ?? MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
 
         if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
@@ -144,5 +147,19 @@ class ConversationMessageResource extends JsonResource
             'skipped' => 'skipped',
             default => $deliveryStatus,
         };
+    }
+
+    private function signedStoredImageUrl(): ?string
+    {
+        $storageDisk = trim((string) data_get($this->raw_payload, 'media_storage_disk', ''));
+        $storagePath = trim((string) data_get($this->raw_payload, 'media_storage_path', ''));
+
+        if ($this->message_type !== 'image' || $storageDisk === '' || $storagePath === '') {
+            return null;
+        }
+
+        return MediaUrlNormalizer::normalize(
+            URL::signedRoute('api.admin-mobile.media.show', ['message' => $this->id]),
+        );
     }
 }

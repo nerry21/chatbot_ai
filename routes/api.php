@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AdminMobile\AuthController as AdminMobileAuthController;
 use App\Http\Controllers\Api\AdminMobile\BotControlController as AdminMobileBotControlController;
 use App\Http\Controllers\Api\AdminMobile\ContactController as AdminMobileContactController;
+use App\Http\Controllers\Api\AdminMobile\MediaController as AdminMobileMediaController;
 use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
 use App\Http\Controllers\Api\AdminMobile\WorkspaceController as AdminMobileWorkspaceController;
 use App\Http\Controllers\Api\Mobile\AuthController;
@@ -42,6 +43,10 @@ Route::prefix('mobile')
 Route::prefix('admin-mobile')
     ->name('api.admin-mobile.')
     ->group(function (): void {
+        Route::get('media/messages/{message}', [AdminMobileMediaController::class, 'show'])
+            ->middleware('signed')
+            ->name('media.show');
+
         Route::prefix('auth')
             ->name('auth.')
             ->group(function (): void {
