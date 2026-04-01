@@ -32,7 +32,7 @@ class SendConversationReplyRequest extends FormRequest
             'message.max' => 'Pesan terlalu panjang (maksimal 4096 karakter).',
             'audio_url.required_if' => 'URL voice note wajib diisi.',
             'audio_url.url' => 'URL voice note tidak valid.',
-            'image_file.required_if' => 'Gambar wajib dipilih dari galeri.',
+            'image_file.required_if' => 'Gambar wajib dipilih dari kamera atau galeri.',
             'image_file.image' => 'File yang dipilih harus berupa gambar.',
             'image_file.max' => 'Ukuran gambar maksimal 5 MB.',
             'message_type.in' => 'Jenis pesan tidak didukung.',

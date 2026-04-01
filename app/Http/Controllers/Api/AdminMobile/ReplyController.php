@@ -49,7 +49,7 @@ class ReplyController extends Controller
         $text = $messageType === 'audio'
             ? (string) (($validated['caption'] ?? '') ?: '[Voice note admin]')
             : ($messageType === 'image'
-                ? (string) (($validated['caption'] ?? '') ?: '[Gambar admin]')
+                ? (string) (($validated['caption'] ?? '') ?: '[Gambar dari Admin JET]')
                 : (string) ($validated['message'] ?? ''));
 
         $outboundPayload = $messageType === 'audio'
@@ -95,7 +95,7 @@ class ReplyController extends Controller
                 $messageType === 'audio'
                     ? 'Voice note admin berhasil diantrekan ke WhatsApp.'
                     : ($messageType === 'image'
-                        ? 'Gambar admin berhasil diantrekan ke WhatsApp.'
+                        ? 'Gambar dari Admin JET berhasil diantrekan ke WhatsApp.'
                     : ($conversation->channel === 'mobile_live_chat'
                         ? 'Balasan admin berhasil dikirim ke live chat.'
                         : 'Balasan admin berhasil diantrekan ke WhatsApp.'))
