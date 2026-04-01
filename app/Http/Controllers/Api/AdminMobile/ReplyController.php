@@ -129,7 +129,7 @@ class ReplyController extends Controller
                 'link' => $publicUrl ?? '',
             ],
             'caption' => $caption !== '' ? $caption : null,
-            'mime_type' => $imageFile->getClientMimeType(),
+            'mime_type' => $imageFile->getMimeType() ?: $imageFile->getClientMimeType(),
             'original_name' => $imageFile->getClientOriginalName(),
             'size_bytes' => $imageFile->getSize(),
             'storage_disk' => 'public',

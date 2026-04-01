@@ -453,8 +453,8 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         try {
             $mimeType = trim((string) (
-                data_get($latestRawPayload, 'mime_type')
-                ?: Storage::disk($storageDisk)->mimeType($storagePath)
+                Storage::disk($storageDisk)->mimeType($storagePath)
+                ?: data_get($latestRawPayload, 'mime_type')
                 ?: 'application/octet-stream'
             ));
             $fileName = trim((string) (
