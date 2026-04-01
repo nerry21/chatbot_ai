@@ -10,11 +10,13 @@ use App\Models\AdminNotification;
 use App\Models\ConversationMessage;
 use App\Services\Support\AuditLogService;
 use App\Services\WhatsApp\WhatsAppSenderService;
+use App\Support\MediaUrlNormalizer;
 use App\Support\WaLog;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\URL;
 
 class SendWhatsAppMessageJob implements ShouldQueue
 {
@@ -200,9 +202,7 @@ class SendWhatsAppMessageJob implements ShouldQueue
             toPhoneE164: $customer->phone_e164,
             text: (string) $message->message_text,
             messageType: $message->message_type,
-            providerPayload: is_array($message->raw_payload['outbound_payload'] ?? null)
-                ? $message->raw_payload['outbound_payload']
-                : [],
+            providerPayload: $this->providerPayloadForDispatch($message),
             meta: [
                 'conversation_id' => $conversation->id,
                 'message_id' => $message->id,
@@ -374,5 +374,63 @@ class SendWhatsAppMessageJob implements ShouldQueue
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function providerPayloadForDispatch(ConversationMessage $message): array
+    {
+        $rawPayload = is_array($message->raw_payload) ? $message->raw_payload : [];
+        $payload = is_array($rawPayload['outbound_payload'] ?? null)
+            ? $rawPayload['outbound_payload']
+            : [];
+
+        if ($message->message_type !== 'image') {
+            return $payload;
+        }
+
+        $imagePayload = is_array($payload['image'] ?? null) ? $payload['image'] : [];
+        $signedImageUrl = $this->signedImageUrl($message, $rawPayload);
+
+        if ($signedImageUrl !== null) {
+            $imagePayload['link'] = $signedImageUrl;
+            unset($imagePayload['id']);
+        }
+
+        if ($imagePayload !== []) {
+            $payload['image'] = $imagePayload;
+        }
+
+        if (
+            trim((string) ($payload['caption'] ?? '')) === ''
+            && trim((string) data_get($rawPayload, 'media_caption', '')) !== ''
+        ) {
+            $payload['caption'] = (string) data_get($rawPayload, 'media_caption');
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawPayload
+     */
+    private function signedImageUrl(ConversationMessage $message, array $rawPayload): ?string
+    {
+        $storageDisk = trim((string) data_get($rawPayload, 'media_storage_disk', ''));
+        $storagePath = trim((string) data_get($rawPayload, 'media_storage_path', ''));
+        $imageId = trim((string) (
+            data_get($rawPayload, 'image.id')
+            ?? data_get($rawPayload, 'outbound_payload.image.id')
+            ?? ''
+        ));
+
+        if ($storageDisk === '' && $storagePath === '' && $imageId === '') {
+            return null;
+        }
+
+        return MediaUrlNormalizer::normalize(
+            URL::signedRoute('api.admin-mobile.media.show', ['message' => $message->id]),
+        );
     }
 }

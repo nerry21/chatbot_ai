@@ -25,6 +25,7 @@ class SendWhatsAppMessageJobTest extends TestCase
         config()->set('chatbot.whatsapp.enabled', true);
         config()->set('chatbot.whatsapp.access_token', 'test-token');
         config()->set('chatbot.whatsapp.phone_number_id', '123456789');
+        config()->set('app.url', 'https://spesial.online');
 
         $requests = [];
 
@@ -83,5 +84,71 @@ class SendWhatsAppMessageJobTest extends TestCase
             'https://spesial.online/api/admin-mobile/media/messages/999?signature=test',
             $requests[0]['image']['link'] ?? null,
         );
+    }
+
+    public function test_it_prefers_signed_media_link_for_outbound_image_dispatch(): void
+    {
+        config()->set('chatbot.whatsapp.enabled', true);
+        config()->set('chatbot.whatsapp.access_token', 'test-token');
+        config()->set('chatbot.whatsapp.phone_number_id', '123456789');
+        config()->set('app.url', 'https://spesial.online');
+
+        $requests = [];
+
+        Http::fake(function ($request) use (&$requests) {
+            $requests[] = json_decode($request->body(), true);
+
+            return Http::response([
+                'messages' => [
+                    ['id' => 'wamid.job-image-002'],
+                ],
+            ], 200);
+        });
+
+        $customer = Customer::create([
+            'name' => 'Forward Image Customer',
+            'phone_e164' => '+628123450223',
+            'status' => 'active',
+        ]);
+
+        $conversation = Conversation::create([
+            'customer_id' => $customer->id,
+            'channel' => 'whatsapp',
+            'status' => ConversationStatus::Active,
+            'handoff_mode' => 'bot',
+            'started_at' => now()->subMinutes(10),
+            'last_message_at' => now(),
+            'source_app' => 'web-dashboard',
+        ]);
+
+        $message = ConversationMessage::create([
+            'conversation_id' => $conversation->id,
+            'direction' => MessageDirection::Outbound,
+            'sender_type' => SenderType::Bot,
+            'message_type' => 'image',
+            'message_text' => '',
+            'raw_payload' => [
+                'image' => [
+                    'id' => 'wa-media-123',
+                ],
+                'outbound_payload' => [
+                    'image' => [
+                        'id' => 'wa-media-123',
+                    ],
+                ],
+            ],
+            'delivery_status' => MessageDeliveryStatus::Pending,
+            'sent_at' => now(),
+        ]);
+
+        $job = new SendWhatsAppMessageJob($message->id);
+        $job->handle(app(WhatsAppSenderService::class), app(AuditLogService::class));
+
+        $this->assertSame('image', $requests[0]['type'] ?? null);
+        $this->assertStringContainsString(
+            '/api/admin-mobile/media/messages/'.$message->id,
+            (string) ($requests[0]['image']['link'] ?? ''),
+        );
+        $this->assertArrayNotHasKey('id', $requests[0]['image'] ?? []);
     }
 }

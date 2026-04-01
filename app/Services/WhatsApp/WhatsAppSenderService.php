@@ -326,14 +326,16 @@ class WhatsAppSenderService
         if ($messageType === 'image') {
             $image = is_array($providerPayload['image'] ?? null) ? $providerPayload['image'] : [];
             $caption = trim((string) ($providerPayload['caption'] ?? $text));
+            $imageLink = Arr::get($image, 'link');
+            $imageId = $imageLink ? null : Arr::get($image, 'id');
 
             return [
                 'messaging_product' => 'whatsapp',
                 'to' => $to,
                 'type' => 'image',
                 'image' => array_filter([
-                    'id' => Arr::get($image, 'id'),
-                    'link' => Arr::get($image, 'link'),
+                    'id' => $imageId,
+                    'link' => $imageLink,
                     'caption' => $caption !== '' ? $caption : null,
                 ], static fn (mixed $value): bool => filled($value)),
             ];

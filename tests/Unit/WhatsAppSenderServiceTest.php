@@ -155,4 +155,45 @@ class WhatsAppSenderServiceTest extends TestCase
         );
         $this->assertSame('Foto timbangan terbaru', $requests[0]['image']['caption'] ?? null);
     }
+
+    public function test_it_prefers_image_link_over_image_id_when_both_exist(): void
+    {
+        config()->set('chatbot.whatsapp.enabled', true);
+        config()->set('chatbot.whatsapp.access_token', 'test-token');
+        config()->set('chatbot.whatsapp.phone_number_id', '123456789');
+
+        $requests = [];
+
+        Http::fake(function ($request) use (&$requests) {
+            $requests[] = json_decode($request->body(), true);
+
+            return Http::response([
+                'messages' => [
+                    ['id' => 'wamid.image-002'],
+                ],
+            ], 200);
+        });
+
+        $service = app(WhatsAppSenderService::class);
+
+        $result = $service->sendMessage(
+            toPhoneE164: '+6281234567890',
+            text: '',
+            messageType: 'image',
+            providerPayload: [
+                'image' => [
+                    'id' => 'wa-media-123',
+                    'link' => 'https://spesial.online/api/admin-mobile/media/messages/12?signature=test',
+                ],
+            ],
+        );
+
+        $this->assertSame('sent', $result['status']);
+        $this->assertSame('image', $requests[0]['type'] ?? null);
+        $this->assertSame(
+            'https://spesial.online/api/admin-mobile/media/messages/12?signature=test',
+            $requests[0]['image']['link'] ?? null,
+        );
+        $this->assertArrayNotHasKey('id', $requests[0]['image'] ?? []);
+    }
 }
