@@ -398,9 +398,16 @@ class SendWhatsAppMessageJob implements ShouldQueue
 
         if ($message->message_type === 'audio') {
             $audioPayload = is_array($payload['audio'] ?? null) ? $payload['audio'] : [];
+            $uploadedAudioId = $this->outboundAudioMediaId($message, $rawPayload, $mediaService);
             $publicAudioUrl = $this->publicMediaUrl($message, $rawPayload, 'audio');
 
-            if ($publicAudioUrl !== null) {
+            if ($uploadedAudioId !== null) {
+                $audioPayload['id'] = $uploadedAudioId;
+                unset($audioPayload['link']);
+                if ($publicAudioUrl !== null) {
+                    $payload['_audio_link_fallback'] = $publicAudioUrl;
+                }
+            } elseif ($publicAudioUrl !== null) {
                 $audioPayload['link'] = $publicAudioUrl;
                 unset($audioPayload['id']);
             }
@@ -443,6 +450,63 @@ class SendWhatsAppMessageJob implements ShouldQueue
         }
 
         return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawPayload
+     */
+    private function outboundAudioMediaId(
+        ConversationMessage $message,
+        array $rawPayload,
+        WhatsAppMediaService $mediaService,
+    ): ?string {
+        $cachedMediaId = trim((string) data_get($rawPayload, 'whatsapp_outbound_media_id', ''));
+        if ($cachedMediaId !== '') {
+            return $cachedMediaId;
+        }
+
+        $storageDisk = trim((string) data_get($rawPayload, 'media_storage_disk', ''));
+        $storagePath = trim((string) data_get($rawPayload, 'media_storage_path', ''));
+
+        if ($storageDisk === '' || $storagePath === '' || ! Storage::disk($storageDisk)->exists($storagePath)) {
+            return null;
+        }
+
+        try {
+            $mimeType = trim((string) (
+                Storage::disk($storageDisk)->mimeType($storagePath)
+                ?: data_get($rawPayload, 'mime_type')
+                ?: 'application/octet-stream'
+            ));
+
+            $fileName = trim((string) (
+                data_get($rawPayload, 'media_original_name')
+                ?: basename($storagePath)
+            ));
+
+            $uploadedMediaId = $mediaService->uploadFromContents(
+                Storage::disk($storageDisk)->get($storagePath),
+                $fileName,
+                $mimeType,
+            );
+
+            $message->forceFill([
+                'raw_payload' => array_merge($rawPayload, [
+                    'whatsapp_outbound_media_id' => $uploadedMediaId,
+                ]),
+            ])->save();
+
+            return $uploadedMediaId;
+        } catch (\Throwable $e) {
+            WaLog::warning('[Job:SendWA] Failed to upload stored audio media for outbound dispatch', [
+                'message_id' => $message->id,
+                'storage_disk' => $storageDisk,
+                'storage_path' => $storagePath,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 
     /**

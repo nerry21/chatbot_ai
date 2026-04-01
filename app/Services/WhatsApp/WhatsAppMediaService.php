@@ -128,6 +128,7 @@ class WhatsAppMediaService
             'image/heic', 'image/heif' => 'image/jpeg',
             'audio/mp3' => 'audio/mpeg',
             'audio/x-m4a' => 'audio/mp4',
+            'video/mp4' => 'audio/mp4',
             default => $normalized,
         };
     }
@@ -157,7 +158,7 @@ class WhatsAppMediaService
             'image/gif' => 'gif',
             'audio/ogg', 'audio/opus', 'application/ogg' => 'ogg',
             'audio/mpeg', 'audio/mp3' => 'mp3',
-            'audio/mp4', 'audio/x-m4a', 'audio/aac' => 'm4a',
+            'audio/mp4', 'audio/x-m4a', 'audio/aac', 'video/mp4' => 'm4a',
             'audio/wav' => 'wav',
             'audio/webm', 'video/webm' => 'webm',
             default => 'bin',
