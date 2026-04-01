@@ -396,6 +396,22 @@ class SendWhatsAppMessageJob implements ShouldQueue
             ? $rawPayload['outbound_payload']
             : [];
 
+        if ($message->message_type === 'audio') {
+            $audioPayload = is_array($payload['audio'] ?? null) ? $payload['audio'] : [];
+            $publicAudioUrl = $this->publicMediaUrl($message, $rawPayload, 'audio');
+
+            if ($publicAudioUrl !== null) {
+                $audioPayload['link'] = $publicAudioUrl;
+                unset($audioPayload['id']);
+            }
+
+            if ($audioPayload !== []) {
+                $payload['audio'] = $audioPayload;
+            }
+
+            return $payload;
+        }
+
         if ($message->message_type !== 'image') {
             return $payload;
         }
@@ -499,12 +515,8 @@ class SendWhatsAppMessageJob implements ShouldQueue
         [$storageDisk, $storagePath] = $this->storedImageLocationForDispatch($message, $rawPayload, $mediaService);
 
         if ($storageDisk !== '' && $storagePath !== '') {
-            $signedMediaUrl = $this->temporarySignedImageUrl($message);
-            if ($signedMediaUrl !== null) {
-                return $signedMediaUrl;
-            }
-
-            return MediaUrlNormalizer::normalize(Storage::disk($storageDisk)->url($storagePath));
+            return $this->temporarySignedMediaUrl($message)
+                ?? MediaUrlNormalizer::normalize(Storage::disk($storageDisk)->url($storagePath));
         }
 
         $imageLink = trim((string) data_get($rawPayload, 'outbound_payload.image.link', ''));
@@ -512,7 +524,24 @@ class SendWhatsAppMessageJob implements ShouldQueue
         return $imageLink !== '' ? MediaUrlNormalizer::normalize($imageLink) : null;
     }
 
-    private function temporarySignedImageUrl(ConversationMessage $message): ?string
+    private function publicMediaUrl(
+        ConversationMessage $message,
+        array $rawPayload,
+        string $mediaType,
+    ): ?string {
+        $storageDisk = trim((string) data_get($rawPayload, 'media_storage_disk', ''));
+        $storagePath = trim((string) data_get($rawPayload, 'media_storage_path', ''));
+
+        if ($storageDisk !== '' && $storagePath !== '' && Storage::disk($storageDisk)->exists($storagePath)) {
+            return $this->temporarySignedMediaUrl($message)
+                ?? MediaUrlNormalizer::normalize(Storage::disk($storageDisk)->url($storagePath));
+        }
+
+        $directLink = trim((string) data_get($rawPayload, 'outbound_payload.'.$mediaType.'.link', ''));
+        return $directLink !== '' ? MediaUrlNormalizer::normalize($directLink) : null;
+    }
+
+    private function temporarySignedMediaUrl(ConversationMessage $message): ?string
     {
         try {
             return URL::temporarySignedRoute(

@@ -49,18 +49,17 @@ class ReplyController extends Controller
         $text = $messageType === 'audio'
             ? (string) (($validated['caption'] ?? '') ?: '[Voice note admin]')
             : ($messageType === 'image'
-                ? (string) (($validated['caption'] ?? '') ?: '[Gambar dari Admin JET]')
+                ? (string) (($validated['caption'] ?? '') ?: '[Gambar admin]')
                 : (string) ($validated['message'] ?? ''));
 
         $outboundPayload = $messageType === 'audio'
-            ? [
-                'audio' => [
-                    'link' => (string) ($validated['audio_url'] ?? ''),
-                    'voice' => (bool) ($validated['voice'] ?? true),
-                ],
-                'mime_type' => $validated['mime_type'] ?? null,
-                'caption' => $validated['caption'] ?? null,
-            ]
+            ? $this->storeAudioPayload(
+                $request->file('audio_file'),
+                (string) ($validated['audio_url'] ?? ''),
+                (string) ($validated['caption'] ?? ''),
+                (bool) ($validated['voice'] ?? true),
+                $validated['mime_type'] ?? null,
+            )
             : ($messageType === 'image'
                 ? $this->storeImagePayload($request->file('image_file'), (string) ($validated['caption'] ?? ''))
                 : []);
@@ -95,7 +94,7 @@ class ReplyController extends Controller
                 $messageType === 'audio'
                     ? 'Voice note admin berhasil diantrekan ke WhatsApp.'
                     : ($messageType === 'image'
-                        ? 'Gambar dari Admin JET berhasil diantrekan ke WhatsApp.'
+                        ? 'Gambar admin berhasil diantrekan ke WhatsApp.'
                     : ($conversation->channel === 'mobile_live_chat'
                         ? 'Balasan admin berhasil dikirim ke live chat.'
                         : 'Balasan admin berhasil diantrekan ke WhatsApp.'))
@@ -129,6 +128,41 @@ class ReplyController extends Controller
             'size_bytes' => $imageFile->getSize(),
             'storage_disk' => 'public',
             'storage_path' => $storedPath,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function storeAudioPayload(
+        ?UploadedFile $audioFile,
+        string $audioUrl,
+        string $caption,
+        bool $voice,
+        ?string $mimeType,
+    ): array {
+        if ($audioFile instanceof UploadedFile) {
+            $storedPath = $audioFile->store('conversation-media/audio', 'public');
+
+            return [
+                'audio' => [],
+                'caption' => $caption !== '' ? $caption : null,
+                'voice' => $voice,
+                'mime_type' => $mimeType ?: ($audioFile->getMimeType() ?: $audioFile->getClientMimeType()),
+                'original_name' => $audioFile->getClientOriginalName(),
+                'size_bytes' => $audioFile->getSize(),
+                'storage_disk' => 'public',
+                'storage_path' => $storedPath,
+            ];
+        }
+
+        return [
+            'audio' => [
+                'link' => $audioUrl,
+                'voice' => $voice,
+            ],
+            'caption' => $caption !== '' ? $caption : null,
+            'mime_type' => $mimeType,
         ];
     }
 }

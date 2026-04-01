@@ -25,15 +25,18 @@ class ConversationMessageResource extends JsonResource
         $audioLink = data_get($this->raw_payload, 'outbound_payload.audio.link')
             ?? data_get($this->raw_payload, 'audio.link')
             ?? data_get($this->raw_payload, 'audio_url');
+        $signedStoredAudioLink = $this->signedMediaUrl('audio');
         $audioId = data_get($this->raw_payload, 'audio.id');
         $imageLink = data_get($this->raw_payload, 'outbound_payload.image.link')
             ?? data_get($this->raw_payload, 'image.link')
             ?? data_get($this->raw_payload, 'image_url');
         $imageId = data_get($this->raw_payload, 'image.id')
             ?? data_get($this->raw_payload, 'outbound_payload.image.id');
-        $signedStoredImageLink = $this->signedImageUrl();
+        $signedStoredImageLink = $this->signedMediaUrl('image');
         $normalizedImageLink = $signedStoredImageLink
             ?? MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
+        $normalizedAudioLink = $signedStoredAudioLink
+            ?? MediaUrlNormalizer::normalize(is_string($audioLink) ? $audioLink : null);
 
         if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
@@ -88,7 +91,7 @@ class ConversationMessageResource extends JsonResource
             'media' => [
                 'image_url' => $normalizedImageLink,
                 'image_id' => $imageId,
-                'audio_url' => $audioLink,
+                'audio_url' => $normalizedAudioLink,
                 'audio_id' => $audioId,
                 'mime_type' => data_get($this->raw_payload, 'mime_type')
                     ?? data_get($this->raw_payload, 'image.mime_type'),
@@ -154,19 +157,19 @@ class ConversationMessageResource extends JsonResource
         };
     }
 
-    private function signedImageUrl(): ?string
+    private function signedMediaUrl(string $type): ?string
     {
         $storageDisk = trim((string) data_get($this->raw_payload, 'media_storage_disk', ''));
         $storagePath = trim((string) data_get($this->raw_payload, 'media_storage_path', ''));
-        $imageId = trim((string) (
-            data_get($this->raw_payload, 'image.id')
-            ?? data_get($this->raw_payload, 'outbound_payload.image.id')
+        $mediaId = trim((string) (
+            data_get($this->raw_payload, $type.'.id')
+            ?? data_get($this->raw_payload, 'outbound_payload.'.$type.'.id')
             ?? ''
         ));
 
         if (
-            $this->message_type !== 'image'
-            || (($storageDisk === '' || $storagePath === '') && $imageId === '')
+            $this->message_type !== $type
+            || (($storageDisk === '' || $storagePath === '') && $mediaId === '')
         ) {
             return null;
         }

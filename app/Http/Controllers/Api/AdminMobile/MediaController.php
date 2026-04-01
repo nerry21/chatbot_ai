@@ -52,15 +52,17 @@ class MediaController extends Controller
         $mediaId = trim((string) (
             data_get($rawPayload, 'image.id')
             ?: data_get($rawPayload, 'outbound_payload.image.id')
+            ?: data_get($rawPayload, 'audio.id')
+            ?: data_get($rawPayload, 'outbound_payload.audio.id')
             ?: ''
         ));
 
-        if ($message->message_type !== 'image' || $mediaId === '') {
+        if (! in_array($message->message_type, ['image', 'audio'], true) || $mediaId === '') {
             return null;
         }
 
         $download = $mediaService->downloadByMediaId($mediaId);
-        $storedPath = $this->storeRemoteImage($message, $rawPayload, $download);
+        $storedPath = $this->storeRemoteMedia($message, $rawPayload, $download);
 
         return [
             'disk' => 'public',
@@ -77,7 +79,7 @@ class MediaController extends Controller
      * @param  array<string, mixed>  $rawPayload
      * @param  array{contents: string, mime_type: string, file_name: string, size_bytes: int}  $download
      */
-    private function storeRemoteImage(
+    private function storeRemoteMedia(
         ConversationMessage $message,
         array $rawPayload,
         array $download,
@@ -87,7 +89,8 @@ class MediaController extends Controller
         $storedFileName = trim($safeFileName) !== ''
             ? $safeFileName.'.'.$extension
             : $message->id.'.'.$extension;
-        $storedPath = 'conversation-media/images/inbound/'.$message->id.'-'.$storedFileName;
+        $folder = $message->message_type === 'audio' ? 'conversation-media/audio/inbound/' : 'conversation-media/images/inbound/';
+        $storedPath = $folder.$message->id.'-'.$storedFileName;
 
         Storage::disk('public')->put($storedPath, $download['contents']);
 
