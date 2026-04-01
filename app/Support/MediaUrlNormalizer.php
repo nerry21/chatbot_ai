@@ -47,21 +47,6 @@ final class MediaUrlNormalizer
 
     private static function preferredBaseUrl(): string
     {
-        $origin = trim((string) request()->headers->get('origin', ''));
-        if ($origin !== '') {
-            return $origin;
-        }
-
-        $referer = trim((string) request()->headers->get('referer', ''));
-        if ($referer !== '') {
-            $scheme = parse_url($referer, PHP_URL_SCHEME);
-            $host = parse_url($referer, PHP_URL_HOST);
-            $port = parse_url($referer, PHP_URL_PORT);
-            if (is_string($scheme) && $scheme !== '' && is_string($host) && $host !== '') {
-                return $port !== null ? sprintf('%s://%s:%d', $scheme, $host, $port) : sprintf('%s://%s', $scheme, $host);
-            }
-        }
-
         $forwardedHost = trim((string) request()->headers->get('x-forwarded-host', ''));
         if ($forwardedHost !== '') {
             $scheme = self::preferredScheme();
@@ -83,16 +68,6 @@ final class MediaUrlNormalizer
         $forwardedProto = trim((string) request()->headers->get('x-forwarded-proto', ''));
         if ($forwardedProto !== '') {
             return strtolower(trim(explode(',', $forwardedProto)[0]));
-        }
-
-        $originScheme = parse_url((string) request()->headers->get('origin', ''), PHP_URL_SCHEME);
-        if (is_string($originScheme) && $originScheme !== '') {
-            return strtolower($originScheme);
-        }
-
-        $refererScheme = parse_url((string) request()->headers->get('referer', ''), PHP_URL_SCHEME);
-        if (is_string($refererScheme) && $refererScheme !== '') {
-            return strtolower($refererScheme);
         }
 
         if (is_array($baseParsed) && isset($baseParsed['scheme'])) {

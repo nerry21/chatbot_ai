@@ -289,6 +289,7 @@ class AdminMobileReadApiTest extends TestCase
         ]);
 
         $messages = $this->withHeaders([
+            'Origin' => 'http://localhost:3000',
             'X-Forwarded-Proto' => 'https',
             'X-Forwarded-Host' => 'spesial.online',
         ])->withToken($token)->getJson(route('api.admin-mobile.conversations.messages.index', [
@@ -301,6 +302,7 @@ class AdminMobileReadApiTest extends TestCase
             ->assertJsonPath('data.messages.2.media.caption', 'Foto timbangan terbaru');
 
         $poll = $this->withHeaders([
+            'Origin' => 'http://localhost:3000',
             'X-Forwarded-Proto' => 'https',
             'X-Forwarded-Host' => 'spesial.online',
         ])->withToken($token)->getJson(route('api.admin-mobile.conversations.poll', [
