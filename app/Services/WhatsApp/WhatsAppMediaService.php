@@ -35,32 +35,24 @@ class WhatsAppMediaService
             throw new RuntimeException('WhatsApp media contents are empty.');
         }
 
-        $normalizedFileName = trim($fileName) !== '' ? trim($fileName) : 'upload.bin';
         $normalizedMimeType = $this->normalizeMimeType($mimeType);
+        $normalizedFileName = $this->normalizeFileName($fileName, $normalizedMimeType);
 
         $response = Http::withToken($this->accessToken)
+            ->acceptJson()
             ->timeout($this->timeoutSeconds)
-            ->withOptions([
-                'multipart' => [
-                    [
-                        'name' => 'messaging_product',
-                        'contents' => 'whatsapp',
-                    ],
-                    [
-                        'name' => 'type',
-                        'contents' => $normalizedMimeType,
-                    ],
-                    [
-                        'name' => 'file',
-                        'contents' => $contents,
-                        'filename' => $normalizedFileName,
-                        'headers' => [
-                            'Content-Type' => $normalizedMimeType,
-                        ],
-                    ],
+            ->attach(
+                'file',
+                $contents,
+                $normalizedFileName,
+                [
+                    'Content-Type' => $normalizedMimeType,
                 ],
-            ])
-            ->post("{$this->graphBaseUrl}/{$this->phoneNumberId}/media");
+            )
+            ->post("{$this->graphBaseUrl}/{$this->phoneNumberId}/media", [
+                'messaging_product' => 'whatsapp',
+                'type' => $normalizedMimeType,
+            ]);
 
         if (! $response->successful()) {
             throw new RuntimeException($this->errorMessage($response, 'Failed to upload WhatsApp media content.'));
@@ -122,13 +114,7 @@ class WhatsAppMediaService
 
     private function buildFileName(string $mediaId, string $mimeType): string
     {
-        $extension = match ($this->normalizeMimeType($mimeType)) {
-            'image/jpeg', 'image/jpg' => 'jpg',
-            'image/png' => 'png',
-            'image/webp' => 'webp',
-            'image/gif' => 'gif',
-            default => 'bin',
-        };
+        $extension = $this->extensionForMimeType($mimeType);
 
         return $mediaId.'.'.$extension;
     }
@@ -139,7 +125,35 @@ class WhatsAppMediaService
 
         return match ($normalized) {
             '', 'image/jpg', 'image/pjpeg' => 'image/jpeg',
+            'image/heic', 'image/heif' => 'image/jpeg',
             default => $normalized,
+        };
+    }
+
+    private function normalizeFileName(string $fileName, string $mimeType): string
+    {
+        $trimmed = trim($fileName);
+        $extension = pathinfo($trimmed, PATHINFO_EXTENSION);
+
+        if ($trimmed === '') {
+            return 'upload.'.$this->extensionForMimeType($mimeType);
+        }
+
+        if ($extension !== '') {
+            return $trimmed;
+        }
+
+        return $trimmed.'.'.$this->extensionForMimeType($mimeType);
+    }
+
+    private function extensionForMimeType(string $mimeType): string
+    {
+        return match ($this->normalizeMimeType($mimeType)) {
+            'image/jpeg', 'image/jpg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/gif' => 'gif',
+            default => 'bin',
         };
     }
 
