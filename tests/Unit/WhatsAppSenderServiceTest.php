@@ -196,4 +196,56 @@ class WhatsAppSenderServiceTest extends TestCase
         );
         $this->assertArrayNotHasKey('id', $requests[0]['image'] ?? []);
     }
+
+    public function test_it_retries_image_with_link_when_media_id_send_is_rejected(): void
+    {
+        config()->set('chatbot.whatsapp.enabled', true);
+        config()->set('chatbot.whatsapp.access_token', 'test-token');
+        config()->set('chatbot.whatsapp.phone_number_id', '123456789');
+
+        $requests = [];
+
+        Http::fake(function ($request) use (&$requests) {
+            $body = json_decode($request->body(), true);
+            $requests[] = $body;
+
+            if (($body['image']['id'] ?? null) === 'wa-media-123') {
+                return Http::response([
+                    'error' => [
+                        'message' => 'Unsupported image media id.',
+                    ],
+                ], 400);
+            }
+
+            return Http::response([
+                'messages' => [
+                    ['id' => 'wamid.image-fallback-001'],
+                ],
+            ], 200);
+        });
+
+        $service = app(WhatsAppSenderService::class);
+
+        $result = $service->sendMessage(
+            toPhoneE164: '+6281234567890',
+            text: 'Foto terbaru',
+            messageType: 'image',
+            providerPayload: [
+                'image' => [
+                    'id' => 'wa-media-123',
+                ],
+                'caption' => 'Foto terbaru',
+                '_image_link_fallback' => 'https://spesial.online/storage/conversation-media/images/latest.jpg',
+            ],
+        );
+
+        $this->assertSame('sent', $result['status']);
+        $this->assertTrue($result['fallback_used'] ?? false);
+        $this->assertCount(2, $requests);
+        $this->assertSame('wa-media-123', $requests[0]['image']['id'] ?? null);
+        $this->assertSame(
+            'https://spesial.online/storage/conversation-media/images/latest.jpg',
+            $requests[1]['image']['link'] ?? null,
+        );
+    }
 }

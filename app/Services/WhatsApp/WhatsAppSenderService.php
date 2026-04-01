@@ -142,6 +142,20 @@ class WhatsAppSenderService
                 return $fallbackResult;
             }
 
+            $imageFallbackResult = $this->retryImageWithLinkFallback(
+                toPhoneE164: $toPhoneE164,
+                text: $text,
+                resolvedType: $resolvedType,
+                providerPayload: $providerPayload,
+                responseStatus: $response->status(),
+                errorMessage: $errorMsg,
+                meta: $meta,
+            );
+
+            if ($imageFallbackResult !== null) {
+                return $imageFallbackResult;
+            }
+
             if ($this->shouldFallbackReengagementTemplate($resolvedType, $errorCode, $errorMsg)) {
                 WaLog::warning('[Sender] Text send rejected by 24h rule, retrying with template fallback', array_merge([
                     'to' => WaLog::maskPhone($normalizedE164),
@@ -283,6 +297,77 @@ class WhatsAppSenderService
             'response' => $response,
             'error' => $error,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $providerPayload
+     * @param array<string, mixed> $meta
+     * @return array<string, mixed>|null
+     */
+    private function retryImageWithLinkFallback(
+        string $toPhoneE164,
+        string $text,
+        string $resolvedType,
+        array $providerPayload,
+        int $responseStatus,
+        string $errorMessage,
+        array $meta,
+    ): ?array {
+        if ($resolvedType !== 'image') {
+            return null;
+        }
+
+        if (($meta['fallback_from'] ?? null) === 'image_media_id') {
+            return null;
+        }
+
+        $primaryImage = is_array($providerPayload['image'] ?? null) ? $providerPayload['image'] : [];
+        $fallbackLink = trim((string) ($providerPayload['_image_link_fallback'] ?? ''));
+
+        if (blank($primaryImage['id'] ?? null) || $fallbackLink === '') {
+            return null;
+        }
+
+        WaLog::warning('[Sender] Image send rejected, retrying with direct link fallback', array_merge([
+            'to' => WaLog::maskPhone($toPhoneE164),
+            'http_status' => $responseStatus,
+            'error_msg' => mb_substr($errorMessage, 0, 300),
+        ], $meta));
+
+        $fallbackResult = $this->sendMessage(
+            toPhoneE164: $toPhoneE164,
+            text: $text,
+            messageType: 'image',
+            providerPayload: [
+                'image' => [
+                    'link' => $fallbackLink,
+                ],
+                'caption' => $providerPayload['caption'] ?? null,
+            ],
+            meta: array_merge($meta, ['fallback_from' => 'image_media_id']),
+        );
+
+        $fallbackResponse = is_array($fallbackResult['response'] ?? null)
+            ? $fallbackResult['response']
+            : [];
+        $fallbackResponse['_delivery'] = array_merge(
+            is_array($fallbackResponse['_delivery'] ?? null) ? $fallbackResponse['_delivery'] : [],
+            [
+                'requested_type' => 'image',
+                'sent_type' => 'image',
+                'image_link_fallback_used' => true,
+                'image_primary_transport' => 'id',
+                'image_fallback_transport' => 'link',
+                'image_http_status' => $responseStatus,
+                'image_error' => $errorMessage,
+            ],
+        );
+        $fallbackResult['response'] = $fallbackResponse;
+        $fallbackResult['requested_type'] = 'image';
+        $fallbackResult['sent_type'] = 'image';
+        $fallbackResult['fallback_used'] = true;
+
+        return $fallbackResult;
     }
 
     /**

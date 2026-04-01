@@ -400,18 +400,18 @@ class SendWhatsAppMessageJob implements ShouldQueue
         }
 
         $imagePayload = is_array($payload['image'] ?? null) ? $payload['image'] : [];
+        $publicImageUrl = $this->publicImageUrl($message, $rawPayload, $mediaService);
         $uploadedImageId = $this->outboundImageMediaId($message, $rawPayload, $mediaService);
 
         if ($uploadedImageId !== null) {
             $imagePayload['id'] = $uploadedImageId;
             unset($imagePayload['link']);
-        } else {
-            $publicImageUrl = $this->publicImageUrl($message, $rawPayload, $mediaService);
-
             if ($publicImageUrl !== null) {
-                $imagePayload['link'] = $publicImageUrl;
-                unset($imagePayload['id']);
+                $payload['_image_link_fallback'] = $publicImageUrl;
             }
+        } elseif ($publicImageUrl !== null) {
+            $imagePayload['link'] = $publicImageUrl;
+            unset($imagePayload['id']);
         }
 
         if ($imagePayload !== []) {
