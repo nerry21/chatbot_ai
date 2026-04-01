@@ -11,7 +11,6 @@ use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\ConversationReadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Log;
 
 class ReplyController extends Controller
 {
@@ -26,25 +25,7 @@ class ReplyController extends Controller
         SendConversationReplyRequest $request,
         Conversation $conversation,
     ): JsonResponse {
-        Log::info('VOICE_NOTE ReplyController@store incoming', [
-            'conversation_id' => $conversation->id,
-            'channel' => $conversation->channel,
-            'message_type' => $request->input('message_type'),
-            'has_audio_file' => $request->hasFile('audio_file'),
-            'audio_file_name' => $request->file('audio_file')?->getClientOriginalName(),
-            'audio_file_mime' => $request->file('audio_file')?->getMimeType(),
-            'audio_file_size' => $request->file('audio_file')?->getSize(),
-            'has_image_file' => $request->hasFile('image_file'),
-            'mime_type' => $request->input('mime_type'),
-            'voice' => $request->input('voice'),
-            'caption' => $request->input('caption'),
-        ]);
-
         $validated = $request->validated();
-
-        Log::info('VOICE_NOTE ReplyController@store validated', [
-            'validated' => $validated,
-        ]);
 
         /** @var User|null $user */
         $user = $request->attributes->get('admin_mobile_user');
@@ -93,12 +74,6 @@ class ReplyController extends Controller
             default => [],
         };
 
-        Log::info('VOICE_NOTE ReplyController@store payload_ready', [
-            'message_type' => $messageType,
-            'text' => $text,
-            'outbound_payload' => $outboundPayload,
-        ]);
-
         $result = $this->messageService->send(
             conversation: $conversation,
             text: $text,
@@ -113,10 +88,6 @@ class ReplyController extends Controller
         $this->readService->markAsRead($conversation, (int) $user->id);
 
         if (($result['status'] ?? 'failed') === 'failed') {
-            Log::warning('VOICE_NOTE ReplyController@store send_failed', [
-                'result' => $result,
-            ]);
-
             return response()->json([
                 'success' => false,
                 'message' => (string) ($result['error'] ?? 'Pesan admin gagal dikirim.'),

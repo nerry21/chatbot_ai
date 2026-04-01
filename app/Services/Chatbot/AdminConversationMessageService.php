@@ -115,13 +115,18 @@ class AdminConversationMessageService
                     'sender_role' => 'admin',
                 ], $messageType === 'audio' ? [
                     'outbound_payload' => [
-                        'audio' => [
+                        'audio' => array_filter([
                             'link' => (string) data_get($outboundPayload, 'audio.link', ''),
+                            'id' => (string) data_get($outboundPayload, 'audio.id', ''),
                             'voice' => (bool) data_get($outboundPayload, 'audio.voice', true),
-                        ],
+                        ], static fn (mixed $value): bool => $value !== '' && $value !== null),
                     ],
                     'media_caption' => data_get($outboundPayload, 'caption'),
                     'mime_type' => data_get($outboundPayload, 'mime_type'),
+                    'media_original_name' => data_get($outboundPayload, 'original_name'),
+                    'media_size_bytes' => data_get($outboundPayload, 'size_bytes'),
+                    'media_storage_disk' => data_get($outboundPayload, 'storage_disk'),
+                    'media_storage_path' => data_get($outboundPayload, 'storage_path'),
                 ] : ($messageType === 'image' ? [
                     'outbound_payload' => [
                         'image' => [
