@@ -232,7 +232,14 @@ class WhatsAppWebhookController extends Controller
                 'file' => $e->getFile() . ':' . $e->getLine(),
                 'trace' => $e->getTraceAsString(),
                 'ip' => $request->ip(),
-                'payload' => $payload,
+                'object' => $payload['object'] ?? null,
+                'entry_count' => $entryCount,
+                'message_count' => $messageCount,
+                'status_count' => $statusCount,
+                'call_count' => $callCount,
+                'event_types' => array_values(array_unique($eventTypes)),
+                'status_details' => $statusDetails,
+                'call_details' => $callDetails,
             ]);
         }
 
