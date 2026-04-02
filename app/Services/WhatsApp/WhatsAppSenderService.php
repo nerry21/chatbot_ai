@@ -142,6 +142,20 @@ class WhatsAppSenderService
                 return $fallbackResult;
             }
 
+            $audioFallbackResult = $this->retryAudioWithLinkFallback(
+                toPhoneE164: $toPhoneE164,
+                text: $text,
+                resolvedType: $resolvedType,
+                providerPayload: $providerPayload,
+                responseStatus: $response->status(),
+                errorMessage: $errorMsg,
+                meta: $meta,
+            );
+
+            if ($audioFallbackResult !== null) {
+                return $audioFallbackResult;
+            }
+
             $imageFallbackResult = $this->retryImageWithLinkFallback(
                 toPhoneE164: $toPhoneE164,
                 text: $text,
@@ -297,6 +311,77 @@ class WhatsAppSenderService
             'response' => $response,
             'error' => $error,
         ];
+    }
+
+
+    /**
+     * @param array<string, mixed> $providerPayload
+     * @param array<string, mixed> $meta
+     * @return array<string, mixed>|null
+     */
+    private function retryAudioWithLinkFallback(
+        string $toPhoneE164,
+        string $text,
+        string $resolvedType,
+        array $providerPayload,
+        int $responseStatus,
+        string $errorMessage,
+        array $meta,
+    ): ?array {
+        if ($resolvedType !== 'audio') {
+            return null;
+        }
+
+        if (($meta['fallback_from'] ?? null) === 'audio_media_id') {
+            return null;
+        }
+
+        $primaryAudio = is_array($providerPayload['audio'] ?? null) ? $providerPayload['audio'] : [];
+        $fallbackLink = trim((string) ($providerPayload['_audio_link_fallback'] ?? ''));
+
+        if (blank($primaryAudio['id'] ?? null) || $fallbackLink === '') {
+            return null;
+        }
+
+        WaLog::warning('[Sender] Audio send rejected, retrying with direct link fallback', array_merge([
+            'to' => WaLog::maskPhone($toPhoneE164),
+            'http_status' => $responseStatus,
+            'error_msg' => mb_substr($errorMessage, 0, 300),
+        ], $meta));
+
+        $fallbackResult = $this->sendMessage(
+            toPhoneE164: $toPhoneE164,
+            text: $text,
+            messageType: 'audio',
+            providerPayload: [
+                'audio' => [
+                    'link' => $fallbackLink,
+                ],
+            ],
+            meta: array_merge($meta, ['fallback_from' => 'audio_media_id']),
+        );
+
+        $fallbackResponse = is_array($fallbackResult['response'] ?? null)
+            ? $fallbackResult['response']
+            : [];
+        $fallbackResponse['_delivery'] = array_merge(
+            is_array($fallbackResponse['_delivery'] ?? null) ? $fallbackResponse['_delivery'] : [],
+            [
+                'requested_type' => 'audio',
+                'sent_type' => 'audio',
+                'audio_link_fallback_used' => true,
+                'audio_primary_transport' => 'id',
+                'audio_fallback_transport' => 'link',
+                'audio_http_status' => $responseStatus,
+                'audio_error' => $errorMessage,
+            ],
+        );
+        $fallbackResult['response'] = $fallbackResponse;
+        $fallbackResult['requested_type'] = 'audio';
+        $fallbackResult['sent_type'] = 'audio';
+        $fallbackResult['fallback_used'] = true;
+
+        return $fallbackResult;
     }
 
     /**

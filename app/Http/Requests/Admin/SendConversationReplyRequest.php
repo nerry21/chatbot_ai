@@ -5,6 +5,7 @@ namespace App\Http\Requests\Admin;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
@@ -37,7 +38,6 @@ class SendConversationReplyRequest extends FormRequest
                 'max:2048',
             ],
 
-            // sengaja dilonggarkan dulu agar voice note Flutter lolos
             'audio_file' => [
                 'nullable',
                 'file',
@@ -75,6 +75,11 @@ class SendConversationReplyRequest extends FormRequest
         $messageType = strtolower(trim((string) $this->input('message_type', 'text')));
         $message = $this->normalizeTextInput($this->input('message'));
         $caption = $this->normalizeTextInput($this->input('caption'));
+        $audioFile = $this->file('audio_file');
+        $normalizedMimeType = $this->normalizeAudioMimeType(
+            $audioFile instanceof UploadedFile ? $audioFile : null,
+            $this->input('mime_type'),
+        );
 
         $payload = [
             'message_type' => $messageType === '' ? 'text' : $messageType,
@@ -89,16 +94,22 @@ class SendConversationReplyRequest extends FormRequest
             $payload['caption'] = $caption;
         }
 
+        if ($normalizedMimeType !== null) {
+            $payload['mime_type'] = $normalizedMimeType;
+        }
+
         $this->merge($payload);
 
         Log::info('VOICE_NOTE prepareForValidation', [
             'message_type' => $this->input('message_type'),
             'has_audio_file' => $this->hasFile('audio_file'),
-            'audio_file_name' => $this->file('audio_file')?->getClientOriginalName(),
-            'audio_file_mime' => $this->file('audio_file')?->getMimeType(),
-            'audio_file_size' => $this->file('audio_file')?->getSize(),
+            'audio_file_name' => $audioFile?->getClientOriginalName(),
+            'audio_file_client_mime' => $audioFile?->getClientMimeType(),
+            'audio_file_detected_mime' => $audioFile?->getMimeType(),
+            'audio_file_size' => $audioFile?->getSize(),
             'audio_url' => $this->input('audio_url'),
             'mime_type' => $this->input('mime_type'),
+            'normalized_mime_type' => $normalizedMimeType,
             'voice' => $this->input('voice'),
             'caption' => $this->input('caption'),
         ]);
@@ -140,13 +151,16 @@ class SendConversationReplyRequest extends FormRequest
 
     protected function failedValidation(Validator $validator): void
     {
+        $audioFile = $this->file('audio_file');
+
         Log::warning('VOICE_NOTE validation_failed', [
             'errors' => $validator->errors()->toArray(),
             'message_type' => $this->input('message_type'),
             'has_audio_file' => $this->hasFile('audio_file'),
-            'audio_file_name' => $this->file('audio_file')?->getClientOriginalName(),
-            'audio_file_mime' => $this->file('audio_file')?->getMimeType(),
-            'audio_file_size' => $this->file('audio_file')?->getSize(),
+            'audio_file_name' => $audioFile?->getClientOriginalName(),
+            'audio_file_client_mime' => $audioFile?->getClientMimeType(),
+            'audio_file_detected_mime' => $audioFile?->getMimeType(),
+            'audio_file_size' => $audioFile?->getSize(),
             'all_input_keys' => array_keys($this->all()),
         ]);
 
@@ -166,5 +180,41 @@ class SendConversationReplyRequest extends FormRequest
         $text = trim((string) $value);
 
         return $text === '' ? null : $text;
+    }
+
+    private function normalizeAudioMimeType(?UploadedFile $audioFile, mixed $inputMimeType): ?string
+    {
+        $candidates = array_filter([
+            is_string($inputMimeType) ? trim($inputMimeType) : null,
+            $audioFile?->getClientMimeType(),
+            $audioFile?->getMimeType(),
+        ], static fn (?string $value): bool => is_string($value) && trim($value) !== '');
+
+        $extension = strtolower(trim((string) pathinfo($audioFile?->getClientOriginalName() ?? '', PATHINFO_EXTENSION)));
+
+        if (in_array($extension, ['ogg', 'opus'], true)) {
+            return 'audio/ogg';
+        }
+
+        if (in_array($extension, ['m4a', 'mp4', 'aac'], true)) {
+            return 'audio/mp4';
+        }
+
+        if ($extension === 'mp3') {
+            return 'audio/mpeg';
+        }
+
+        foreach ($candidates as $candidate) {
+            $normalized = strtolower(trim($candidate));
+
+            return match ($normalized) {
+                'audio/ogg', 'audio/opus', 'application/ogg' => 'audio/ogg',
+                'audio/mp3', 'audio/mpeg' => 'audio/mpeg',
+                'audio/x-m4a', 'audio/mp4', 'video/mp4', 'audio/aac' => 'audio/mp4',
+                default => $normalized !== '' ? $normalized : null,
+            };
+        }
+
+        return null;
     }
 }

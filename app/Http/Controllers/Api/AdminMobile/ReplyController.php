@@ -11,6 +11,7 @@ use App\Services\Chatbot\AdminConversationMessageService;
 use App\Services\Chatbot\ConversationReadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Str;
 
 class ReplyController extends Controller
 {
@@ -148,14 +149,19 @@ class ReplyController extends Controller
         ?string $mimeType,
     ): array {
         if ($audioFile instanceof UploadedFile) {
-            $storedPath = $audioFile->store('conversation-media/audio', 'public');
+            $normalizedMimeType = $this->normalizeAudioMimeType($audioFile, $mimeType);
+            $extension = $this->audioExtensionForMimeType($normalizedMimeType, $audioFile);
+            $baseName = trim(pathinfo($audioFile->getClientOriginalName(), PATHINFO_FILENAME));
+            $safeBaseName = $baseName !== '' ? Str::slug($baseName) : 'voice_note_'.now()->timestamp;
+            $storedFileName = $safeBaseName.'.'.$extension;
+            $storedPath = $audioFile->storeAs('conversation-media/audio', $storedFileName, 'public');
 
             return [
                 'audio' => [],
                 'caption' => $caption !== '' ? $caption : null,
                 'voice' => $voice,
-                'mime_type' => $mimeType ?: ($audioFile->getMimeType() ?: $audioFile->getClientMimeType()),
-                'original_name' => $audioFile->getClientOriginalName(),
+                'mime_type' => $normalizedMimeType,
+                'original_name' => $this->normalizeOriginalAudioName($audioFile->getClientOriginalName(), $extension),
                 'size_bytes' => $audioFile->getSize(),
                 'storage_disk' => 'public',
                 'storage_path' => $storedPath,
@@ -170,5 +176,55 @@ class ReplyController extends Controller
             'caption' => $caption !== '' ? $caption : null,
             'mime_type' => $mimeType,
         ];
+    }
+
+    private function normalizeAudioMimeType(UploadedFile $audioFile, ?string $mimeType): string
+    {
+        $originalExtension = strtolower(trim((string) pathinfo($audioFile->getClientOriginalName(), PATHINFO_EXTENSION)));
+        if (in_array($originalExtension, ['ogg', 'opus'], true)) {
+            return 'audio/ogg';
+        }
+
+        if (in_array($originalExtension, ['m4a', 'mp4', 'aac'], true)) {
+            return 'audio/mp4';
+        }
+
+        if ($originalExtension === 'mp3') {
+            return 'audio/mpeg';
+        }
+
+        $candidate = strtolower(trim((string) ($mimeType ?: $audioFile->getClientMimeType() ?: $audioFile->getMimeType() ?: 'audio/ogg')));
+
+        return match ($candidate) {
+            'audio/opus', 'application/ogg' => 'audio/ogg',
+            'video/mp4', 'audio/x-m4a', 'audio/aac' => 'audio/mp4',
+            'audio/mp3' => 'audio/mpeg',
+            default => $candidate,
+        };
+    }
+
+    private function audioExtensionForMimeType(string $mimeType, UploadedFile $audioFile): string
+    {
+        $originalExtension = strtolower(trim((string) pathinfo($audioFile->getClientOriginalName(), PATHINFO_EXTENSION)));
+        if ($originalExtension !== '') {
+            return match ($originalExtension) {
+                'opus' => 'ogg',
+                default => $originalExtension,
+            };
+        }
+
+        return match ($mimeType) {
+            'audio/mpeg' => 'mp3',
+            'audio/mp4' => 'm4a',
+            default => 'ogg',
+        };
+    }
+
+    private function normalizeOriginalAudioName(string $originalName, string $extension): string
+    {
+        $baseName = trim(pathinfo($originalName, PATHINFO_FILENAME));
+        $safeBaseName = $baseName !== '' ? $baseName : 'voice_note';
+
+        return $safeBaseName.'.'.$extension;
     }
 }
