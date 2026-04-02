@@ -36,6 +36,10 @@ return [
 
     'whatsapp' => [
         'verify_token' => env('WHATSAPP_VERIFY_TOKEN'),
+        'verify_token_fallbacks' => array_values(array_filter(array_map(
+            static fn (string $token): string => trim($token),
+            explode(',', (string) env('WHATSAPP_VERIFY_TOKEN_FALLBACKS', '')),
+        ))),
         'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
         'access_token' => env('WHATSAPP_ACCESS_TOKEN'),
         'reengagement_template_enabled' => (bool) env('WHATSAPP_REENGAGEMENT_TEMPLATE_ENABLED', true),

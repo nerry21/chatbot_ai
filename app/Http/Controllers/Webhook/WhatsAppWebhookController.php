@@ -19,12 +19,10 @@ class WhatsAppWebhookController extends Controller
     ) {
     }
 
-    // ─── GET /webhook/whatsapp — Meta hub verification ────────────────────────
-
     public function verify(Request $request): Response|JsonResponse
     {
-        $mode = (string) $request->query('hub_mode', '');
-        $token = (string) $request->query('hub_verify_token', '');
+        $mode = trim((string) $request->query('hub_mode', ''));
+        $token = trim((string) $request->query('hub_verify_token', ''));
         $challenge = (string) $request->query('hub_challenge', '');
 
         WaLog::info('[Verify] Parameters received', [
@@ -45,9 +43,9 @@ class WhatsAppWebhookController extends Controller
             ], 400);
         }
 
-        $expectedToken = (string) config('services.whatsapp.verify_token', '');
+        $acceptedTokens = $this->acceptedVerifyTokens();
 
-        if ($expectedToken === '') {
+        if ($acceptedTokens === []) {
             WaLog::error('[Verify] Missing config services.whatsapp.verify_token', [
                 'ip' => $request->ip(),
             ]);
@@ -57,15 +55,17 @@ class WhatsAppWebhookController extends Controller
             ], 500);
         }
 
-        if (! hash_equals($expectedToken, $token)) {
+        if (! $this->matchesVerifyToken($token, $acceptedTokens)) {
             WaLog::warning('[Verify] Rejected — token mismatch', [
                 'received_preview' => WaLog::maskToken($token),
-                'expected_preview' => WaLog::maskToken($expectedToken),
+                'expected_preview' => WaLog::maskToken($acceptedTokens[0] ?? ''),
+                'accepted_token_count' => count($acceptedTokens),
                 'ip' => $request->ip(),
             ]);
 
             return response()->json([
                 'error' => 'Forbidden.',
+                'message' => 'Webhook verify token mismatch. Samakan token di Meta Webhook dengan WHATSAPP_VERIFY_TOKEN.',
             ], 403);
         }
 
@@ -77,8 +77,6 @@ class WhatsAppWebhookController extends Controller
         return response($challenge, 200)
             ->header('Content-Type', 'text/plain; charset=UTF-8');
     }
-
-    // ─── POST /webhook/whatsapp — Incoming messages from Meta ────────────────
 
     public function receive(Request $request): JsonResponse
     {
@@ -256,6 +254,34 @@ class WhatsAppWebhookController extends Controller
         ], 200);
     }
 
+    private function acceptedVerifyTokens(): array
+    {
+        $primary = trim((string) config('services.whatsapp.verify_token', ''));
+        $fallbacks = config('services.whatsapp.verify_token_fallbacks', []);
+
+        if (! is_array($fallbacks)) {
+            $fallbacks = [];
+        }
+
+        $tokens = array_values(array_filter(array_unique(array_map(
+            static fn (mixed $value): string => trim((string) $value),
+            array_merge([$primary], $fallbacks),
+        ))));
+
+        return $tokens;
+    }
+
+    private function matchesVerifyToken(string $incomingToken, array $acceptedTokens): bool
+    {
+        foreach ($acceptedTokens as $acceptedToken) {
+            if ($acceptedToken !== '' && hash_equals($acceptedToken, $incomingToken)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function isSignatureValidationEnabled(): bool
     {
         return (bool) config('chatbot.whatsapp.calling.webhook_signature_enabled', false);
@@ -269,7 +295,7 @@ class WhatsAppWebhookController extends Controller
             return false;
         }
 
-        $expected = 'sha256='.hash_hmac('sha256', $rawBody, $secret);
+        $expected = 'sha256=' . hash_hmac('sha256', $rawBody, $secret);
 
         return hash_equals($expected, $signatureHeader);
     }
