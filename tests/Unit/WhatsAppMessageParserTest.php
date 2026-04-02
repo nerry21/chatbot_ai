@@ -161,6 +161,76 @@ class WhatsAppMessageParserTest extends TestCase
         $this->assertSame('Foto mesin', $messages[0]['raw_payload']['media_caption']);
     }
 
+    public function test_it_extracts_call_events_from_calls_field_payload(): void
+    {
+        $parser = app(WhatsAppMessageParser::class);
+
+        $calls = $parser->extractCalls([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'calls',
+                    'value' => [
+                        'metadata' => [
+                            'display_phone_number' => '628111111111',
+                            'phone_number_id' => '123456',
+                        ],
+                        'calls' => [[
+                            'id' => 'wacall.001',
+                            'event' => 'accepted',
+                            'direction' => 'business_initiated',
+                            'from' => '628111111111',
+                            'to' => '6281234567890',
+                            'timestamp' => '1710000005',
+                        ]],
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $this->assertCount(1, $calls);
+        $this->assertSame('wacall.001', $calls[0]['wa_call_id']);
+        $this->assertSame('accepted', $calls[0]['event']);
+        $this->assertSame('business_initiated', $calls[0]['direction']);
+        $this->assertSame('628111111111', $calls[0]['from']);
+        $this->assertSame('6281234567890', $calls[0]['to']);
+        $this->assertSame('123456', $calls[0]['metadata']['phone_number_id']);
+        $this->assertSame('calls', $calls[0]['raw']['_webhook_field']);
+    }
+
+    public function test_it_extracts_call_events_from_single_change_value_shape(): void
+    {
+        $parser = app(WhatsAppMessageParser::class);
+
+        $calls = $parser->extractCalls([
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'changes' => [[
+                    'field' => 'calls',
+                    'value' => [
+                        'metadata' => [
+                            'display_phone_number' => '628111111111',
+                            'phone_number_id' => '123456',
+                        ],
+                        'call_id' => 'wacall.002',
+                        'call_status' => 'terminated',
+                        'direction' => 'user_initiated',
+                        'from' => '6281234567890',
+                        'to' => '628111111111',
+                        'timestamp' => '1710000006',
+                        'reason' => 'timeout',
+                    ],
+                ]],
+            ]],
+        ]);
+
+        $this->assertCount(1, $calls);
+        $this->assertSame('wacall.002', $calls[0]['wa_call_id']);
+        $this->assertSame('terminated', $calls[0]['event']);
+        $this->assertSame('timeout', $calls[0]['termination_reason']);
+        $this->assertSame('user_initiated', $calls[0]['direction']);
+    }
+
     /**
      * @param  array<string, mixed>  $message
      * @return array<string, mixed>

@@ -1,5 +1,14 @@
 <?php
 
+$legacyWhatsAppGraphUrl = rtrim((string) env('WHATSAPP_GRAPH_BASE_URL', 'https://graph.facebook.com/v19.0'), '/');
+$legacyWhatsAppGraphApiVersion = 'v19.0';
+
+if (preg_match('#/(v\d+\.\d+)$#', $legacyWhatsAppGraphUrl, $legacyWhatsAppGraphVersionMatch) === 1) {
+    $legacyWhatsAppGraphApiVersion = $legacyWhatsAppGraphVersionMatch[1];
+}
+
+$legacyWhatsAppGraphBaseUrl = preg_replace('#/v\d+\.\d+$#', '', $legacyWhatsAppGraphUrl) ?: 'https://graph.facebook.com';
+
 return [
 
     /*
@@ -641,7 +650,7 @@ return [
     'whatsapp' => [
 
         'enabled'              => (bool) env('WHATSAPP_ENABLED', false),
-        'graph_base_url'       => env('WHATSAPP_GRAPH_BASE_URL', 'https://graph.facebook.com/v19.0'),
+        'graph_base_url'       => $legacyWhatsAppGraphUrl,
         'phone_number_id'      => env('WHATSAPP_PHONE_NUMBER_ID', ''),
         'access_token'         => env('WHATSAPP_ACCESS_TOKEN', ''),
         'verify_token'         => env('WHATSAPP_VERIFY_TOKEN', ''),
@@ -650,6 +659,29 @@ return [
         'send_timeout_seconds' => (int) env('WHATSAPP_SEND_TIMEOUT_SECONDS', 15),
         'interactive_enabled'  => (bool) env('WHATSAPP_INTERACTIVE_ENABLED', true),
         'interactive_text_fallback_enabled' => (bool) env('WHATSAPP_INTERACTIVE_TEXT_FALLBACK_ENABLED', true),
+        'calling' => [
+            'enabled' => (bool) env('WHATSAPP_CALLING_ENABLED', env('WHATSAPP_ENABLED', false)),
+            'base_url' => rtrim((string) env('WHATSAPP_CALLING_BASE_URL', env('WHATSAPP_GRAPH_API_BASE_URL', $legacyWhatsAppGraphBaseUrl)), '/'),
+            'api_version' => (string) env('WHATSAPP_CALLING_API_VERSION', env('WHATSAPP_GRAPH_API_VERSION', $legacyWhatsAppGraphApiVersion)),
+            'access_token' => (string) env('WHATSAPP_CALLING_ACCESS_TOKEN', env('WHATSAPP_ACCESS_TOKEN', '')),
+            'phone_number_id' => (string) env('WHATSAPP_CALLING_PHONE_NUMBER_ID', env('WHATSAPP_PHONE_NUMBER_ID', '')),
+            'waba_id' => (string) env('WHATSAPP_CALLING_WABA_ID', env('WHATSAPP_WABA_ID', '')),
+            'timeout_seconds' => (int) env('WHATSAPP_CALL_TIMEOUT_SECONDS', 20),
+            'verify_ssl' => (bool) env('WHATSAPP_CALL_VERIFY_SSL', true),
+            'permission_request_enabled' => (bool) env('WHATSAPP_CALL_PERMISSION_REQUEST_ENABLED', true),
+            'default_permission_ttl_minutes' => (int) env('WHATSAPP_CALL_DEFAULT_PERMISSION_TTL_MINUTES', 1440),
+            'permission_cooldown_seconds' => (int) env('WHATSAPP_CALL_PERMISSION_COOLDOWN_SECONDS', 120),
+            'start_cooldown_seconds' => (int) env('WHATSAPP_CALL_START_COOLDOWN_SECONDS', 15),
+            'rate_limit_backoff_seconds' => (int) env('WHATSAPP_CALL_RATE_LIMIT_BACKOFF_SECONDS', 60),
+            'rate_limit_cooldown_seconds' => (int) env('WHATSAPP_CALL_RATE_LIMIT_COOLDOWN_SECONDS', 180),
+            'retry_enabled' => (bool) env('WHATSAPP_CALL_RETRY_ENABLED', true),
+            'max_retries' => (int) env('WHATSAPP_CALL_MAX_RETRIES', 2),
+            'retry_backoff_ms' => (int) env('WHATSAPP_CALL_RETRY_BACKOFF_MS', 350),
+            'dedup_enabled' => (bool) env('WHATSAPP_CALL_DEDUP_ENABLED', true),
+            'webhook_signature_enabled' => (bool) env('WHATSAPP_CALL_WEBHOOK_SIGNATURE_ENABLED', false),
+            'action_lock_seconds' => (int) env('WHATSAPP_CALL_ACTION_LOCK_SECONDS', 8),
+            'log_verbose' => (bool) env('WHATSAPP_CALL_LOG_VERBOSE', false),
+        ],
 
     ],
 

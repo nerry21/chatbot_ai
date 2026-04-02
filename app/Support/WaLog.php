@@ -154,11 +154,21 @@ class WaLog
                 $contextPart,
             );
 
-            file_put_contents(
-                storage_path('logs/' . self::EMERGENCY_FILE),
+            $directory = storage_path('logs');
+            if (! is_dir($directory)) {
+                @mkdir($directory, 0775, true);
+            }
+
+            $path = $directory . DIRECTORY_SEPARATOR . self::EMERGENCY_FILE;
+            $result = @file_put_contents(
+                $path,
                 $line . PHP_EOL,
                 FILE_APPEND | LOCK_EX
             );
+
+            if ($result === false) {
+                @error_log($line);
+            }
         } catch (\Throwable) {
             // Truly nothing we can do if the filesystem is unavailable.
         }
@@ -179,7 +189,7 @@ class WaLog
     {
         static $sensitiveKeys = [
             'token', 'secret', 'password', 'access_token',
-            'api_key', 'authorization', 'webhook_secret',
+            'api_key', 'authorization', 'webhook_secret', 'signature',
         ];
 
         $result = [];

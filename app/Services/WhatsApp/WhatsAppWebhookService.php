@@ -22,6 +22,7 @@ class WhatsAppWebhookService
 {
     public function __construct(
         private readonly WhatsAppMessageParser $parser,
+        private readonly WhatsAppCallWebhookService $callWebhookService,
         private readonly PhoneNumberService $phoneService,
         private readonly ConversationManagerService $conversationManager,
         private readonly OpenAiChatService $openAiChatService,
@@ -31,27 +32,53 @@ class WhatsAppWebhookService
     /**
      * @param array<string, mixed> $payload
      */
-    public function handle(array $payload): void
+    public function handle(array $payload): array
     {
         if (! $this->parser->isValidWebhookPayload($payload)) {
             WaLog::warning('[WebhookService] Invalid or unsupported payload structure', [
                 'object' => $payload['object'] ?? null,
             ]);
 
-            return;
+            return [
+                'accepted' => false,
+                'message_count' => 0,
+                'status_count' => 0,
+                'call_count' => 0,
+                'processed_messages' => 0,
+                'processed_statuses' => 0,
+                'processed_calls' => 0,
+                'ignored_calls' => 0,
+                'errored_calls' => 0,
+                'call_results' => [],
+            ];
         }
 
         $statuses = $this->parser->extractStatuses($payload);
         $messages = $this->parser->extractMessages($payload);
-
-        WaLog::info('[WebhookService] Payload parsed - processing messages', [
+        $calls = $this->parser->extractCalls($payload);
+        $summary = [
+            'accepted' => true,
             'message_count' => count($messages),
             'status_count' => count($statuses),
+            'call_count' => count($calls),
+            'processed_messages' => 0,
+            'processed_statuses' => 0,
+            'processed_calls' => 0,
+            'ignored_calls' => 0,
+            'errored_calls' => 0,
+            'call_results' => [],
+        ];
+
+        WaLog::info('[WebhookService] Payload parsed - processing webhook events', [
+            'message_count' => count($messages),
+            'status_count' => count($statuses),
+            'call_count' => count($calls),
         ]);
 
         foreach ($statuses as $parsedStatus) {
             try {
                 $this->processSingleStatus($parsedStatus);
+                $summary['processed_statuses']++;
             } catch (Throwable $e) {
                 WaLog::error('[WebhookService] Failed to process outbound status', [
                     'wa_message_id' => $parsedStatus['wa_message_id'] ?? null,
@@ -65,6 +92,7 @@ class WhatsAppWebhookService
         foreach ($messages as $parsedMessage) {
             try {
                 $this->processSingleMessage($parsedMessage);
+                $summary['processed_messages']++;
             } catch (Throwable $e) {
                 WaLog::error('[WebhookService] Failed to process single message', [
                     'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,
@@ -75,6 +103,68 @@ class WhatsAppWebhookService
                 ]);
             }
         }
+
+        if ($calls !== []) {
+            $summary['call_results'] = $this->handleCalls($calls, [
+                'trace_id' => WaLog::traceId(),
+                'object' => $payload['object'] ?? null,
+            ]);
+
+            foreach ($summary['call_results'] as $result) {
+                $outcome = (string) ($result['result'] ?? '');
+
+                if ($outcome === 'processed' || $outcome === 'noop_already_synced') {
+                    $summary['processed_calls']++;
+                    continue;
+                }
+
+                if (str_starts_with($outcome, 'ignored_')) {
+                    $summary['ignored_calls']++;
+                    continue;
+                }
+
+                if ($outcome === 'error') {
+                    $summary['errored_calls']++;
+                }
+            }
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $callEvents
+     * @param  array<string, mixed>  $context
+     * @return array<int, array<string, mixed>>
+     */
+    public function handleCalls(array $callEvents, array $context = []): array
+    {
+        $results = [];
+
+        foreach ($callEvents as $callEvent) {
+            try {
+                $results[] = $this->callWebhookService->handleCallEvent($callEvent, $context);
+            } catch (Throwable $e) {
+                $debugPayload = $this->callWebhookService->buildDebugPayload($callEvent);
+
+                WaLog::error('[WebhookService] Failed to process call event', [
+                    'wa_call_id' => $debugPayload['wa_call_id'] ?? null,
+                    'event' => $debugPayload['event'] ?? null,
+                    'error' => $e->getMessage(),
+                    'file' => $e->getFile() . ':' . $e->getLine(),
+                ]);
+
+                $results[] = [
+                    'result' => 'error',
+                    'wa_call_id' => $debugPayload['wa_call_id'] ?? null,
+                    'local_status' => null,
+                    'error' => $e->getMessage(),
+                    'debug' => $debugPayload,
+                ];
+            }
+        }
+
+        return $results;
     }
 
     /**

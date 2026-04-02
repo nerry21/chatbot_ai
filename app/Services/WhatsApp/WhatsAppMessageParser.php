@@ -10,6 +10,62 @@ class WhatsAppMessageParser
      * @param array<string, mixed> $payload
      * @return array<int, array<string, mixed>>
      */
+    public function extractCalls(array $payload): array
+    {
+        $calls = [];
+        $entries = $payload['entry'] ?? [];
+
+        foreach ($entries as $entry) {
+            foreach (($entry['changes'] ?? []) as $change) {
+                $field = (string) ($change['field'] ?? '');
+                $value = $change['value'] ?? [];
+                $metadata = is_array($value['metadata'] ?? null) ? $value['metadata'] : [];
+                $rawCalls = $this->extractRawCallEvents($field, is_array($value) ? $value : []);
+
+                foreach ($rawCalls as $rawCall) {
+                    if (! is_array($rawCall)) {
+                        continue;
+                    }
+
+                    $calls[] = [
+                        'wa_call_id' => $this->extractCallId($rawCall),
+                        'event' => $this->extractCallEventName($rawCall),
+                        'direction' => $this->extractCallDirection($rawCall),
+                        'from' => $this->extractCallParty($rawCall, [
+                            'from',
+                            'caller',
+                            'caller_id',
+                            'source',
+                            'initiator',
+                        ]),
+                        'to' => $this->extractCallParty($rawCall, [
+                            'to',
+                            'callee',
+                            'callee_id',
+                            'destination',
+                            'recipient',
+                        ]),
+                        'timestamp' => $this->normalizeTimestamp(
+                            $rawCall['timestamp']
+                                ?? $rawCall['event_time']
+                                ?? $rawCall['time']
+                                ?? data_get($rawCall, 'call.timestamp')
+                        ),
+                        'termination_reason' => $this->extractCallTerminationReason($rawCall),
+                        'metadata' => $metadata,
+                        'raw' => $this->buildCallRawPayload($rawCall, $metadata, $field),
+                    ];
+                }
+            }
+        }
+
+        return $calls;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int, array<string, mixed>>
+     */
     public function extractMessages(array $payload): array
     {
         $messages = [];
@@ -244,5 +300,217 @@ class WhatsAppMessageParser
         }
 
         return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $value
+     * @return array<int, mixed>
+     */
+    private function extractRawCallEvents(string $field, array $value): array
+    {
+        if ($field === 'calls' && is_array($value['calls'] ?? null)) {
+            return array_values($value['calls']);
+        }
+
+        if ($field === 'calls' && $this->looksLikeCallEvent($value)) {
+            return [$value];
+        }
+
+        if (is_array($value['calls'] ?? null)) {
+            return array_values($value['calls']);
+        }
+
+        if (is_array($value['call'] ?? null)) {
+            return [$value['call']];
+        }
+
+        if ($field === 'calls' || $this->looksLikeCallEvent($value)) {
+            return [$value];
+        }
+
+        return [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     */
+    private function looksLikeCallEvent(array $rawCall): bool
+    {
+        return $this->extractCallId($rawCall) !== null
+            || $this->extractCallEventName($rawCall) !== null
+            || isset($rawCall['termination_reason'])
+            || isset($rawCall['call_status']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     */
+    private function extractCallId(array $rawCall): ?string
+    {
+        foreach ([
+            $rawCall['wa_call_id'] ?? null,
+            $rawCall['call_id'] ?? null,
+            $rawCall['id'] ?? null,
+            data_get($rawCall, 'call.id'),
+            data_get($rawCall, 'call.call_id'),
+            data_get($rawCall, 'data.id'),
+            data_get($rawCall, 'data.call_id'),
+        ] as $candidate) {
+            $normalized = $this->normalizeCallString($candidate);
+
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     */
+    private function extractCallEventName(array $rawCall): ?string
+    {
+        foreach ([
+            $rawCall['event'] ?? null,
+            $rawCall['status'] ?? null,
+            $rawCall['call_status'] ?? null,
+            $rawCall['state'] ?? null,
+            data_get($rawCall, 'call.event'),
+            data_get($rawCall, 'call.status'),
+            data_get($rawCall, 'data.event'),
+            data_get($rawCall, 'data.status'),
+        ] as $candidate) {
+            $normalized = $this->normalizeCallString($candidate);
+
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     */
+    private function extractCallDirection(array $rawCall): ?string
+    {
+        foreach ([
+            $rawCall['direction'] ?? null,
+            $rawCall['call_direction'] ?? null,
+            $rawCall['conversation_direction'] ?? null,
+            data_get($rawCall, 'call.direction'),
+            data_get($rawCall, 'call.call_direction'),
+            data_get($rawCall, 'data.direction'),
+        ] as $candidate) {
+            $normalized = $this->normalizeCallString($candidate);
+
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     * @param  array<int, string>  $keys
+     */
+    private function extractCallParty(array $rawCall, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            foreach ([
+                data_get($rawCall, $key),
+                data_get($rawCall, $key.'.wa_id'),
+                data_get($rawCall, $key.'.phone'),
+                data_get($rawCall, $key.'.id'),
+                data_get($rawCall, $key.'.user'),
+            ] as $candidate) {
+                $normalized = $this->normalizeCallString($candidate);
+
+                if ($normalized !== null) {
+                    return $normalized;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     */
+    private function extractCallTerminationReason(array $rawCall): ?string
+    {
+        foreach ([
+            $rawCall['termination_reason'] ?? null,
+            $rawCall['reason'] ?? null,
+            data_get($rawCall, 'terminate.reason'),
+            data_get($rawCall, 'call.termination_reason'),
+            data_get($rawCall, 'call.reason'),
+            data_get($rawCall, 'error.message'),
+            data_get($rawCall, 'errors.0.message'),
+            data_get($rawCall, 'errors.0.code'),
+        ] as $candidate) {
+            $normalized = $this->normalizeCallString($candidate);
+
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeTimestamp(mixed $timestamp): ?string
+    {
+        if ($timestamp instanceof Carbon) {
+            return $timestamp->toIso8601String();
+        }
+
+        if (is_int($timestamp) || (is_string($timestamp) && ctype_digit($timestamp))) {
+            return Carbon::createFromTimestamp((int) $timestamp)->toIso8601String();
+        }
+
+        if (is_string($timestamp) && trim($timestamp) !== '') {
+            try {
+                return Carbon::parse($timestamp)->toIso8601String();
+            } catch (\Throwable) {
+                return trim($timestamp);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $rawCall
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, mixed>
+     */
+    private function buildCallRawPayload(array $rawCall, array $metadata, string $field): array
+    {
+        $payload = $rawCall;
+
+        if ($metadata !== []) {
+            $payload['_webhook_metadata'] = $metadata;
+        }
+
+        $payload['_webhook_field'] = $field;
+
+        return $payload;
+    }
+
+    private function normalizeCallString(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+
+        return $normalized !== '' ? $normalized : null;
     }
 }

@@ -160,6 +160,11 @@ class Conversation extends Model
         return $this->hasMany(ConversationUserRead::class);
     }
 
+    public function whatsappCallSessions(): HasMany
+    {
+        return $this->hasMany(WhatsAppCallSession::class)->latest('id');
+    }
+
     // -------------------------------------------------------------------------
     // Scopes
     // -------------------------------------------------------------------------

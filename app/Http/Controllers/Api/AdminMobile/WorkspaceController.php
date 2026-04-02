@@ -8,10 +8,13 @@ use App\Http\Resources\AdminMobile\ConversationMessageResource;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\ConversationState;
+use App\Support\Transformers\CallTimelineTransformer;
 use App\Services\Chatbot\BotAutomationToggleService;
 use App\Services\Chatbot\ConversationInsightService;
 use App\Services\Chatbot\ConversationReadService;
 use App\Services\Mobile\MobileConversationService;
+use App\Services\WhatsApp\WhatsAppCallAnalyticsService;
+use App\Services\WhatsApp\WhatsAppCallSessionService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\JsonResponse;
@@ -45,6 +48,9 @@ class WorkspaceController extends Controller
         private readonly ConversationInsightService $insightService,
         private readonly MobileConversationService $mobileConversationService,
         private readonly BotAutomationToggleService $botToggleService,
+        private readonly WhatsAppCallSessionService $callSessionService,
+        private readonly CallTimelineTransformer $callTimelineTransformer,
+        private readonly WhatsAppCallAnalyticsService $callAnalyticsService,
     ) {}
 
     public function workspace(Request $request): JsonResponse
@@ -98,9 +104,13 @@ class WorkspaceController extends Controller
         $userId = (int) ($request->attributes->get('admin_mobile_user')?->id ?? 0);
         $conversation = $this->loadConversationDetail($conversation);
         $insight = $this->insightService->forConversation($conversation);
+        $callHistory = $this->conversationCallHistoryPayload($conversation);
 
         return $this->successResponse('Detail percakapan admin mobile berhasil diambil.', [
             'conversation' => $this->conversationDetailPayload($conversation, $userId),
+            'call_timeline' => $this->callTimelinePayload($conversation),
+            'call_history_summary' => $callHistory['call_history_summary'],
+            'call_history' => $callHistory['call_history'],
             'insight' => $this->insightPayload($conversation, $insight),
         ]);
     }
@@ -110,9 +120,13 @@ class WorkspaceController extends Controller
         $userId = (int) ($request->attributes->get('admin_mobile_user')?->id ?? 0);
         $conversation = $this->loadConversationDetail($conversation);
         $insight = $this->insightService->forConversation($conversation);
+        $callHistory = $this->conversationCallHistoryPayload($conversation);
 
         return $this->successResponse('Thread percakapan admin mobile berhasil diambil.', [
             'conversation' => $this->conversationDetailPayload($conversation, $userId),
+            'call_timeline' => $this->callTimelinePayload($conversation),
+            'call_history_summary' => $callHistory['call_history_summary'],
+            'call_history' => $callHistory['call_history'],
             'messages' => $conversation->messages->map(fn (ConversationMessage $message): array => $this->threadMessagePayload($message))->values()->all(),
             'insight' => $this->insightPayload($conversation, $insight),
         ]);
@@ -123,9 +137,13 @@ class WorkspaceController extends Controller
         $userId = (int) ($request->attributes->get('admin_mobile_user')?->id ?? 0);
         $conversation = $this->loadConversationDetail($conversation);
         $insight = $this->insightService->forConversation($conversation);
+        $callHistory = $this->conversationCallHistoryPayload($conversation);
 
         return $this->successResponse('Polling percakapan admin mobile berhasil.', [
             'conversation' => $this->conversationDetailPayload($conversation, $userId),
+            'call_timeline' => $this->callTimelinePayload($conversation),
+            'call_history_summary' => $callHistory['call_history_summary'],
+            'call_history' => $callHistory['call_history'],
             'messages' => $conversation->messages->map(fn (ConversationMessage $message): array => $this->threadMessagePayload($message))->values()->all(),
             'insight' => $this->insightPayload($conversation, $insight),
             'meta' => [
@@ -446,6 +464,10 @@ class WorkspaceController extends Controller
                 'source_app' => (string) ($conversation->source_app ?? '-'),
                 'current_intent' => (string) ($conversation->current_intent ?? '-'),
             ],
+            'call_session' => $this->callSessionService->buildPayload(
+                $this->callSessionService->getActiveSessionForConversation($conversation)
+                ?? $this->callSessionService->getLatestSessionForConversation($conversation),
+            ),
         ]);
     }
 
@@ -479,6 +501,31 @@ class WorkspaceController extends Controller
     private function threadMessagePayload(ConversationMessage $message): array
     {
         return ConversationMessageResource::make($message)->resolve();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function callTimelinePayload(Conversation $conversation): array
+    {
+        return $this->callTimelineTransformer->forConversation($conversation);
+    }
+
+    /**
+     * @return array{call_history_summary: array<string, mixed>, call_history: list<array<string, mixed>>}
+     */
+    private function conversationCallHistoryPayload(Conversation $conversation): array
+    {
+        $history = $this->callAnalyticsService->getConversationCallHistory($conversation, ['limit' => 5]);
+
+        return [
+            'call_history_summary' => is_array($history['call_history_summary'] ?? null)
+                ? $history['call_history_summary']
+                : [],
+            'call_history' => is_array($history['call_history'] ?? null)
+                ? $history['call_history']
+                : [],
+        ];
     }
 
     /**
@@ -519,6 +566,7 @@ class WorkspaceController extends Controller
     private function dashboardSummaryPayload(): array
     {
         $dashboard = $this->insightService->dashboard();
+        $callAnalytics = $this->callAnalyticsService->getGlobalSummary();
 
         return [
             'unread_total' => Conversation::query()->where('last_read_at_admin', '<', DB::raw('COALESCE(last_message_at, created_at)'))->count(),
@@ -527,6 +575,9 @@ class WorkspaceController extends Controller
             'escalations_today' => $dashboard['escalations_today'] ?? [],
             'booking_conversion' => $dashboard['booking_conversion'] ?? [],
             'failed_message_insight' => $dashboard['failed_message_insight'] ?? [],
+            'call_summary' => $callAnalytics['summary'] ?? [],
+            'call_outcome_breakdown' => $callAnalytics['outcome_breakdown'] ?? [],
+            'call_capabilities' => $callAnalytics['capabilities'] ?? [],
         ];
     }
 }
