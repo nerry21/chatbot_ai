@@ -17,6 +17,10 @@ class CallTimelineTransformer
      */
     public function forConversation(Conversation $conversation, int $limitSessions = self::DEFAULT_SESSION_LIMIT): array
     {
+        if (! WhatsAppCallSession::isTableAvailable()) {
+            return [];
+        }
+
         $conversationId = $conversation->getKey();
 
         if (! is_numeric($conversationId)) {

@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\WhatsAppCallSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class AdminMobileCallAnalyticsApiTest extends TestCase
@@ -119,6 +120,42 @@ class AdminMobileCallAnalyticsApiTest extends TestCase
             ->assertJsonPath('data.call_history_summary.last_call_label', 'Tidak dijawab')
             ->assertJsonPath('data.call_history.1.duration_seconds', 90)
             ->assertJsonPath('data.call_history.1.duration_human', '1 m 30 dtk');
+    }
+
+    public function test_call_related_reads_remain_safe_when_call_tables_are_not_migrated(): void
+    {
+        $admin = $this->createAdmin();
+        $token = $this->loginAdmin($admin);
+        [$conversation] = $this->createConversations();
+
+        Schema::dropIfExists('whatsapp_webhook_dedup_events');
+        Schema::dropIfExists('whatsapp_call_sessions');
+
+        $summary = $this->withToken($token)->getJson(route('api.admin-mobile.call-analytics.summary'));
+
+        $summary->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.summary.total_calls', 0)
+            ->assertJsonPath('data.summary.completed_calls', 0)
+            ->assertJsonCount(0, 'data.outcome_breakdown')
+            ->assertJsonCount(0, 'data.daily_trend');
+
+        $recent = $this->withToken($token)->getJson(route('api.admin-mobile.call-analytics.recent'));
+
+        $recent->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonCount(0, 'data.recent_calls');
+
+        $detail = $this->withToken($token)->getJson(route('api.admin-mobile.conversations.show', [
+            'conversation' => $conversation,
+        ]));
+
+        $detail->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.conversation.call_session', null)
+            ->assertJsonPath('data.call_history_summary.total_calls', 0)
+            ->assertJsonCount(0, 'data.call_timeline')
+            ->assertJsonCount(0, 'data.call_history');
     }
 
     private function createAdmin(array $attributes = []): User

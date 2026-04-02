@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Schema;
 
 class WhatsAppCallSession extends Model
 {
@@ -117,6 +118,15 @@ class WhatsAppCallSession extends Model
     public function initiatedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'initiated_by_user_id');
+    }
+
+    public static function isTableAvailable(): bool
+    {
+        try {
+            return Schema::hasTable((new static())->getTable());
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     public function isActive(): bool

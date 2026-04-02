@@ -33,6 +33,10 @@ class WhatsAppCallSessionService
      */
     public function getActiveSessionForConversation($conversation): ?WhatsAppCallSession
     {
+        if (! WhatsAppCallSession::isTableAvailable()) {
+            return null;
+        }
+
         $conversationId = $this->resolveModelKey($conversation);
 
         if ($conversationId === null) {
@@ -51,6 +55,10 @@ class WhatsAppCallSessionService
      */
     public function getLatestSessionForConversation($conversation): ?WhatsAppCallSession
     {
+        if (! WhatsAppCallSession::isTableAvailable()) {
+            return null;
+        }
+
         $conversationId = $this->resolveModelKey($conversation);
 
         if ($conversationId === null) {
@@ -70,6 +78,10 @@ class WhatsAppCallSessionService
         string $callType = 'audio',
         string $direction = 'business_initiated',
     ): WhatsAppCallSession {
+        if (! WhatsAppCallSession::isTableAvailable()) {
+            throw new DomainException('Modul panggilan WhatsApp belum siap karena tabel call session belum tersedia.');
+        }
+
         $conversationId = $this->resolveModelKey($conversation);
 
         if ($conversationId === null) {
@@ -131,6 +143,10 @@ class WhatsAppCallSessionService
      */
     public function updateStatus(WhatsAppCallSession $session, string $status, array $extra = []): WhatsAppCallSession
     {
+        if (! WhatsAppCallSession::isTableAvailable()) {
+            throw new DomainException('Modul panggilan WhatsApp belum siap karena tabel call session belum tersedia.');
+        }
+
         $normalizedStatus = trim($status);
 
         if (! in_array($normalizedStatus, self::SUPPORTED_STATUSES, true)) {

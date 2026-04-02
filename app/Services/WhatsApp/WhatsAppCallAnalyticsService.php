@@ -22,6 +22,10 @@ class WhatsAppCallAnalyticsService
      */
     public function getGlobalSummary(array $filters = []): array
     {
+        if (! $this->callSessionStorageReady()) {
+            return $this->emptyGlobalSummaryPayload();
+        }
+
         $this->backfillMissingAnalytics();
 
         $query = $this->baseQuery($filters);
@@ -99,17 +103,13 @@ class WhatsAppCallAnalyticsService
      */
     public function getConversationCallHistory($conversation, array $filters = []): array
     {
+        if (! $this->callSessionStorageReady()) {
+            return $this->emptyConversationHistoryPayload();
+        }
+
         $conversationId = $this->resolveConversationId($conversation);
         if ($conversationId === null) {
-            return [
-                'call_history_summary' => $this->transformer->transformConversationHistorySummary([
-                    'total_calls' => 0,
-                    'last_call_status' => null,
-                    'last_call_at' => null,
-                    'last_call_duration_seconds' => null,
-                ]),
-                'call_history' => [],
-            ];
+            return $this->emptyConversationHistoryPayload();
         }
 
         $this->backfillMissingAnalytics();
@@ -145,6 +145,10 @@ class WhatsAppCallAnalyticsService
      */
     public function getRecentCalls(array $filters = []): array
     {
+        if (! $this->callSessionStorageReady()) {
+            return [];
+        }
+
         $this->backfillMissingAnalytics();
 
         $limit = max(1, min(50, (int) ($filters['limit'] ?? 10)));
@@ -163,6 +167,10 @@ class WhatsAppCallAnalyticsService
      */
     public function getOutcomeBreakdown(array $filters = []): array
     {
+        if (! $this->callSessionStorageReady()) {
+            return [];
+        }
+
         $this->backfillMissingAnalytics();
 
         $query = $this->baseQuery($filters);
@@ -192,6 +200,10 @@ class WhatsAppCallAnalyticsService
      */
     public function getDailyTrend(array $filters = []): array
     {
+        if (! $this->callSessionStorageReady()) {
+            return [];
+        }
+
         $this->backfillMissingAnalytics();
 
         $query = $this->baseQuery($filters);
@@ -233,6 +245,10 @@ class WhatsAppCallAnalyticsService
      */
     public function getAgentBreakdown(array $filters = []): array
     {
+        if (! $this->callSessionStorageReady()) {
+            return [];
+        }
+
         $this->backfillMissingAnalytics();
 
         $query = $this->baseQuery($filters);
@@ -376,6 +392,10 @@ class WhatsAppCallAnalyticsService
 
     private function backfillMissingAnalytics(): void
     {
+        if (! $this->callSessionStorageReady()) {
+            return;
+        }
+
         WhatsAppCallSession::query()
             ->where(function (Builder $builder): void {
                 $builder->whereNull('final_status')
@@ -390,6 +410,66 @@ class WhatsAppCallAnalyticsService
             ->limit(50)
             ->get()
             ->each(fn (WhatsAppCallSession $session) => $this->callSessionService->syncSessionData($session));
+    }
+
+    private function callSessionStorageReady(): bool
+    {
+        return WhatsAppCallSession::isTableAvailable();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function emptyGlobalSummaryPayload(): array
+    {
+        return [
+            'summary' => $this->transformer->transformSummary([
+                'total_calls' => 0,
+                'completed_calls' => 0,
+                'missed_calls' => 0,
+                'rejected_calls' => 0,
+                'failed_calls' => 0,
+                'cancelled_calls' => 0,
+                'permission_pending_calls' => 0,
+                'in_progress_calls' => 0,
+                'total_duration_seconds' => 0,
+                'average_duration_seconds' => 0,
+                'completion_rate' => 0,
+                'missed_rate' => 0,
+                'connected_call_count' => 0,
+                'avg_answer_time_seconds' => null,
+                'avg_ringing_time_seconds' => null,
+                'media_connected_rate' => null,
+                'permission_acceptance_rate' => null,
+            ]),
+            'outcome_breakdown' => [],
+            'daily_trend' => [],
+            'agent_breakdown' => [],
+            'capabilities' => $this->transformer->capabilities(),
+            'future_metrics' => [
+                'connected_call_count' => 0,
+                'avg_answer_time_seconds' => null,
+                'avg_ringing_time_seconds' => null,
+                'media_connected_rate' => null,
+                'permission_acceptance_rate' => null,
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function emptyConversationHistoryPayload(): array
+    {
+        return [
+            'call_history_summary' => $this->transformer->transformConversationHistorySummary([
+                'total_calls' => 0,
+                'last_call_status' => null,
+                'last_call_at' => null,
+                'last_call_duration_seconds' => null,
+            ]),
+            'call_history' => [],
+        ];
     }
 
     /**
