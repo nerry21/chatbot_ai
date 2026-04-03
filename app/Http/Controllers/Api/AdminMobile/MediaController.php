@@ -54,10 +54,14 @@ class MediaController extends Controller
             ?: data_get($rawPayload, 'outbound_payload.image.id')
             ?: data_get($rawPayload, 'audio.id')
             ?: data_get($rawPayload, 'outbound_payload.audio.id')
+            ?: data_get($rawPayload, 'video.id')
+            ?: data_get($rawPayload, 'outbound_payload.video.id')
+            ?: data_get($rawPayload, 'document.id')
+            ?: data_get($rawPayload, 'outbound_payload.document.id')
             ?: ''
         ));
 
-        if (! in_array($message->message_type, ['image', 'audio'], true) || $mediaId === '') {
+        if (! in_array($message->message_type, ['image', 'audio', 'video', 'document'], true) || $mediaId === '') {
             return null;
         }
 
@@ -86,10 +90,20 @@ class MediaController extends Controller
     ): string {
         $safeFileName = Str::slug(pathinfo($download['file_name'], PATHINFO_FILENAME));
         $extension = pathinfo($download['file_name'], PATHINFO_EXTENSION);
+        $extension = $extension !== '' ? $extension : 'bin';
+
         $storedFileName = trim($safeFileName) !== ''
             ? $safeFileName.'.'.$extension
             : $message->id.'.'.$extension;
-        $folder = $message->message_type === 'audio' ? 'conversation-media/audio/inbound/' : 'conversation-media/images/inbound/';
+
+        $folder = match ($message->message_type) {
+            'audio' => 'conversation-media/audio/inbound/',
+            'image' => 'conversation-media/images/inbound/',
+            'video' => 'conversation-media/videos/inbound/',
+            'document' => 'conversation-media/documents/inbound/',
+            default => 'conversation-media/misc/inbound/',
+        };
+
         $storedPath = $folder.$message->id.'-'.$storedFileName;
 
         Storage::disk('public')->put($storedPath, $download['contents']);

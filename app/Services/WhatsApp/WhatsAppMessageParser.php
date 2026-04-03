@@ -174,7 +174,10 @@ class WhatsAppMessageParser
             'button' => $msg['button']['text'] ?? null,
             'interactive' => $this->interactiveReplyText($interactiveReply ?? $this->extractInteractiveReply($msg)),
             'audio' => '[Voice note]',
-            'image' => $msg['image']['caption'] ?? null,
+            'image' => $msg['image']['caption'] ?? '[Gambar]',
+            'video' => $msg['video']['caption'] ?? '[Video]',
+            'document' => $msg['document']['caption']
+                ?? ($msg['document']['filename'] ?? '[Dokumen]'),
             default => null,
         };
     }
@@ -280,15 +283,36 @@ class WhatsAppMessageParser
     private function buildRawPayload(array $msg, array $metadata, ?array $interactiveReply): array
     {
         $payload = $msg;
+        $type = (string) ($msg['type'] ?? '');
 
-        if (($msg['type'] ?? null) === 'audio') {
+        if ($type === 'audio') {
             $payload['audio_url'] = null;
+            $payload['mime_type'] = $msg['audio']['mime_type'] ?? null;
+            $payload['media_size_bytes'] = $msg['audio']['file_size'] ?? null;
+            $payload['media_original_name'] = $msg['audio']['filename'] ?? null;
         }
 
-        if (($msg['type'] ?? null) === 'image') {
+        if ($type === 'image') {
             $payload['media_caption'] = $msg['image']['caption'] ?? null;
             $payload['mime_type'] = $msg['image']['mime_type'] ?? null;
             $payload['media_size_bytes'] = $msg['image']['file_size'] ?? null;
+            $payload['media_original_name'] = $msg['image']['filename'] ?? null;
+        }
+
+        if ($type === 'video') {
+            $payload['media_caption'] = $msg['video']['caption'] ?? null;
+            $payload['mime_type'] = $msg['video']['mime_type'] ?? null;
+            $payload['media_size_bytes'] = $msg['video']['file_size'] ?? null;
+            $payload['media_original_name'] = $msg['video']['filename'] ?? null;
+            $payload['video_url'] = null;
+        }
+
+        if ($type === 'document') {
+            $payload['media_caption'] = $msg['document']['caption'] ?? null;
+            $payload['mime_type'] = $msg['document']['mime_type'] ?? null;
+            $payload['media_size_bytes'] = $msg['document']['file_size'] ?? null;
+            $payload['media_original_name'] = $msg['document']['filename'] ?? null;
+            $payload['document_url'] = null;
         }
 
         if ($metadata !== []) {

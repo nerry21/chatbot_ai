@@ -25,18 +25,42 @@ class ConversationMessageResource extends JsonResource
         $audioLink = data_get($this->raw_payload, 'outbound_payload.audio.link')
             ?? data_get($this->raw_payload, 'audio.link')
             ?? data_get($this->raw_payload, 'audio_url');
-        $signedStoredAudioLink = $this->signedMediaUrl('audio');
-        $audioId = data_get($this->raw_payload, 'audio.id');
+
         $imageLink = data_get($this->raw_payload, 'outbound_payload.image.link')
             ?? data_get($this->raw_payload, 'image.link')
             ?? data_get($this->raw_payload, 'image_url');
+
+        $videoLink = data_get($this->raw_payload, 'outbound_payload.video.link')
+            ?? data_get($this->raw_payload, 'video.link')
+            ?? data_get($this->raw_payload, 'video_url');
+
+        $documentLink = data_get($this->raw_payload, 'outbound_payload.document.link')
+            ?? data_get($this->raw_payload, 'document.link')
+            ?? data_get($this->raw_payload, 'document_url');
+
+        $audioId = data_get($this->raw_payload, 'audio.id')
+            ?? data_get($this->raw_payload, 'outbound_payload.audio.id');
+
         $imageId = data_get($this->raw_payload, 'image.id')
             ?? data_get($this->raw_payload, 'outbound_payload.image.id');
-        $signedStoredImageLink = $this->signedMediaUrl('image');
-        $normalizedImageLink = $signedStoredImageLink
-            ?? MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
-        $normalizedAudioLink = $signedStoredAudioLink
+
+        $videoId = data_get($this->raw_payload, 'video.id')
+            ?? data_get($this->raw_payload, 'outbound_payload.video.id');
+
+        $documentId = data_get($this->raw_payload, 'document.id')
+            ?? data_get($this->raw_payload, 'outbound_payload.document.id');
+
+        $normalizedAudioLink = $this->signedMediaUrl('audio')
             ?? MediaUrlNormalizer::normalize(is_string($audioLink) ? $audioLink : null);
+
+        $normalizedImageLink = $this->signedMediaUrl('image')
+            ?? MediaUrlNormalizer::normalize(is_string($imageLink) ? $imageLink : null);
+
+        $normalizedVideoLink = $this->signedMediaUrl('video')
+            ?? MediaUrlNormalizer::normalize(is_string($videoLink) ? $videoLink : null);
+
+        $normalizedDocumentLink = $this->signedMediaUrl('document')
+            ?? MediaUrlNormalizer::normalize(is_string($documentLink) ? $documentLink : null);
 
         if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
@@ -93,14 +117,25 @@ class ConversationMessageResource extends JsonResource
                 'image_id' => $imageId,
                 'audio_url' => $normalizedAudioLink,
                 'audio_id' => $audioId,
+                'video_url' => $normalizedVideoLink,
+                'video_id' => $videoId,
+                'document_url' => $normalizedDocumentLink,
+                'document_id' => $documentId,
                 'mime_type' => data_get($this->raw_payload, 'mime_type')
-                    ?? data_get($this->raw_payload, 'image.mime_type'),
+                    ?? data_get($this->raw_payload, 'image.mime_type')
+                    ?? data_get($this->raw_payload, 'video.mime_type')
+                    ?? data_get($this->raw_payload, 'document.mime_type'),
                 'caption' => data_get($this->raw_payload, 'media_caption')
                     ?? data_get($this->raw_payload, 'image.caption')
-                    ?? data_get($this->raw_payload, 'outbound_payload.image.caption'),
-                'original_name' => data_get($this->raw_payload, 'media_original_name'),
+                    ?? data_get($this->raw_payload, 'video.caption')
+                    ?? data_get($this->raw_payload, 'document.caption'),
+                'original_name' => data_get($this->raw_payload, 'media_original_name')
+                    ?? data_get($this->raw_payload, 'document.filename')
+                    ?? data_get($this->raw_payload, 'video.filename'),
                 'size_bytes' => data_get($this->raw_payload, 'media_size_bytes')
-                    ?? data_get($this->raw_payload, 'image.file_size'),
+                    ?? data_get($this->raw_payload, 'image.file_size')
+                    ?? data_get($this->raw_payload, 'video.file_size')
+                    ?? data_get($this->raw_payload, 'document.file_size'),
                 'is_voice_note' => (bool) (data_get($this->raw_payload, 'outbound_payload.audio.voice')
                     ?? data_get($this->raw_payload, 'audio.voice')
                     ?? ($this->message_type === 'audio')),

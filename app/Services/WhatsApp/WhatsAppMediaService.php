@@ -128,7 +128,6 @@ class WhatsAppMediaService
             'image/heic', 'image/heif' => 'image/jpeg',
             'audio/mp3' => 'audio/mpeg',
             'audio/x-m4a' => 'audio/mp4',
-            'video/mp4' => 'audio/mp4',
             default => $normalized,
         };
     }
@@ -158,9 +157,21 @@ class WhatsAppMediaService
             'image/gif' => 'gif',
             'audio/ogg', 'audio/opus', 'application/ogg' => 'ogg',
             'audio/mpeg', 'audio/mp3' => 'mp3',
-            'audio/mp4', 'audio/x-m4a', 'audio/aac', 'video/mp4' => 'm4a',
+            'audio/mp4', 'audio/x-m4a', 'audio/aac' => 'm4a',
             'audio/wav' => 'wav',
-            'audio/webm', 'video/webm' => 'webm',
+            'audio/webm' => 'webm',
+            'video/mp4' => 'mp4',
+            'video/3gpp' => '3gp',
+            'video/quicktime' => 'mov',
+            'video/webm' => 'webm',
+            'application/pdf' => 'pdf',
+            'application/msword' => 'doc',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+            'application/vnd.ms-excel' => 'xls',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+            'application/vnd.ms-powerpoint' => 'ppt',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
+            'text/plain' => 'txt',
             default => 'bin',
         };
     }
