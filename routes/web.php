@@ -41,6 +41,10 @@ Route::view('/delete_data', 'public.delete_data')
 Route::match(['get', 'post'], '/meta/data-deletion-callback', [DataDeletionCallbackController::class, 'handle'])
     ->name('meta.data-deletion-callback');
 
+Route::get('/data-deletion-status/{code}', [DataDeletionCallbackController::class, 'status'])
+    ->where('code', '[A-Z0-9]+')
+    ->name('meta.data-deletion-status');
+
 Route::get('/dashboard', function () {
     return redirect()->route('admin.chatbot.live-chats.index');
 })->middleware(['auth', 'verified'])->name('dashboard');
