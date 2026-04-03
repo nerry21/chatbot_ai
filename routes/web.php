@@ -24,6 +24,7 @@ Route::get('/', function () {
     return redirect()->route('login');
 });
 
+// Public compliance pages
 Route::get('/privacy-policy', [PublicPageController::class, 'privacyPolicy'])
     ->name('privacy-policy');
 
