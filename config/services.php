@@ -42,6 +42,7 @@ return [
         ))),
         'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
         'access_token' => env('WHATSAPP_ACCESS_TOKEN'),
+        'app_secret' => env('META_APP_SECRET'),
         'reengagement_template_enabled' => (bool) env('WHATSAPP_REENGAGEMENT_TEMPLATE_ENABLED', true),
         'reengagement_template_name' => env('WHATSAPP_REENGAGEMENT_TEMPLATE_NAME', ''),
         'reengagement_template_language' => env('WHATSAPP_REENGAGEMENT_TEMPLATE_LANGUAGE', 'id'),
