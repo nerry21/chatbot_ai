@@ -62,6 +62,11 @@ class ConversationMessageResource extends JsonResource
         $normalizedDocumentLink = $this->signedMediaUrl('document')
             ?? MediaUrlNormalizer::normalize(is_string($documentLink) ? $documentLink : null);
 
+        $audioDownloadUrl = $this->signedMediaUrl('audio', true);
+        $imageDownloadUrl = $this->signedMediaUrl('image', true);
+        $videoDownloadUrl = $this->signedMediaUrl('video', true);
+        $documentDownloadUrl = $this->signedMediaUrl('document', true);
+
         if ($direction === MessageDirection::Inbound->value && in_array($deliveryStatus, [null, 'pending'], true)) {
             $deliveryStatus = 'sent';
         }
@@ -114,12 +119,16 @@ class ConversationMessageResource extends JsonResource
             ],
             'media' => [
                 'image_url' => $normalizedImageLink,
+                'image_download_url' => $imageDownloadUrl,
                 'image_id' => $imageId,
                 'audio_url' => $normalizedAudioLink,
+                'audio_download_url' => $audioDownloadUrl,
                 'audio_id' => $audioId,
                 'video_url' => $normalizedVideoLink,
+                'video_download_url' => $videoDownloadUrl,
                 'video_id' => $videoId,
                 'document_url' => $normalizedDocumentLink,
+                'document_download_url' => $documentDownloadUrl,
                 'document_id' => $documentId,
                 'mime_type' => data_get($this->raw_payload, 'mime_type')
                     ?? data_get($this->raw_payload, 'image.mime_type')
@@ -192,7 +201,7 @@ class ConversationMessageResource extends JsonResource
         };
     }
 
-    private function signedMediaUrl(string $type): ?string
+    private function signedMediaUrl(string $type, bool $download = false): ?string
     {
         $storageDisk = trim((string) data_get($this->raw_payload, 'media_storage_disk', ''));
         $storagePath = trim((string) data_get($this->raw_payload, 'media_storage_path', ''));
@@ -210,7 +219,10 @@ class ConversationMessageResource extends JsonResource
         }
 
         return MediaUrlNormalizer::normalize(
-            URL::signedRoute('api.admin-mobile.media.show', ['message' => $this->id]),
+            URL::signedRoute('api.admin-mobile.media.show', [
+                'message' => $this->id,
+                'download' => $download ? 1 : 0,
+            ]),
         );
     }
 }

@@ -20,11 +20,14 @@ class MediaController extends Controller
 
         $mimeType = (string) ($storedMedia['mime_type'] ?: Storage::disk($storedMedia['disk'])->mimeType($storedMedia['path']) ?: 'application/octet-stream');
         $downloadName = $storedMedia['download_name'];
+        $download = request()->boolean('download');
 
         return Storage::disk($storedMedia['disk'])->response($storedMedia['path'], $downloadName, [
             'Content-Type' => $mimeType,
             'Cache-Control' => 'public, max-age=604800',
-            'Content-Disposition' => 'inline; filename="'.addslashes($downloadName).'"',
+            'Content-Disposition' => $download
+                ? 'attachment; filename="'.addslashes($downloadName).'"'
+                : 'inline; filename="'.addslashes($downloadName).'"',
         ]);
     }
 
@@ -126,7 +129,12 @@ class MediaController extends Controller
      */
     private function downloadName(array $rawPayload, string $path): string
     {
-        $fileName = trim((string) data_get($rawPayload, 'media_original_name', ''));
+        $fileName = trim((string) (
+            data_get($rawPayload, 'media_original_name')
+            ?: data_get($rawPayload, 'document.filename')
+            ?: data_get($rawPayload, 'video.filename')
+            ?: ''
+        ));
 
         return $fileName !== '' ? $fileName : basename($path);
     }
