@@ -87,19 +87,28 @@ class WhatsAppWebhookController extends Controller
             'ip' => $request->ip(),
             'user_agent' => $request->userAgent(),
             'has_signature' => $signatureHeader !== '',
-            'content_length' => mb_strlen($rawBody),
+            'content_length' => strlen($rawBody),
         ]);
 
-        if ($this->isSignatureValidationEnabled() && ! $this->hasValidSignature($signatureHeader, $rawBody)) {
-            $this->auditService->warning('webhook_signature_invalid', [
-                'result' => 'rejected',
-                'ip' => $request->ip(),
-                'has_signature' => $signatureHeader !== '',
-            ]);
+        if ($this->isSignatureValidationEnabled()) {
+            $validation = $this->validateSignature($signatureHeader, $rawBody);
 
-            return response()->json([
-                'error' => 'Forbidden.',
-            ], 403);
+            if (! $validation['valid']) {
+                $this->auditService->warning('webhook_signature_invalid', [
+                    'result' => 'rejected',
+                    'ip' => $request->ip(),
+                    'has_signature' => $signatureHeader !== '',
+                    'reason' => $validation['reason'],
+                    'signature_preview' => $this->maskSignature($signatureHeader),
+                    'expected_preview' => $this->maskSignature((string) ($validation['expected'] ?? '')),
+                    'secret_config_source' => $validation['secret_source'] ?? null,
+                ]);
+
+                return response()->json([
+                    'error' => 'Forbidden.',
+                    'message' => 'Invalid webhook signature.',
+                ], 403);
+            }
         }
 
         $payload = $request->json()->all();
@@ -107,7 +116,7 @@ class WhatsAppWebhookController extends Controller
         if (! is_array($payload) || empty($payload)) {
             WaLog::warning('[Receive] Empty payload received', [
                 'ip' => $request->ip(),
-                'content_length' => mb_strlen($rawBody),
+                'content_length' => strlen($rawBody),
             ]);
 
             return response()->json([
@@ -263,12 +272,10 @@ class WhatsAppWebhookController extends Controller
             $fallbacks = [];
         }
 
-        $tokens = array_values(array_filter(array_unique(array_map(
+        return array_values(array_filter(array_unique(array_map(
             static fn (mixed $value): string => trim((string) $value),
             array_merge([$primary], $fallbacks),
         ))));
-
-        return $tokens;
     }
 
     private function matchesVerifyToken(string $incomingToken, array $acceptedTokens): bool
@@ -287,16 +294,106 @@ class WhatsAppWebhookController extends Controller
         return (bool) config('chatbot.whatsapp.calling.webhook_signature_enabled', false);
     }
 
-    private function hasValidSignature(string $signatureHeader, string $rawBody): bool
+    /**
+     * @return array{
+     *   valid: bool,
+     *   reason: string,
+     *   expected?: string,
+     *   secret_source?: string
+     * }
+     */
+    private function validateSignature(string $signatureHeader, string $rawBody): array
     {
-        $secret = trim((string) config('chatbot.whatsapp.webhook_secret', ''));
-
-        if ($secret === '' || $signatureHeader === '') {
-            return false;
+        if ($signatureHeader === '') {
+            return [
+                'valid' => false,
+                'reason' => 'missing_signature_header',
+            ];
         }
 
-        $expected = 'sha256=' . hash_hmac('sha256', $rawBody, $secret);
+        $secret = $this->resolveWebhookSecret();
 
-        return hash_equals($expected, $signatureHeader);
+        if ($secret['value'] === '') {
+            return [
+                'valid' => false,
+                'reason' => 'missing_app_secret_config',
+                'secret_source' => $secret['source'],
+            ];
+        }
+
+        if (! str_starts_with($signatureHeader, 'sha256=')) {
+            return [
+                'valid' => false,
+                'reason' => 'invalid_signature_format',
+                'secret_source' => $secret['source'],
+            ];
+        }
+
+        $expected = 'sha256=' . hash_hmac('sha256', $rawBody, $secret['value']);
+
+        if (! hash_equals($expected, $signatureHeader)) {
+            return [
+                'valid' => false,
+                'reason' => 'signature_mismatch',
+                'expected' => $expected,
+                'secret_source' => $secret['source'],
+            ];
+        }
+
+        return [
+            'valid' => true,
+            'reason' => 'ok',
+            'secret_source' => $secret['source'],
+        ];
+    }
+
+    /**
+     * @return array{value: string, source: string}
+     */
+    private function resolveWebhookSecret(): array
+    {
+        $servicesSecret = trim((string) config('services.whatsapp.app_secret', ''));
+        if ($servicesSecret !== '') {
+            return [
+                'value' => $servicesSecret,
+                'source' => 'services.whatsapp.app_secret',
+            ];
+        }
+
+        $legacyMetaSecret = trim((string) env('META_APP_SECRET', ''));
+        if ($legacyMetaSecret !== '') {
+            return [
+                'value' => $legacyMetaSecret,
+                'source' => 'env:META_APP_SECRET',
+            ];
+        }
+
+        $legacyWebhookSecret = trim((string) config('chatbot.whatsapp.webhook_secret', ''));
+        if ($legacyWebhookSecret !== '') {
+            return [
+                'value' => $legacyWebhookSecret,
+                'source' => 'chatbot.whatsapp.webhook_secret',
+            ];
+        }
+
+        return [
+            'value' => '',
+            'source' => 'none',
+        ];
+    }
+
+    private function maskSignature(string $signature): string
+    {
+        if ($signature === '') {
+            return '';
+        }
+
+        $normalized = trim($signature);
+
+        if (strlen($normalized) <= 20) {
+            return '[MASKED]';
+        }
+
+        return substr($normalized, 0, 12) . '***' . substr($normalized, -8);
     }
 }

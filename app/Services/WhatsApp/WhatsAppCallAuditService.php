@@ -47,7 +47,7 @@ class WhatsAppCallAuditService
             'audit_event' => $event,
         ], $this->sanitizeContext($context));
 
-        WaLog::{$level}('[CallAudit] '.$event, $payload);
+        WaLog::{$level}('[CallAudit] ' . $event, $payload);
     }
 
     /**
@@ -76,13 +76,18 @@ class WhatsAppCallAuditService
                 continue;
             }
 
-            if ($this->shouldMaskValue($lowerKey, $value)) {
+            if ($this->shouldMaskSecretValue($lowerKey, $value)) {
+                $sanitized[$key] = '[MASKED]';
+                continue;
+            }
+
+            if ($this->shouldMaskPhoneValue($lowerKey, $value)) {
                 $sanitized[$key] = WaLog::maskPhone((string) $value);
                 continue;
             }
 
             if (is_string($value) && ! $this->verbose && mb_strlen($value) > 400) {
-                $sanitized[$key] = mb_substr($value, 0, 400).'...[truncated]';
+                $sanitized[$key] = mb_substr($value, 0, 400) . '...[truncated]';
                 continue;
             }
 
@@ -92,13 +97,32 @@ class WhatsAppCallAuditService
         return $sanitized;
     }
 
-    private function shouldMaskValue(string $lowerKey, mixed $value): bool
+    private function shouldMaskSecretValue(string $lowerKey, mixed $value): bool
     {
         if (! is_scalar($value)) {
             return false;
         }
 
-        if (str_contains($lowerKey, 'token') || str_contains($lowerKey, 'secret') || str_contains($lowerKey, 'authorization')) {
+        foreach ([
+            'token',
+            'secret',
+            'authorization',
+            'signature',
+            'app_secret',
+            'access_token',
+            'webhook_secret',
+        ] as $sensitiveKey) {
+            if (str_contains($lowerKey, $sensitiveKey)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function shouldMaskPhoneValue(string $lowerKey, mixed $value): bool
+    {
+        if (! is_scalar($value)) {
             return false;
         }
 
