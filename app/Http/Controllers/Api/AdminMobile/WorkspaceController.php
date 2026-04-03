@@ -148,19 +148,17 @@ class WorkspaceController extends Controller
             'tags' => fn ($query) => $query->latest('created_at')->limit(20),
         ]);
 
-        $messagesQuery = $conversation->messages()
-            ->with('senderUser');
-
         if ($afterMessageId !== null) {
-            $messages = $messagesQuery
+            $messages = $conversation->messages()
+                ->with('senderUser')
                 ->where('id', '>', $afterMessageId)
                 ->orderBy('id')
                 ->get();
         } else {
-            $messages = $messagesQuery
-                ->orderByDesc('sent_at')
+            $messages = $conversation->messages()
+                ->with('senderUser')
                 ->orderByDesc('id')
-                ->limit(120)
+                ->limit(100)
                 ->get()
                 ->sortBy('id')
                 ->values();
@@ -390,9 +388,8 @@ class WorkspaceController extends Controller
 
         $messages = $conversation->messages()
             ->with('senderUser')
-            ->orderByDesc('sent_at')
             ->orderByDesc('id')
-            ->limit(120)
+            ->limit(100)
             ->get()
             ->sortBy('id')
             ->values();
