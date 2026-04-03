@@ -34,6 +34,9 @@ Route::get('/terms', [PublicPageController::class, 'terms'])
 Route::get('/data-deletion', [PublicPageController::class, 'dataDeletion'])
     ->name('data-deletion');
 
+Route::view('/delete_data', 'public.delete_data')
+    ->name('delete_data');
+
 Route::get('/dashboard', function () {
     return redirect()->route('admin.chatbot.live-chats.index');
 })->middleware(['auth', 'verified'])->name('dashboard');
