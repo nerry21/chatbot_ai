@@ -135,7 +135,38 @@ class WorkspaceController extends Controller
     public function pollConversation(Request $request, Conversation $conversation): JsonResponse
     {
         $userId = (int) ($request->attributes->get('admin_mobile_user')?->id ?? 0);
-        $conversation = $this->loadConversationDetail($conversation);
+        $afterMessageId = $request->integer('after_message_id') ?: null;
+
+        $conversation = $this->botToggleService->ensureAutoResumed($conversation);
+        $conversation->load([
+            'customer.tags',
+            'assignedAdmin',
+            'handoffAdmin',
+            'states' => fn ($query) => $query->active()->latest('updated_at')->limit(20),
+            'bookingRequests' => fn ($query) => $query->latest()->limit(3),
+            'escalations' => fn ($query) => $query->latest()->limit(5),
+            'tags' => fn ($query) => $query->latest('created_at')->limit(20),
+        ]);
+
+        $messagesQuery = $conversation->messages()
+            ->with('senderUser');
+
+        if ($afterMessageId !== null) {
+            $messages = $messagesQuery
+                ->where('id', '>', $afterMessageId)
+                ->orderBy('id')
+                ->get();
+        } else {
+            $messages = $messagesQuery
+                ->orderByDesc('sent_at')
+                ->orderByDesc('id')
+                ->limit(120)
+                ->get()
+                ->sortBy('id')
+                ->values();
+        }
+
+        $conversation->setRelation('messages', $messages);
         $insight = $this->insightService->forConversation($conversation);
         $callHistory = $this->conversationCallHistoryPayload($conversation);
 
@@ -150,6 +181,7 @@ class WorkspaceController extends Controller
                 'selected_conversation_id' => $conversation->id,
                 'unread_count' => $this->readService->unreadCountForConversation($conversation, $userId),
                 'server_time' => now()->toIso8601String(),
+                'latest_message_id' => $conversation->messages->max('id'),
             ],
         ]);
     }
@@ -358,10 +390,12 @@ class WorkspaceController extends Controller
 
         $messages = $conversation->messages()
             ->with('senderUser')
-            ->orderBy('sent_at')
-            ->orderBy('id')
+            ->orderByDesc('sent_at')
+            ->orderByDesc('id')
             ->limit(120)
-            ->get();
+            ->get()
+            ->sortBy('id')
+            ->values();
 
         $conversation->setRelation('messages', $messages);
 
