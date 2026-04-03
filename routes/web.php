@@ -14,6 +14,7 @@ use App\Http\Controllers\Admin\EscalationController;
 use App\Http\Controllers\Admin\KnowledgeBaseController;
 use App\Http\Controllers\Admin\LiveChatController;
 use App\Http\Controllers\Admin\LiveChatMessageController;
+use App\Http\Controllers\PublicPageController;
 use App\Http\Controllers\ProfileController;
 use App\Support\WaLog;
 use Illuminate\Support\Facades\Log;
@@ -22,6 +23,9 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', function () {
     return redirect()->route('login');
 });
+
+Route::get('/privacy-policy', [PublicPageController::class, 'privacyPolicy'])
+    ->name('privacy-policy');
 
 Route::get('/dashboard', function () {
     return redirect()->route('admin.chatbot.live-chats.index');
