@@ -4,7 +4,6 @@ namespace App\Services\WhatsApp;
 
 use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
-use App\Enums\SenderType;
 use App\Jobs\ProcessIncomingWhatsAppMessage;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
@@ -428,21 +427,25 @@ class WhatsAppWebhookService
             $enrichedPayload['_openai_seed'] = $openAiSeed;
         }
 
-        /** @var ConversationMessage $message */
-        $message = ConversationMessage::create([
-            'conversation_id' => $conversation->id,
-            'direction' => MessageDirection::Inbound,
-            'sender_type' => SenderType::Customer,
+        $message = $this->conversationManager->appendInboundMessage($conversation, [
             'message_type' => $messageType,
             'message_text' => $messageText,
             'raw_payload' => $enrichedPayload,
+            'channel_message_id' => $waMessageId,
             'wa_message_id' => $waMessageId,
+            'sent_at' => $sentAt ?? now(),
+        ]);
+
+        $message->forceFill([
             'ai_intent' => $aiIntent,
             'ai_confidence' => $aiConfidence,
-            'is_fallback' => false,
-            'sent_at' => $sentAt ?? now(),
             'delivery_status' => MessageDeliveryStatus::Sent,
-        ]);
+            'is_fallback' => false,
+        ])->save();
+
+        $conversation->forceFill([
+            'last_message_at' => $sentAt ?? now(),
+        ])->save();
 
         return $message;
     }
