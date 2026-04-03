@@ -27,6 +27,12 @@ Route::get('/', function () {
 Route::get('/privacy-policy', [PublicPageController::class, 'privacyPolicy'])
     ->name('privacy-policy');
 
+Route::get('/terms', [PublicPageController::class, 'terms'])
+    ->name('terms');
+
+Route::get('/data-deletion', [PublicPageController::class, 'dataDeletion'])
+    ->name('data-deletion');
+
 Route::get('/dashboard', function () {
     return redirect()->route('admin.chatbot.live-chats.index');
 })->middleware(['auth', 'verified'])->name('dashboard');
