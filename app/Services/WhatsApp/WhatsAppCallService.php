@@ -1207,9 +1207,14 @@ class WhatsAppCallService
     private function isConfigurationError(?array $metaError): bool
     {
         $code = trim((string) ($metaError['code'] ?? ''));
+        $message = strtolower(trim((string) ($metaError['message'] ?? '')));
 
         return $code === 'calling_configuration_incomplete'
-            || $code === 'permission_request_disabled';
+            || $code === 'permission_request_disabled'
+            || str_contains($message, 'calling api not enabled')
+            || str_contains($message, 'calling is not enabled')
+            || str_contains($message, 'configure call settings')
+            || str_contains($message, 'not enabled for this phone number');
     }
 
     private function hasRecentOutboundCallAttempt(WhatsAppCallSession $session): bool

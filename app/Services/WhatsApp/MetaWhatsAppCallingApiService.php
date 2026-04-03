@@ -187,6 +187,45 @@ class MetaWhatsAppCallingApiService
     }
 
     /**
+     * Ambil settings nomor WhatsApp dari Meta untuk preflight readiness.
+     *
+     * @return array<string, mixed>
+     */
+    public function getPhoneNumberSettings(?string $phoneNumberId = null): array
+    {
+        $resolvedPhoneNumberId = trim((string) ($phoneNumberId ?: $this->phoneNumberId));
+
+        $logContext = $this->buildLogContext(
+            ['phone_number_id' => $resolvedPhoneNumberId],
+            endpoint: $this->buildBaseUrl(sprintf('/%s/settings', $resolvedPhoneNumberId)),
+            action: 'get_phone_number_settings',
+            requestSummary: [
+                'phone_number_id' => $resolvedPhoneNumberId,
+            ],
+        );
+
+        if (($configurationError = $this->configurationError($resolvedPhoneNumberId, 'call_settings_fetch_failed')) !== null) {
+            $this->auditService->error('call_config_error', array_merge($logContext, [
+                'result' => 'failed',
+                'normalized_result' => $configurationError,
+            ]));
+
+            return $configurationError;
+        }
+
+        return $this->sendRequest(
+            method: 'GET',
+            endpointPath: sprintf('/%s/settings', $resolvedPhoneNumberId),
+            logContext: $logContext,
+            normalizationContext: [
+                'success_action' => 'call_settings_retrieved',
+                'failure_action' => 'call_settings_fetch_failed',
+                'error_permission_status' => WhatsAppCallSession::PERMISSION_FAILED,
+            ],
+        );
+    }
+
+    /**
      * @return array<string, string>
      */
     public function buildAuthHeaders(): array

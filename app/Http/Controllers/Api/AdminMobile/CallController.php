@@ -245,9 +245,7 @@ class CallController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Readiness calling berhasil diambil.',
-            'data' => [
-                'readiness' => $summary,
-            ],
+            'data' => $summary,
         ]);
     }
 
