@@ -14,6 +14,7 @@ use App\Http\Controllers\Admin\EscalationController;
 use App\Http\Controllers\Admin\KnowledgeBaseController;
 use App\Http\Controllers\Admin\LiveChatController;
 use App\Http\Controllers\Admin\LiveChatMessageController;
+use App\Http\Controllers\Meta\DataDeletionCallbackController;
 use App\Http\Controllers\PublicPageController;
 use App\Http\Controllers\ProfileController;
 use App\Support\WaLog;
@@ -36,6 +37,9 @@ Route::get('/data-deletion', [PublicPageController::class, 'dataDeletion'])
 
 Route::view('/delete_data', 'public.delete_data')
     ->name('delete_data');
+
+Route::match(['get', 'post'], '/meta/data-deletion-callback', [DataDeletionCallbackController::class, 'handle'])
+    ->name('meta.data-deletion-callback');
 
 Route::get('/dashboard', function () {
     return redirect()->route('admin.chatbot.live-chats.index');

@@ -23,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->validateCsrfTokens(except: [
             'webhook/*',
+            'meta/data-deletion-callback',
         ]);
 
         $middleware->alias([
