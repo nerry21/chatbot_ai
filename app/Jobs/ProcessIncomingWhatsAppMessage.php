@@ -31,8 +31,7 @@ use App\Services\Chatbot\Guardrails\AdminTakeoverGuardService;
 use App\Services\Chatbot\Guardrails\HallucinationGuardService;
 use App\Services\Chatbot\Guardrails\PolicyGuardService;
 use App\Services\Chatbot\ReplyOrchestratorService;
-use App\Services\CRM\ContactTaggingService;
-use App\Services\CRM\LeadPipelineService;
+use App\Services\CRM\CRMWritebackService;
 use App\Services\Knowledge\FaqResolverService;
 use App\Services\Knowledge\KnowledgeBaseService;
 use App\Services\Support\AuditLogService;
@@ -82,8 +81,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ConversationReplyGuardService $replyGuard,
         ReplyOrchestratorService $replyOrchestrator,
         ConversationOutboundRouterService $outboundRouter,
-        ContactTaggingService $contactTagging,
-        LeadPipelineService $leadPipeline,
+        CRMWritebackService $crmWriteback,
         AuditLogService $audit,
         KnowledgeBaseService $knowledgeBase,
         FaqResolverService $faqResolver,
@@ -237,6 +235,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $contextPayload = $contextLoader->load($conversation, $message);
             $messageText = $contextPayload->latestMessageText;
             $aiContext = $contextPayload->toAiContext();
+            $aiContext['crm_context'] = $contextPayload->crmContext;
 
             // ── 2.5 Knowledge retrieval (Tahap 10) ──────────────────────────
             // Fetch once, reuse across all AI steps.
@@ -602,8 +601,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 booking        : $booking,
                 intentResult   : $intentResult,
                 summaryResult  : $summaryResult,
-                contactTagging : $contactTagging,
-                leadPipeline   : $leadPipeline,
+                finalReply     : $finalReply,
+                contextSnapshot: $contextPayload?->toArray() ?? [],
+                crmWriteback   : $crmWriteback,
             );
 
             $durationMs = (int) round(microtime(true) * 1000) - $jobStartMs;
@@ -801,48 +801,33 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ?BookingRequest $booking,
         array $intentResult,
         array $summaryResult,
-        ContactTaggingService $contactTagging,
-        LeadPipelineService $leadPipeline,
+        array $finalReply,
+        array $contextSnapshot,
+        CRMWritebackService $crmWriteback,
     ): void {
         if (! config('chatbot.crm.enabled', true)) {
             return;
         }
 
         try {
-            $customer = $conversation->customer;
-            $intentStr = $intentResult['intent'] ?? null;
-            $intentEnum = $intentStr !== null ? IntentType::tryFrom($intentStr) : null;
+            $result = $crmWriteback->syncDecision(
+                conversation: $conversation,
+                booking: $booking,
+                intentResult: $intentResult,
+                summaryResult: $summaryResult,
+                finalReply: $finalReply,
+                contextSnapshot: $contextSnapshot,
+            );
 
-            // a. Apply CRM tags
-            $contactTagging->applyBasicTags($customer, $booking, $intentStr);
-
-            // b. Sync / advance lead pipeline
-            $leadPipeline->syncFromContext($customer, $conversation, $booking, $intentStr);
-
-            // c. Escalation job if human intervention is needed
-            $needsEscalation = $conversation->needs_human
-                || ($intentEnum !== null && $intentEnum->requiresHuman());
-
-            if ($needsEscalation) {
-                EscalateConversationToAdminJob::dispatch(
-                    $conversation->id,
-                    $intentResult['reasoning_short'] ?? $intentStr ?? '',
-                    'normal',
-                );
-            }
-
-            // d. Async contact sync
-            SyncContactToCrmJob::dispatch($customer->id);
-
-            // e. Async summary sync
-            if (! empty($summaryResult['summary'])) {
-                SyncConversationSummaryToCrmJob::dispatch(
-                    $customer->id,
-                    $conversation->id,
-                );
-            }
+            WaLog::info('[Job:ProcessIncoming] CRM integrated writeback finished', [
+                'conversation_id' => $conversation->id,
+                'result_status' => $result['status'] ?? null,
+                'lead_stage' => $result['lead_stage'] ?? null,
+                'needs_escalation' => $result['needs_escalation'] ?? false,
+                'tags' => $result['tags'] ?? [],
+            ]);
         } catch (\Throwable $e) {
-            WaLog::error('[Job:ProcessIncoming] CRM layer failed (non-fatal)', [
+            WaLog::error('[Job:ProcessIncoming] CRM integrated writeback failed (non-fatal)', [
                 'conversation_id' => $conversation->id,
                 'error' => $e->getMessage(),
                 'file' => $e->getFile().':'.$e->getLine(),

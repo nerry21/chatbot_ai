@@ -5,9 +5,14 @@ namespace Tests\Unit;
 use App\Enums\ConversationStatus;
 use App\Enums\MessageDirection;
 use App\Enums\SenderType;
+use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
+use App\Models\CrmContact;
 use App\Models\Customer;
+use App\Models\CustomerTag;
+use App\Models\Escalation;
+use App\Models\LeadPipeline;
 use App\Services\Chatbot\ConversationContextLoaderService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -106,6 +111,93 @@ class ConversationContextLoaderServiceTest extends TestCase
         $this->assertTrue((bool) ($payload->conversationState['admin_takeover'] ?? false));
         $this->assertTrue((bool) ($understandingInput['conversation_state']['admin_takeover'] ?? false));
         $this->assertSame('admin', $understandingInput['recent_history'][0]['role'] ?? null);
+    }
+
+    public function test_it_includes_unified_crm_context_in_payload_and_understanding_input(): void
+    {
+        config([
+            'chatbot.crm.ai_context.enabled' => true,
+            'chatbot.crm.hubspot.enabled' => false,
+            'chatbot.crm.hubspot.token' => '',
+        ]);
+
+        [$customer, $conversation] = $this->makeConversation([
+            'summary' => 'Customer sedang proses booking.',
+            'current_intent' => 'booking',
+            'needs_human' => true,
+            'assigned_admin_id' => 10,
+            'bot_paused' => true,
+        ]);
+
+        CrmContact::create([
+            'customer_id' => $customer->id,
+            'provider' => 'hubspot',
+            'external_contact_id' => 'crm-123',
+            'sync_status' => 'synced',
+            'sync_payload' => [
+                'id' => 'crm-123',
+                'properties' => [
+                    'company' => 'PT Travel Jaya',
+                    'lifecyclestage' => 'customer',
+                    'hs_lead_status' => 'OPEN',
+                ],
+            ],
+        ]);
+
+        CustomerTag::create([
+            'customer_id' => $customer->id,
+            'tag' => 'pelanggan_baru',
+        ]);
+
+        $booking = BookingRequest::create([
+            'conversation_id' => $conversation->id,
+            'customer_id' => $customer->id,
+            'pickup_location' => 'Ujung Batu',
+            'destination' => 'Pekanbaru',
+            'departure_date' => '2026-04-05',
+            'departure_time' => '08:00',
+            'booking_status' => 'draft',
+        ]);
+
+        LeadPipeline::create([
+            'customer_id' => $customer->id,
+            'conversation_id' => $conversation->id,
+            'booking_request_id' => $booking->id,
+            'stage' => 'engaged',
+        ]);
+
+        Escalation::create([
+            'conversation_id' => $conversation->id,
+            'reason' => 'Butuh admin',
+            'priority' => 'high',
+            'status' => 'open',
+            'assigned_admin_id' => 99,
+        ]);
+
+        $currentMessage = $this->addMessage(
+            $conversation,
+            MessageDirection::Inbound,
+            SenderType::Customer,
+            'tolong cek booking saya',
+            Carbon::create(2026, 3, 28, 10, 0, 0),
+        );
+
+        $payload = app(ConversationContextLoaderService::class)->load(
+            $conversation->fresh(),
+            $currentMessage,
+        );
+
+        $understandingInput = $payload->toUnderstandingInput();
+        $aiContext = $payload->toAiContext();
+
+        $this->assertSame('PT Travel Jaya', $payload->crmContext['hubspot']['company'] ?? null);
+        $this->assertSame('engaged', $payload->crmContext['lead_pipeline']['stage'] ?? null);
+        $this->assertSame('draft', $payload->crmContext['booking']['booking_status'] ?? null);
+        $this->assertTrue((bool) ($payload->crmContext['escalation']['has_open_escalation'] ?? false));
+        $this->assertTrue((bool) ($payload->crmContext['business_flags']['bot_paused'] ?? false));
+        $this->assertSame($payload->crmContext, $understandingInput['crm_context']);
+        $this->assertSame($payload->crmContext, $aiContext['crm_context']);
+        $this->assertSame($payload->crmContext, $understandingInput['conversation_state']['crm_context'] ?? []);
     }
 
     /**

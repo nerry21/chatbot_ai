@@ -9,6 +9,7 @@ use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Services\Booking\BookingConversationStateService;
+use App\Services\CRM\CRMContextService;
 
 class ConversationContextLoaderService
 {
@@ -20,8 +21,8 @@ class ConversationContextLoaderService
         private readonly CustomerMemoryService $customerMemoryService,
         private readonly ConversationMemoryResolverService $memoryResolver,
         private readonly ConversationContextSummaryService $summaryService,
-    ) {
-    }
+        private readonly CRMContextService $crmContextService,
+    ) {}
 
     public function load(Conversation $conversation, ConversationMessage $message): ConversationContextPayload
     {
@@ -36,6 +37,13 @@ class ConversationContextLoaderService
         $bookingSnapshot = $this->bookingStateService->load($conversation);
         $draftBooking = $this->findActiveDraft($conversation);
         $knownEntities = $this->buildKnownEntities($bookingSnapshot, $draftBooking);
+        $crmContext = $conversation->customer !== null
+            ? $this->crmContextService->build(
+                customer: $conversation->customer,
+                conversation: $conversation,
+                booking: $draftBooking,
+            )
+            : [];
         $conversationState = $this->buildConversationState(
             conversation: $conversation,
             activeStates: $activeStates,
@@ -71,6 +79,7 @@ class ConversationContextLoaderService
             customerMemory: $conversation->customer !== null
                 ? $this->customerMemoryService->buildMemory($conversation->customer)
                 : [],
+            crmContext: $crmContext,
             adminTakeover: $conversation->isAdminTakeover(),
         );
     }

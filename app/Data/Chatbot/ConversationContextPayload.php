@@ -10,6 +10,7 @@ final readonly class ConversationContextPayload
      * @param  array<string, mixed>  $knownEntities
      * @param  array<string, mixed>  $resolvedContext
      * @param  array<string, mixed>  $customerMemory
+     * @param  array<string, mixed>  $crmContext
      */
     public function __construct(
         public int $conversationId,
@@ -21,9 +22,9 @@ final readonly class ConversationContextPayload
         public array $resolvedContext,
         public ?string $conversationSummary,
         public array $customerMemory,
+        public array $crmContext,
         public bool $adminTakeover,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array{
@@ -32,6 +33,7 @@ final readonly class ConversationContextPayload
      *     conversation_state: array<string, mixed>,
      *     known_entities: array<string, mixed>,
      *     conversation_summary: string|null,
+     *     crm_context: array<string, mixed>,
      *     admin_takeover: bool
      * }
      */
@@ -43,6 +45,7 @@ final readonly class ConversationContextPayload
             'conversation_state' => $this->conversationStateForUnderstanding(),
             'known_entities' => $this->knownEntities,
             'conversation_summary' => $this->conversationSummary,
+            'crm_context' => $this->crmContext,
             'admin_takeover' => $this->adminTakeover,
         ];
     }
@@ -57,6 +60,7 @@ final readonly class ConversationContextPayload
             'message_id' => $this->messageId,
             'message_text' => $this->latestMessageText,
             'customer_memory' => $this->customerMemory,
+            'crm_context' => $this->crmContext,
             'active_states' => $this->conversationState,
             'recent_messages' => $this->recentMessagesForLegacyAiContext(),
             'context_messages' => $this->recentHistoryForUnderstanding(),
@@ -85,6 +89,7 @@ final readonly class ConversationContextPayload
             'resolved_context' => $this->resolvedContext,
             'conversation_summary' => $this->conversationSummary,
             'customer_memory' => $this->customerMemory,
+            'crm_context' => $this->crmContext,
             'admin_takeover' => $this->adminTakeover,
         ];
     }
@@ -109,6 +114,7 @@ final readonly class ConversationContextPayload
             ...$this->conversationState,
             'resolved_context' => $this->resolvedContext !== [] ? $this->resolvedContext : null,
             'conversation_summary' => $this->conversationSummary,
+            'crm_context' => $this->crmContext !== [] ? $this->crmContext : null,
             'admin_takeover' => $this->adminTakeover,
         ], static fn (mixed $value): bool => $value !== null);
     }
