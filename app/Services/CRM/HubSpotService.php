@@ -206,6 +206,53 @@ class HubSpotService
     }
 
     /**
+     * Update selected properties on an existing HubSpot contact.
+     *
+     * @param  array<string, mixed>  $properties
+     * @return array{status: string, data?: array, error?: string, reason?: string}
+     */
+    public function updateContactProperties(string $externalContactId, array $properties): array
+    {
+        if (! $this->isEnabled()) {
+            return $this->skipped('hubspot_disabled');
+        }
+
+        if ($properties === []) {
+            return $this->skipped('empty_properties');
+        }
+
+        try {
+            $response = Http::withToken($this->token)
+                ->timeout(10)
+                ->patch(self::BASE_URL.'/objects/contacts/'.$externalContactId, [
+                    'properties' => $properties,
+                ]);
+
+            if ($response->successful()) {
+                return [
+                    'status' => 'success',
+                    'data' => $response->json(),
+                ];
+            }
+
+            Log::warning('[HubSpot] updateContactProperties failed', [
+                'contact_id' => $externalContactId,
+                'http_status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            return ['status' => 'failed', 'error' => $response->body()];
+        } catch (\Throwable $e) {
+            Log::error('[HubSpot] updateContactProperties exception', [
+                'contact_id' => $externalContactId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['status' => 'error', 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
@@ -300,6 +347,13 @@ class HubSpotService
             'createdate',
             'lastmodifieddate',
             'hubspotscore',
+            'last_ai_intent',
+            'last_ai_summary',
+            'customer_interest_topic',
+            'ai_sentiment',
+            'needs_human_followup',
+            'last_whatsapp_interaction_at',
+            'admin_takeover_active',
         ];
     }
 

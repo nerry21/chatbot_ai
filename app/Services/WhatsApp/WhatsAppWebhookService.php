@@ -353,6 +353,10 @@ class WhatsAppWebhookService
                     'message_id' => $message->id,
                     'conversation_id' => $conversation->id,
                     'customer_id' => $customer->id,
+                    'ingress_seed_present' => ! empty($ingressSeed),
+                    'openai_seed_present' => false,
+                    'message_ai_intent' => $message->ai_intent,
+                    'message_ai_confidence' => $message->ai_confidence,
                 ]);
 
                 ProcessIncomingWhatsAppMessage::dispatch(
@@ -507,6 +511,10 @@ class WhatsAppWebhookService
     }
 
     /**
+     * Webhook layer tidak lagi menjalankan LLM.
+     * Method ini hanya membuat metadata ingress ringan agar seluruh reasoning AI
+     * tetap terpusat di ProcessIncomingWhatsAppMessage.
+     *
      * @param array<string, mixed> $parsedMessage
      * @return array<string, mixed>
      */

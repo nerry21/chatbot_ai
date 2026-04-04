@@ -582,7 +582,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 snapshot: $orchestrationSnapshot,
                 conversation: $conversation,
                 message: $message,
-                contextPayload: $contextPayload,
+                crmSnapshot: $crmSnapshot,
+                bookingDecision: $bookingDecision,
                 knowledgeHits: $knowledgeHits,
                 faqResult: $faqResult ?? null,
                 finalReply: $finalReply,
@@ -619,7 +620,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 snapshot: $orchestrationSnapshot,
                 conversation: $conversation,
                 message: $message,
-                contextPayload: $contextPayload,
+                crmSnapshot: $crmSnapshot,
+                bookingDecision: $bookingDecision,
                 knowledgeHits: $knowledgeHits,
                 faqResult: $faqResult ?? null,
                 finalReply: $finalReply,
@@ -754,6 +756,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'intent' => $intentResult['intent'],
                 'confidence' => $intentResult['confidence'],
                 'booking_action' => $bookingDecision['action'] ?? null,
+                'crm_snapshot_present' => ! empty($crmSnapshot),
+                'crm_snapshot_sections' => array_keys(is_array($crmSnapshot) ? $crmSnapshot : []),
+                'booking_decision_present' => ! empty($bookingDecision),
                 'is_fallback' => $finalReply['is_fallback'],
                 'used_knowledge' => $replyResult['used_knowledge'] ?? false,
                 'used_faq' => $replyResult['used_faq'] ?? false,
@@ -980,6 +985,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
     /**
      * @param  array<string, mixed>  $snapshot
+     * @param  array<string, mixed>  $crmSnapshot
+     * @param  array<string, mixed>|null  $bookingDecision
      * @param  array<int, mixed>  $knowledgeHits
      * @param  array<string, mixed>|null  $faqResult
      * @param  array<string, mixed>  $finalReply
@@ -989,14 +996,18 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         array $snapshot,
         \App\Models\Conversation $conversation,
         \App\Models\ConversationMessage $message,
-        \App\Data\Chatbot\ConversationContextPayload $contextPayload,
+        array $crmSnapshot = [],
+        ?array $bookingDecision = null,
         array $knowledgeHits = [],
         ?array $faqResult = null,
         array $finalReply = [],
     ): array {
         $snapshot['conversation_id'] = $conversation->id;
         $snapshot['message_id'] = $message->id;
-        $snapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
+        $snapshot['crm_context_present'] = ! empty($crmSnapshot);
+        $snapshot['crm_snapshot_present'] = ! empty($crmSnapshot);
+        $snapshot['crm_snapshot_sections'] = array_keys($crmSnapshot);
+        $snapshot['booking_decision_present'] = ! empty($bookingDecision);
         $snapshot['knowledge_hits_count'] = count($knowledgeHits);
         $snapshot['used_faq'] = (bool) ($faqResult['matched'] ?? false);
         $snapshot['used_knowledge'] = $knowledgeHits !== [];

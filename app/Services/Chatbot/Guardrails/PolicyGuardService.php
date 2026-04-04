@@ -26,7 +26,9 @@ class PolicyGuardService
      *         action: string,
      *         block_auto_reply: bool,
      *         reasons: array<int, string>,
-     *         hydrated_context_fields: array<int, string>
+     *         hydrated_context_fields: array<int, string>,
+     *         crm_policy_source?: string,
+     *         crm_policy_snapshot?: array<string, mixed>
      *     }
      * }
      */
@@ -57,6 +59,14 @@ class PolicyGuardService
             ? $crmContext['escalation']
             : [];
 
+        $crmConversation = is_array($crmContext['conversation'] ?? null)
+            ? $crmContext['conversation']
+            : [];
+
+        $crmLeadPipeline = is_array($crmContext['lead_pipeline'] ?? null)
+            ? $crmContext['lead_pipeline']
+            : [];
+
         if (($crmBusinessFlags['bot_paused'] ?? false) === true) {
             $reasons[] = 'crm_bot_paused';
 
@@ -72,6 +82,40 @@ class PolicyGuardService
                     'block_auto_reply' => true,
                     'reasons' => $reasons,
                     'hydrated_context_fields' => $hydratedContextFields,
+                    'crm_policy_source' => 'business_flags.bot_paused',
+                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                        crmBusinessFlags: $crmBusinessFlags,
+                        crmEscalation: $crmEscalation,
+                        crmLeadPipeline: $crmLeadPipeline,
+                    ),
+                ],
+            ];
+        }
+
+        if (
+            ($crmBusinessFlags['admin_takeover_active'] ?? false) === true
+            || ($crmConversation['admin_takeover'] ?? false) === true
+        ) {
+            $reasons[] = 'crm_admin_takeover_active';
+
+            return [
+                'intent_result' => $this->handoffIntent(
+                    intentResult: $intentResult,
+                    reasoning: 'Admin takeover aktif, balasan AI dihentikan.',
+                ),
+                'entity_result' => $entityResult,
+                'meta' => [
+                    'guard_group' => 'policy',
+                    'action' => 'blocked_admin_takeover',
+                    'block_auto_reply' => true,
+                    'reasons' => $reasons,
+                    'hydrated_context_fields' => $hydratedContextFields,
+                    'crm_policy_source' => 'business_flags.admin_takeover_active',
+                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                        crmBusinessFlags: $crmBusinessFlags,
+                        crmEscalation: $crmEscalation,
+                        crmLeadPipeline: $crmLeadPipeline,
+                    ),
                 ],
             ];
         }
@@ -81,7 +125,19 @@ class PolicyGuardService
             $reasons[] = 'crm_open_escalation';
             $intentResult = $this->handoffIntent(
                 intentResult: $intentResult,
-                reasoning: 'CRM menunjukkan ada eskalasi aktif, jadi auto reply dibatasi.',
+                reasoning: 'CRM menunjukkan ada eskalasi aktif, sehingga auto reply dibatasi.',
+            );
+        }
+
+        if (
+            ($crmBusinessFlags['needs_human_followup'] ?? false) === true
+            || ($crmConversation['needs_human'] ?? false) === true
+        ) {
+            $action = 'handoff';
+            $reasons[] = 'crm_needs_human_followup';
+            $intentResult = $this->handoffIntent(
+                intentResult: $intentResult,
+                reasoning: 'Konteks CRM menandai percakapan ini perlu follow up manusia.',
             );
         }
 
@@ -104,8 +160,32 @@ class PolicyGuardService
                     'block_auto_reply' => true,
                     'reasons' => $reasons,
                     'hydrated_context_fields' => $hydratedContextFields,
+                    'crm_policy_source' => 'runtime.admin_takeover',
+                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                        crmBusinessFlags: $crmBusinessFlags,
+                        crmEscalation: $crmEscalation,
+                        crmLeadPipeline: $crmLeadPipeline,
+                    ),
                 ],
             ];
+        }
+
+        if ($this->isSensitiveIntent($intentResult)) {
+            $action = 'handoff';
+            $reasons[] = 'sensitive_intent';
+            $intentResult = $this->handoffIntent(
+                intentResult: $intentResult,
+                reasoning: 'Intent sensitif terdeteksi dan wajib diarahkan ke admin.',
+            );
+        }
+
+        if (in_array(($crmLeadPipeline['stage'] ?? null), ['complaint', 'refund', 'legal', 'high_risk'], true)) {
+            $action = 'handoff';
+            $reasons[] = 'crm_high_risk_pipeline_stage';
+            $intentResult = $this->handoffIntent(
+                intentResult: $intentResult,
+                reasoning: 'Tahap pipeline CRM menunjukkan kasus berisiko tinggi.',
+            );
         }
 
         if (($intentResult['handoff_recommended'] ?? false) === true) {
@@ -175,9 +255,14 @@ class PolicyGuardService
             'meta' => [
                 'guard_group' => 'policy',
                 'action' => $action,
-                'block_auto_reply' => false,
+                'block_auto_reply' => $action !== 'allow',
                 'reasons' => array_values(array_unique($reasons)),
                 'hydrated_context_fields' => $hydratedContextFields,
+                'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                    crmBusinessFlags: $crmBusinessFlags,
+                    crmEscalation: $crmEscalation,
+                    crmLeadPipeline: $crmLeadPipeline,
+                ),
             ],
         ];
     }
@@ -199,6 +284,7 @@ class PolicyGuardService
         $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
         $flags = is_array($crm['business_flags'] ?? null) ? $crm['business_flags'] : [];
         $escalation = is_array($crm['escalation'] ?? null) ? $crm['escalation'] : [];
+        $leadPipeline = is_array($crm['lead_pipeline'] ?? null) ? $crm['lead_pipeline'] : [];
 
         $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
         $intent = (string) ($intentResult['intent'] ?? 'unknown');
@@ -208,6 +294,11 @@ class PolicyGuardService
 
         if (($flags['admin_takeover_active'] ?? false) === true && str_contains(mb_strtolower($reply, 'UTF-8'), 'saya akan putuskan')) {
             $violations[] = 'admin_takeover_policy_violation';
+            $isCompliant = false;
+        }
+
+        if (($flags['bot_paused'] ?? false) === true && (($replyResult['should_escalate'] ?? false) !== true)) {
+            $violations[] = 'bot_paused_not_respected';
             $isCompliant = false;
         }
 
@@ -221,11 +312,16 @@ class PolicyGuardService
             $isCompliant = false;
         }
 
+        if ($this->isSensitiveIntent(['intent' => $intent]) && (($replyResult['should_escalate'] ?? false) !== true)) {
+            $violations[] = 'sensitive_intent_without_handoff';
+            $isCompliant = false;
+        }
+
         if (
-            in_array($intent, ['complaint', 'refund', 'legal_issue', 'threat', 'sensitive_case'], true)
+            in_array(($leadPipeline['stage'] ?? null), ['complaint', 'refund', 'legal', 'high_risk'], true)
             && (($replyResult['should_escalate'] ?? false) !== true)
         ) {
-            $violations[] = 'sensitive_intent_without_handoff';
+            $violations[] = 'high_risk_pipeline_without_handoff';
             $isCompliant = false;
         }
 
@@ -481,14 +577,59 @@ class PolicyGuardService
      */
     private function handoffIntent(array $intentResult, string $reasoning): array
     {
-        $intentResult['intent'] = IntentType::HumanHandoff->value;
+        if (! isset($intentResult['intent']) || ! is_string($intentResult['intent']) || trim($intentResult['intent']) === '') {
+            $intentResult['intent'] = IntentType::HumanHandoff->value;
+        }
+
         $intentResult['confidence'] = max((float) ($intentResult['confidence'] ?? 0.0), 0.95);
         $intentResult['handoff_recommended'] = true;
+        $intentResult['needs_human_review'] = true;
         $intentResult['needs_clarification'] = false;
         $intentResult['clarification_question'] = null;
         $intentResult['reasoning_short'] = $reasoning;
 
         return $intentResult;
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     */
+    private function isSensitiveIntent(array $intentResult): bool
+    {
+        $intent = strtolower((string) ($intentResult['intent'] ?? ''));
+
+        return in_array($intent, [
+            'complaint',
+            'refund_request',
+            'refund',
+            'legal_issue',
+            'legal',
+            'threat',
+            'abuse_report',
+            'privacy_request',
+            'charge_dispute',
+            IntentType::HumanHandoff->value,
+        ], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $crmBusinessFlags
+     * @param  array<string, mixed>  $crmEscalation
+     * @param  array<string, mixed>  $crmLeadPipeline
+     * @return array<string, mixed>
+     */
+    private function crmPolicySnapshot(
+        array $crmBusinessFlags,
+        array $crmEscalation,
+        array $crmLeadPipeline,
+    ): array {
+        return [
+            'bot_paused' => (bool) ($crmBusinessFlags['bot_paused'] ?? false),
+            'admin_takeover_active' => (bool) ($crmBusinessFlags['admin_takeover_active'] ?? false),
+            'needs_human_followup' => (bool) ($crmBusinessFlags['needs_human_followup'] ?? false),
+            'open_escalation' => (bool) ($crmEscalation['has_open_escalation'] ?? false),
+            'lead_stage' => $crmLeadPipeline['stage'] ?? null,
+        ];
     }
 
     private function normalizeText(mixed $value): ?string
