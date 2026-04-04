@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\AdminMobile\ContactController as AdminMobileContact
 use App\Http\Controllers\Api\AdminMobile\MediaController as AdminMobileMediaController;
 use App\Http\Controllers\Api\AdminMobile\OmnichannelCallReadinessCacheClearController as AdminMobileCallReadinessCacheClearController;
 use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
+use App\Http\Controllers\Api\AdminMobile\StatusUpdateController as AdminMobileStatusUpdateController;
 use App\Http\Controllers\Api\AdminMobile\WorkspaceController as AdminMobileWorkspaceController;
 use App\Http\Controllers\Api\Mobile\AuthController;
 use App\Http\Controllers\Api\Mobile\LiveChatController;
@@ -65,6 +66,9 @@ Route::prefix('admin-mobile')
             Route::get('workspace', [AdminMobileWorkspaceController::class, 'workspace'])->name('workspace');
             Route::get('call/readiness', [AdminMobileCallController::class, 'readiness'])->name('call.readiness');
             Route::post('call/readiness/clear-cache', AdminMobileCallReadinessCacheClearController::class)->name('call.readiness.clear-cache');
+            Route::get('status-updates', [AdminMobileStatusUpdateController::class, 'index'])->name('status-updates.index');
+            Route::post('status-updates', [AdminMobileStatusUpdateController::class, 'store'])->name('status-updates.store');
+            Route::get('status-updates/{statusUpdate}', [AdminMobileStatusUpdateController::class, 'show'])->name('status-updates.show');
             Route::get('conversations', [AdminMobileWorkspaceController::class, 'conversations'])->name('conversations.index');
             Route::get('conversations/{conversation}', [AdminMobileWorkspaceController::class, 'detail'])->name('conversations.show');
             Route::get('conversations/{conversation}/messages', [AdminMobileWorkspaceController::class, 'messages'])->name('conversations.messages.index');
