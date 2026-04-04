@@ -69,7 +69,7 @@ class CRMWritebackService
         $contactSync = ['status' => 'queued'];
 
         $summarySync = ['status' => 'skipped', 'reason' => 'no_summary'];
-        if (! empty($summaryResult['summary'])) {
+        if ($this->shouldSyncSummary($summaryResult)) {
             SyncConversationSummaryToCrmJob::dispatch($customer->id, $conversation->id);
             $summarySync = ['status' => 'queued'];
         }
@@ -98,6 +98,9 @@ class CRMWritebackService
             'needs_escalation' => $needsEscalation,
             'crm_context_present' => ! empty($contextSnapshot['crm_context']),
             'orchestration_present' => ! empty($contextSnapshot['orchestration']),
+            'final_reply_source' => $finalReply['meta']['source'] ?? null,
+            'final_reply_grounding_source' => $finalReply['meta']['grounding_source'] ?? null,
+            'final_reply_force_handoff' => $finalReply['meta']['force_handoff'] ?? false,
         ]);
 
         return [
@@ -115,5 +118,15 @@ class CRMWritebackService
                 'customer_id' => $customer->id,
             ],
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $summaryResult
+     */
+    private function shouldSyncSummary(array $summaryResult): bool
+    {
+        $summary = trim((string) ($summaryResult['summary'] ?? ''));
+
+        return $summary !== '';
     }
 }

@@ -242,6 +242,33 @@ class ReplyOrchestratorService
     }
 
     /**
+     * @param  array<string, mixed>  $replyDraft
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $snapshot
+     * @param  array<int, mixed>  $knowledgeHits
+     * @param  array<string, mixed>|null  $faqResult
+     * @return array<string, mixed>
+     */
+    public function finalizeReplyWithHardening(
+        array $replyDraft,
+        array $context,
+        array $intentResult,
+        array $snapshot,
+        array $knowledgeHits = [],
+        ?array $faqResult = null,
+    ): array {
+        return $this->hardenFinalReply(
+            replyDraft: $replyDraft,
+            context: $context,
+            intentResult: $intentResult,
+            orchestrationSnapshot: $snapshot,
+            knowledgeHits: $knowledgeHits,
+            faqResult: $faqResult,
+        );
+    }
+
+    /**
      * Compose the final outbound reply text by combining:
      *  - booking engine decision (takes priority when present)
      *  - AI-generated reply from Tahap 3 (fallback when no booking decision)

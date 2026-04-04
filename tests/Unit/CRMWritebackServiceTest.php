@@ -123,4 +123,56 @@ class CRMWritebackServiceTest extends TestCase
         Queue::assertPushed(SyncContactToCrmJob::class, 1);
         Queue::assertPushed(SyncConversationSummaryToCrmJob::class, 1);
     }
+
+    public function test_it_skips_summary_sync_when_summary_is_blank(): void
+    {
+        Queue::fake();
+
+        $customer = Customer::create([
+            'name' => 'Nerry',
+            'phone_e164' => '+6281234567890',
+            'status' => 'active',
+        ]);
+
+        $conversation = Conversation::create([
+            'customer_id' => $customer->id,
+            'channel' => 'whatsapp',
+            'status' => ConversationStatus::Active,
+            'handoff_mode' => 'bot',
+            'started_at' => now(),
+            'last_message_at' => now(),
+        ])->load('customer');
+
+        $contactTagging = Mockery::mock(ContactTaggingService::class);
+        $contactTagging->shouldReceive('applyBasicTags')
+            ->once()
+            ->andReturn([]);
+
+        $leadPipeline = Mockery::mock(LeadPipelineService::class);
+        $leadPipeline->shouldReceive('syncFromContext')
+            ->once()
+            ->andReturn(null);
+
+        $service = new CRMWritebackService($contactTagging, $leadPipeline);
+
+        $result = $service->syncDecision(
+            conversation: $conversation,
+            booking: null,
+            intentResult: [
+                'intent' => 'greeting',
+            ],
+            summaryResult: [
+                'summary' => '   ',
+            ],
+            finalReply: [
+                'meta' => [],
+            ],
+            contextSnapshot: [],
+        );
+
+        $this->assertSame('skipped', $result['summary_sync']['status']);
+
+        Queue::assertPushed(SyncContactToCrmJob::class, 1);
+        Queue::assertNotPushed(SyncConversationSummaryToCrmJob::class);
+    }
 }

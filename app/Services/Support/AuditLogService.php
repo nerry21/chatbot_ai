@@ -79,8 +79,37 @@ class AuditLogService
             'message' => $message,
             'context' => [
                 'ai_orchestration' => true,
-                'snapshot' => $snapshot,
+                'snapshot' => $this->sanitizeAiSnapshot($snapshot),
             ],
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $snapshot
+     * @return array<string, mixed>
+     */
+    private function sanitizeAiSnapshot(array $snapshot): array
+    {
+        return [
+            'intent' => $snapshot['intent'] ?? null,
+            'intent_confidence' => $snapshot['intent_confidence'] ?? null,
+            'intent_reasoning' => $snapshot['intent_reasoning'] ?? null,
+            'reply_source' => $snapshot['reply_source'] ?? null,
+            'reply_action' => $snapshot['reply_action'] ?? null,
+            'reply_force_handoff' => $snapshot['reply_force_handoff'] ?? false,
+            'booking_action' => $snapshot['booking_action'] ?? null,
+            'booking_status' => $snapshot['booking_status'] ?? null,
+            'is_fallback' => $snapshot['is_fallback'] ?? false,
+            'crm_context_present' => $snapshot['crm_context_present'] ?? false,
+            'knowledge_hits_count' => $snapshot['knowledge_hits_count'] ?? 0,
+            'used_faq' => $snapshot['used_faq'] ?? false,
+            'used_knowledge' => $snapshot['used_knowledge'] ?? false,
+            'hardening_applied' => $snapshot['hardening_applied'] ?? false,
+            'grounding_source' => $snapshot['grounding_source'] ?? null,
+            'hallucination_risk_level' => $snapshot['hallucination_risk_level'] ?? null,
+            'policy_violations' => is_array($snapshot['policy_violations'] ?? null)
+                ? $snapshot['policy_violations']
+                : [],
+        ];
     }
 }

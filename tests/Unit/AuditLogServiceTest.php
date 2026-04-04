@@ -21,7 +21,9 @@ class AuditLogServiceTest extends TestCase
             message: 'AI orchestration final snapshot recorded.',
             snapshot: [
                 'intent' => 'booking_inquiry',
+                'intent_confidence' => 0.84,
                 'reply_source' => 'llm_reply_with_crm_context',
+                'grounding_source' => 'crm',
                 'rule_hits' => ['booking_missing_fields'],
             ],
         );
@@ -32,6 +34,8 @@ class AuditLogServiceTest extends TestCase
         $this->assertSame('AI orchestration final snapshot recorded.', $audit->message);
         $this->assertTrue($audit->context['ai_orchestration']);
         $this->assertSame('booking_inquiry', $audit->context['snapshot']['intent']);
-        $this->assertSame(['booking_missing_fields'], $audit->context['snapshot']['rule_hits']);
+        $this->assertSame(0.84, $audit->context['snapshot']['intent_confidence']);
+        $this->assertSame('crm', $audit->context['snapshot']['grounding_source']);
+        $this->assertArrayNotHasKey('rule_hits', $audit->context['snapshot']);
     }
 }

@@ -28,7 +28,6 @@ use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Chatbot\ConversationOutboundRouterService;
 use App\Services\Chatbot\ConversationReplyGuardService;
 use App\Services\Chatbot\Guardrails\AdminTakeoverGuardService;
-use App\Services\Chatbot\Guardrails\HallucinationGuardService;
 use App\Services\Chatbot\Guardrails\PolicyGuardService;
 use App\Services\Chatbot\ReplyOrchestratorService;
 use App\Services\CRM\CRMWritebackService;
@@ -65,7 +64,6 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         AdminTakeoverGuardService $adminTakeoverGuard,
         BotAutomationToggleService $botToggleService,
         PolicyGuardService $policyGuard,
-        HallucinationGuardService $hallucinationGuard,
         GroundedResponseFactsBuilderService $groundedFactsBuilder,
         GroundedResponseComposerService $groundedComposer,
         LlmUnderstandingEngine $understandingEngine,
@@ -482,19 +480,6 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 );
             }
 
-            $hallucinationGuardResult = $hallucinationGuard->guardReply(
-                conversation: $conversation,
-                intentResult: $intentResult,
-                reply: $finalReply,
-                context: array_merge($aiContext, [
-                    'booking_decision' => $bookingDecision ?? [],
-                ]),
-            );
-            $finalReply = $hallucinationGuardResult['reply'];
-            $intentResult = $hallucinationGuardResult['intent_result'];
-            $aiContext['intent_result'] = $intentResult;
-            $aiContext['hallucination_guard'] = $hallucinationGuardResult['meta'];
-
             $stepStart = (int) round(microtime(true) * 1000);
             $summaryResult = $summaryService->summarize($conversation, $aiContext);
             WaLog::debug('[Job:ProcessIncoming] AI:summary END', [
@@ -554,22 +539,25 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 replyResult: $finalReply,
                 bookingDecision: $bookingDecision,
             );
-            $orchestrationSnapshot['conversation_id'] = $conversation->id;
-            $orchestrationSnapshot['message_id'] = $message->id;
-            $orchestrationSnapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
-            $orchestrationSnapshot['knowledge_hits_count'] = count($knowledgeHits);
-            $orchestrationSnapshot['used_faq'] = (bool) ($faqResult['matched'] ?? false);
-            $orchestrationSnapshot['used_knowledge'] = $knowledgeHits !== [];
             $orchestrationSnapshot['rule_hits'] = is_array($ruleEvaluation['rule_hits'] ?? null)
                 ? array_values($ruleEvaluation['rule_hits'])
                 : [];
             $orchestrationSnapshot['reply_orchestration'] = $replyAuditSnapshot;
+            $orchestrationSnapshot = $this->enrichOrchestrationSnapshot(
+                snapshot: $orchestrationSnapshot,
+                conversation: $conversation,
+                message: $message,
+                contextPayload: $contextPayload,
+                knowledgeHits: $knowledgeHits,
+                faqResult: $faqResult ?? null,
+                finalReply: $finalReply,
+            );
 
-            $finalReply = $replyOrchestrator->hardenFinalReply(
+            $finalReply = $replyOrchestrator->finalizeReplyWithHardening(
                 replyDraft: $finalReply,
                 context: $aiContext,
                 intentResult: $intentResult,
-                orchestrationSnapshot: $orchestrationSnapshot,
+                snapshot: $orchestrationSnapshot,
                 knowledgeHits: $knowledgeHits,
                 faqResult: $faqResult ?? null,
             );
@@ -588,22 +576,30 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 replyResult: $finalReply,
                 bookingDecision: $bookingDecision,
             );
-            $orchestrationSnapshot['conversation_id'] = $conversation->id;
-            $orchestrationSnapshot['message_id'] = $message->id;
-            $orchestrationSnapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
-            $orchestrationSnapshot['knowledge_hits_count'] = count($knowledgeHits);
-            $orchestrationSnapshot['used_faq'] = (bool) ($faqResult['matched'] ?? false);
-            $orchestrationSnapshot['used_knowledge'] = $knowledgeHits !== [];
-            $orchestrationSnapshot['hardening_applied'] = true;
-            $orchestrationSnapshot['grounding_source'] = $finalReply['meta']['grounding_source'] ?? null;
-            $orchestrationSnapshot['hallucination_risk_level'] = $finalReply['meta']['hallucination_risk_level'] ?? null;
-            $orchestrationSnapshot['policy_violations'] = is_array($finalReply['meta']['policy_violations'] ?? null)
-                ? $finalReply['meta']['policy_violations']
-                : [];
             $orchestrationSnapshot['rule_hits'] = is_array($ruleEvaluation['rule_hits'] ?? null)
                 ? array_values($ruleEvaluation['rule_hits'])
                 : [];
             $orchestrationSnapshot['reply_orchestration'] = $replyAuditSnapshot;
+            $orchestrationSnapshot = $this->enrichOrchestrationSnapshot(
+                snapshot: $orchestrationSnapshot,
+                conversation: $conversation,
+                message: $message,
+                contextPayload: $contextPayload,
+                knowledgeHits: $knowledgeHits,
+                faqResult: $faqResult ?? null,
+                finalReply: $finalReply,
+            );
+            $hallucinationGuardResult['meta'] = [
+                'guard_group' => 'hallucination',
+                'action' => 'delegated_to_reply_orchestrator',
+                'blocked' => (($finalReply['meta']['hallucination_risk_level'] ?? 'low') === 'high'),
+                'reason' => null,
+                'risk_level' => $finalReply['meta']['hallucination_risk_level'] ?? null,
+                'risk_flags' => is_array($finalReply['meta']['hallucination_risk_flags'] ?? null)
+                    ? $finalReply['meta']['hallucination_risk_flags']
+                    : [],
+            ];
+            $aiContext['hallucination_guard'] = $hallucinationGuardResult['meta'];
             $aiContext['reply_orchestration'] = $orchestrationSnapshot;
 
             $outboundMessage = $this->persistResults(
@@ -932,6 +928,38 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'file' => $e->getFile().':'.$e->getLine(),
             ]);
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $snapshot
+     * @param  array<int, mixed>  $knowledgeHits
+     * @param  array<string, mixed>|null  $faqResult
+     * @param  array<string, mixed>  $finalReply
+     * @return array<string, mixed>
+     */
+    private function enrichOrchestrationSnapshot(
+        array $snapshot,
+        \App\Models\Conversation $conversation,
+        \App\Models\ConversationMessage $message,
+        \App\Data\Chatbot\ConversationContextPayload $contextPayload,
+        array $knowledgeHits = [],
+        ?array $faqResult = null,
+        array $finalReply = [],
+    ): array {
+        $snapshot['conversation_id'] = $conversation->id;
+        $snapshot['message_id'] = $message->id;
+        $snapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
+        $snapshot['knowledge_hits_count'] = count($knowledgeHits);
+        $snapshot['used_faq'] = (bool) ($faqResult['matched'] ?? false);
+        $snapshot['used_knowledge'] = $knowledgeHits !== [];
+        $snapshot['hardening_applied'] = (bool) ($finalReply['meta']['hardening_applied'] ?? false);
+        $snapshot['grounding_source'] = $finalReply['meta']['grounding_source'] ?? null;
+        $snapshot['hallucination_risk_level'] = $finalReply['meta']['hallucination_risk_level'] ?? null;
+        $snapshot['policy_violations'] = is_array($finalReply['meta']['policy_violations'] ?? null)
+            ? $finalReply['meta']['policy_violations']
+            : [];
+
+        return $snapshot;
     }
 
     public function failed(\Throwable $exception): void
