@@ -127,6 +127,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         $policyGuardResult = ['meta' => []];
         $hallucinationGuardResult = ['meta' => []];
         $guardResult = [];
+        $ruleEvaluation = ['rule_hits' => [], 'actions' => []];
+        $replyAuditSnapshot = [];
         $summaryResult = ['summary' => ''];
         $replyResult = [
             'text' => '',
@@ -400,7 +402,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $finalReply = $flowDecision['reply'];
             $intentResult = $flowDecision['intent_result'] ?? $intentResult;
 
-            if ($this->shouldComposeAiReply($finalReply)) {
+            $replyTemplateRequiresComposition = $this->shouldComposeAiReply($finalReply);
+            $groundedReplyUsed = false;
+
+            if ($replyTemplateRequiresComposition) {
                 $aiContext['intent_result'] = $intentResult;
                 $aiContext['entity_result'] = $entityResult;
                 $groundedFacts = $groundedFactsBuilder->build(
@@ -431,16 +436,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
                 if (trim($groundedResult->text) === '') {
                     $replyResult = $responseGenerator->generate($aiContext);
+                } else {
+                    $groundedReplyUsed = true;
                 }
-
-                $finalReply = $this->composeFinalReplyFromGenerator($finalReply, $replyResult);
-                $finalReply['meta'] = array_merge(
-                    is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [],
-                    [
-                        'source' => 'grounded_response_composer',
-                        'grounded_mode' => $groundedFacts->mode->value,
-                    ],
-                );
                 WaLog::info('[Job:ProcessIncoming] AI:grounded_reply END', [
                     'conversation_id' => $conversation->id,
                     'is_fallback' => $replyResult['is_fallback'] ?? false,
@@ -451,6 +449,36 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 ]);
             } else {
                 $replyResult = $this->replyResultFromFinalReply($finalReply);
+            }
+
+            $orchestratedReply = $replyOrchestrator->orchestrate(array_merge($aiContext, [
+                'intent_result' => $intentResult,
+                'reply_result' => $replyResult,
+            ]));
+            $intentResult = is_array($orchestratedReply['intent_result'] ?? null)
+                ? $orchestratedReply['intent_result']
+                : $intentResult;
+            $ruleEvaluation = is_array($orchestratedReply['rule_evaluation'] ?? null)
+                ? $orchestratedReply['rule_evaluation']
+                : [];
+            $replyResult = is_array($orchestratedReply['reply_result'] ?? null)
+                ? $orchestratedReply['reply_result']
+                : $replyResult;
+            $replyAuditSnapshot = $replyOrchestrator->buildAuditSnapshot($orchestratedReply);
+            $aiContext['intent_result'] = $intentResult;
+            $aiContext['rule_evaluation'] = $ruleEvaluation;
+            $aiContext['reply_orchestration'] = $replyAuditSnapshot;
+
+            $finalReply = $this->mergeReplyResultIntoFinalReply($finalReply, $replyResult);
+
+            if ($replyTemplateRequiresComposition && $groundedReplyUsed) {
+                $finalReply['meta'] = array_merge(
+                    is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [],
+                    [
+                        'source' => 'grounded_response_composer',
+                        'grounded_mode' => $groundedFacts->mode->value,
+                    ],
+                );
             }
 
             $hallucinationGuardResult = $hallucinationGuard->guardReply(
@@ -590,6 +618,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                         'policy_guard' => is_array($policyGuardResult['meta'] ?? null) ? $policyGuardResult['meta'] : [],
                         'hallucination_guard' => is_array($hallucinationGuardResult['meta'] ?? null) ? $hallucinationGuardResult['meta'] : [],
                         'reply_guard' => $guardResult,
+                        'rule_evaluation' => $ruleEvaluation,
+                        'reply_orchestration' => $replyAuditSnapshot,
                         'entity_result' => $entityResult,
                         'reply_result' => $replyResult,
                     ],
@@ -864,17 +894,34 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
      * @param  array<string, mixed>  $replyResult
      * @return array<string, mixed>
      */
-    private function composeFinalReplyFromGenerator(array $replyTemplate, array $replyResult): array
+    private function mergeReplyResultIntoFinalReply(array $replyTemplate, array $replyResult): array
     {
-        $replyTemplate['text'] = (string) ($replyResult['text'] ?? '');
+        $replyTemplate['text'] = (string) ($replyResult['text'] ?? $replyResult['reply'] ?? '');
         $replyTemplate['is_fallback'] = (bool) ($replyResult['is_fallback'] ?? false);
+        $replyTemplate['tone'] = $replyResult['tone'] ?? ($replyTemplate['tone'] ?? 'ramah');
+        $replyTemplate['should_escalate'] = (bool) ($replyResult['should_escalate'] ?? ($replyTemplate['should_escalate'] ?? false));
+        $replyTemplate['handoff_reason'] = $replyResult['handoff_reason'] ?? ($replyTemplate['handoff_reason'] ?? null);
+        $replyTemplate['next_action'] = $replyResult['next_action'] ?? ($replyTemplate['next_action'] ?? null);
+        $replyTemplate['data_requests'] = is_array($replyResult['data_requests'] ?? null)
+            ? $replyResult['data_requests']
+            : ($replyTemplate['data_requests'] ?? []);
+        $replyTemplate['used_crm_facts'] = is_array($replyResult['used_crm_facts'] ?? null)
+            ? $replyResult['used_crm_facts']
+            : ($replyTemplate['used_crm_facts'] ?? []);
+        $replyTemplate['safety_notes'] = is_array($replyResult['safety_notes'] ?? null)
+            ? $replyResult['safety_notes']
+            : ($replyTemplate['safety_notes'] ?? []);
         $replyTemplate['message_type'] = $replyTemplate['message_type'] ?? 'text';
         $replyTemplate['outbound_payload'] = is_array($replyTemplate['outbound_payload'] ?? null)
             ? $replyTemplate['outbound_payload']
             : [];
         $replyTemplate['meta'] = array_merge(
             is_array($replyTemplate['meta'] ?? null) ? $replyTemplate['meta'] : [],
-            ['source' => 'ai_reply'],
+            is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [],
+            [
+                'source' => (string) ((is_array($replyTemplate['meta'] ?? null) ? ($replyTemplate['meta']['source'] ?? null) : null) ?? 'ai_reply'),
+                'decision_source' => (string) ((is_array($replyResult['meta'] ?? null) ? ($replyResult['meta']['source'] ?? null) : null) ?? ((is_array($replyTemplate['meta'] ?? null) ? ($replyTemplate['meta']['decision_source'] ?? null) : null) ?? 'unknown')),
+            ],
         );
 
         return $replyTemplate;
@@ -887,7 +934,16 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     private function replyResultFromFinalReply(array $finalReply): array
     {
         return [
+            'reply' => (string) ($finalReply['text'] ?? ''),
             'text' => (string) ($finalReply['text'] ?? ''),
+            'tone' => $finalReply['tone'] ?? 'ramah',
+            'should_escalate' => (bool) ($finalReply['should_escalate'] ?? (($finalReply['meta']['force_handoff'] ?? false) === true)),
+            'handoff_reason' => $finalReply['handoff_reason'] ?? null,
+            'next_action' => $finalReply['next_action'] ?? 'answer_question',
+            'data_requests' => is_array($finalReply['data_requests'] ?? null) ? $finalReply['data_requests'] : [],
+            'used_crm_facts' => is_array($finalReply['used_crm_facts'] ?? null) ? $finalReply['used_crm_facts'] : [],
+            'safety_notes' => is_array($finalReply['safety_notes'] ?? null) ? $finalReply['safety_notes'] : [],
+            'meta' => is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [],
             'is_fallback' => (bool) ($finalReply['is_fallback'] ?? false),
             'used_knowledge' => false,
             'used_faq' => false,

@@ -5,6 +5,10 @@ namespace App\Services\Chatbot;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\Customer;
+use App\Services\AI\IntentClassifierService;
+use App\Services\AI\ResponseGeneratorService;
+use App\Services\AI\ResponseValidationService;
+use App\Services\AI\RuleEngineService;
 use App\Services\Booking\BookingConfirmationService;
 use App\Services\Booking\RouteValidationService;
 
@@ -27,9 +31,83 @@ class ReplyOrchestratorService
     ];
 
     public function __construct(
+        private readonly IntentClassifierService $intentClassificationService,
+        private readonly ResponseGeneratorService $replyGenerationService,
+        private readonly RuleEngineService $ruleEngineService,
+        private readonly ResponseValidationService $responseValidationService,
         private readonly BookingConfirmationService $confirmationService,
-        private readonly RouteValidationService     $routeValidator,
+        private readonly RouteValidationService $routeValidator,
     ) {}
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function orchestrate(array $context): array
+    {
+        $intentResult = is_array($context['intent_result'] ?? null)
+            ? $context['intent_result']
+            : $this->intentClassificationService->classify($context);
+
+        $replyDraft = is_array($context['reply_result'] ?? null)
+            ? $context['reply_result']
+            : $this->replyGenerationService->generate(
+                context: $context,
+                intentResult: $intentResult,
+            );
+
+        $ruleEvaluation = $this->ruleEngineService->evaluateOperationalRules(
+            context: $context,
+            intentResult: $intentResult,
+            replyResult: $replyDraft,
+        );
+
+        $hasForcingAction =
+            (($ruleEvaluation['actions']['force_handoff'] ?? false) === true)
+            || (($ruleEvaluation['actions']['force_safe_fallback'] ?? false) === true)
+            || (($ruleEvaluation['actions']['force_ask_missing_data'] ?? false) === true);
+
+        if ($hasForcingAction) {
+            $replyDraft = $this->ruleEngineService->buildSafeFallbackFromRules(
+                context: $context,
+                ruleEvaluation: $ruleEvaluation,
+            );
+        }
+
+        $finalReply = $this->responseValidationService->validateAndFinalize(
+            replyResult: $replyDraft,
+            context: $context,
+            intentResult: $intentResult,
+            ruleEvaluation: $ruleEvaluation,
+        );
+
+        return [
+            'intent_result' => $intentResult,
+            'rule_evaluation' => $ruleEvaluation,
+            'reply_result' => $finalReply,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $orchestrated
+     * @return array<string, mixed>
+     */
+    public function buildAuditSnapshot(array $orchestrated): array
+    {
+        $intent = is_array($orchestrated['intent_result'] ?? null) ? $orchestrated['intent_result'] : [];
+        $rules = is_array($orchestrated['rule_evaluation'] ?? null) ? $orchestrated['rule_evaluation'] : [];
+        $reply = is_array($orchestrated['reply_result'] ?? null) ? $orchestrated['reply_result'] : [];
+
+        return [
+            'intent' => $intent['intent'] ?? null,
+            'intent_confidence' => $intent['confidence'] ?? null,
+            'should_escalate' => $reply['should_escalate'] ?? false,
+            'handoff_reason' => $reply['handoff_reason'] ?? null,
+            'next_action' => $reply['next_action'] ?? null,
+            'rule_hits' => $rules['rule_hits'] ?? [],
+            'reply_source' => $reply['meta']['decision_source'] ?? $reply['meta']['source'] ?? null,
+        ];
+    }
 
     /**
      * Compose the final outbound reply text by combining:
