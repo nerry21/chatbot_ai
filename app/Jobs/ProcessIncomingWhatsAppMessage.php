@@ -558,12 +558,53 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $orchestrationSnapshot['message_id'] = $message->id;
             $orchestrationSnapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
             $orchestrationSnapshot['knowledge_hits_count'] = count($knowledgeHits);
-            $orchestrationSnapshot['used_faq'] = (bool) ($replyResult['used_faq'] ?? false);
-            $orchestrationSnapshot['used_knowledge'] = (bool) ($replyResult['used_knowledge'] ?? false);
+            $orchestrationSnapshot['used_faq'] = (bool) ($faqResult['matched'] ?? false);
+            $orchestrationSnapshot['used_knowledge'] = $knowledgeHits !== [];
             $orchestrationSnapshot['rule_hits'] = is_array($ruleEvaluation['rule_hits'] ?? null)
                 ? array_values($ruleEvaluation['rule_hits'])
                 : [];
             $orchestrationSnapshot['reply_orchestration'] = $replyAuditSnapshot;
+
+            $finalReply = $replyOrchestrator->hardenFinalReply(
+                replyDraft: $finalReply,
+                context: $aiContext,
+                intentResult: $intentResult,
+                orchestrationSnapshot: $orchestrationSnapshot,
+                knowledgeHits: $knowledgeHits,
+                faqResult: $faqResult ?? null,
+            );
+
+            $replyResult = array_merge(
+                $this->replyResultFromFinalReply($finalReply),
+                [
+                    'used_knowledge' => (bool) (($replyResult['used_knowledge'] ?? false) || $knowledgeHits !== []),
+                    'used_faq' => (bool) (($replyResult['used_faq'] ?? false) || ($faqResult['matched'] ?? false)),
+                ],
+            );
+
+            $orchestrationSnapshot = $replyOrchestrator->buildFinalSnapshot(
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                replyResult: $finalReply,
+                bookingDecision: $bookingDecision,
+            );
+            $orchestrationSnapshot['conversation_id'] = $conversation->id;
+            $orchestrationSnapshot['message_id'] = $message->id;
+            $orchestrationSnapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
+            $orchestrationSnapshot['knowledge_hits_count'] = count($knowledgeHits);
+            $orchestrationSnapshot['used_faq'] = (bool) ($faqResult['matched'] ?? false);
+            $orchestrationSnapshot['used_knowledge'] = $knowledgeHits !== [];
+            $orchestrationSnapshot['hardening_applied'] = true;
+            $orchestrationSnapshot['grounding_source'] = $finalReply['meta']['grounding_source'] ?? null;
+            $orchestrationSnapshot['hallucination_risk_level'] = $finalReply['meta']['hallucination_risk_level'] ?? null;
+            $orchestrationSnapshot['policy_violations'] = is_array($finalReply['meta']['policy_violations'] ?? null)
+                ? $finalReply['meta']['policy_violations']
+                : [];
+            $orchestrationSnapshot['rule_hits'] = is_array($ruleEvaluation['rule_hits'] ?? null)
+                ? array_values($ruleEvaluation['rule_hits'])
+                : [];
+            $orchestrationSnapshot['reply_orchestration'] = $replyAuditSnapshot;
+            $aiContext['reply_orchestration'] = $orchestrationSnapshot;
 
             $outboundMessage = $this->persistResults(
                 conversation        : $conversation,
@@ -971,6 +1012,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             'data_requests' => is_array($finalReply['data_requests'] ?? null) ? $finalReply['data_requests'] : [],
             'used_crm_facts' => is_array($finalReply['used_crm_facts'] ?? null) ? $finalReply['used_crm_facts'] : [],
             'safety_notes' => is_array($finalReply['safety_notes'] ?? null) ? $finalReply['safety_notes'] : [],
+            'grounding_notes' => is_array($finalReply['grounding_notes'] ?? null) ? $finalReply['grounding_notes'] : [],
             'meta' => is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [],
             'is_fallback' => (bool) ($finalReply['is_fallback'] ?? false),
             'used_knowledge' => false,

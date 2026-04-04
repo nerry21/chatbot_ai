@@ -146,6 +146,102 @@ class PolicyGuardService
     }
 
     /**
+     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @return array{is_compliant: bool, violations: array<int, string>}
+     */
+    public function evaluatePolicyCompliance(
+        array $replyResult,
+        array $context,
+        array $intentResult = [],
+        array $orchestrationSnapshot = [],
+    ): array {
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
+        $flags = is_array($crm['business_flags'] ?? null) ? $crm['business_flags'] : [];
+        $escalation = is_array($crm['escalation'] ?? null) ? $crm['escalation'] : [];
+
+        $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
+        $intent = (string) ($intentResult['intent'] ?? 'unknown');
+
+        $violations = [];
+        $isCompliant = true;
+
+        if (($flags['admin_takeover_active'] ?? false) === true && str_contains(mb_strtolower($reply, 'UTF-8'), 'saya akan putuskan')) {
+            $violations[] = 'admin_takeover_policy_violation';
+            $isCompliant = false;
+        }
+
+        if (($conversation['needs_human'] ?? false) === true && (($replyResult['should_escalate'] ?? false) !== true)) {
+            $violations[] = 'needs_human_not_escalated';
+            $isCompliant = false;
+        }
+
+        if (($escalation['has_open_escalation'] ?? false) === true && (($replyResult['should_escalate'] ?? false) !== true)) {
+            $violations[] = 'open_escalation_not_respected';
+            $isCompliant = false;
+        }
+
+        if (
+            in_array($intent, ['complaint', 'refund', 'legal_issue', 'threat', 'sensitive_case'], true)
+            && (($replyResult['should_escalate'] ?? false) !== true)
+        ) {
+            $violations[] = 'sensitive_intent_without_handoff';
+            $isCompliant = false;
+        }
+
+        if (
+            ($orchestrationSnapshot['reply_force_handoff'] ?? false) === true
+            && (($replyResult['meta']['force_handoff'] ?? false) !== true)
+        ) {
+            $violations[] = 'orchestration_handoff_not_respected';
+            $isCompliant = false;
+        }
+
+        return [
+            'is_compliant' => $isCompliant,
+            'violations' => array_values(array_unique($violations)),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $replyResult
+     * @param  array{is_compliant?: bool, violations?: array<int, string>}  $policyReport
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function applyPolicyFallback(
+        array $replyResult,
+        array $policyReport,
+        array $context = [],
+    ): array {
+        if (($policyReport['is_compliant'] ?? true) === true) {
+            return $replyResult;
+        }
+
+        return [
+            'reply' => 'Baik, agar penanganannya tetap sesuai prosedur, percakapan ini akan saya teruskan ke admin kami ya.',
+            'text' => 'Baik, agar penanganannya tetap sesuai prosedur, percakapan ini akan saya teruskan ke admin kami ya.',
+            'tone' => 'empatik',
+            'should_escalate' => true,
+            'handoff_reason' => 'Policy guard fallback',
+            'next_action' => 'handoff_admin',
+            'data_requests' => [],
+            'used_crm_facts' => [],
+            'safety_notes' => array_values($policyReport['violations'] ?? []),
+            'message_type' => 'text',
+            'outbound_payload' => [],
+            'is_fallback' => true,
+            'meta' => [
+                'force_handoff' => true,
+                'source' => 'policy_guard_fallback',
+            ],
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $intentResult
      * @return array<string, mixed>
      */

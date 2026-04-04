@@ -66,6 +66,113 @@ class GroundedResponseComposerService
         }
     }
 
+    /**
+     * @param  array<string, mixed>  $replyDraft
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @param  array<int, mixed>  $knowledgeHits
+     * @param  array<string, mixed>|null  $faqResult
+     * @return array<string, mixed>
+     */
+    public function composeGroundedReply(
+        array $replyDraft,
+        array $context,
+        array $intentResult = [],
+        array $orchestrationSnapshot = [],
+        array $knowledgeHits = [],
+        ?array $faqResult = null,
+    ): array {
+        $reply = trim((string) ($replyDraft['reply'] ?? $replyDraft['text'] ?? ''));
+        $usedFacts = is_array($replyDraft['used_crm_facts'] ?? null) ? $replyDraft['used_crm_facts'] : [];
+
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $customer = is_array($crm['customer'] ?? null) ? $crm['customer'] : [];
+        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
+        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
+        $lead = is_array($crm['lead_pipeline'] ?? null) ? $crm['lead_pipeline'] : [];
+        $flags = is_array($crm['business_flags'] ?? null) ? $crm['business_flags'] : [];
+
+        $groundingNotes = [];
+
+        if (! empty($customer['name'])) {
+            $usedFacts[] = 'customer.name';
+        }
+
+        if (! empty($lead['stage'])) {
+            $usedFacts[] = 'lead_pipeline.stage';
+        }
+
+        if (! empty($conversation['current_intent'])) {
+            $usedFacts[] = 'conversation.current_intent';
+        }
+
+        if (! empty($booking['booking_status'])) {
+            $usedFacts[] = 'booking.booking_status';
+        }
+
+        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            $usedFacts[] = 'booking.missing_fields';
+            $groundingNotes[] = 'Reply constrained by booking missing fields';
+        }
+
+        if (($flags['admin_takeover_active'] ?? false) === true) {
+            $usedFacts[] = 'business_flags.admin_takeover_active';
+            $groundingNotes[] = 'Reply constrained by admin takeover';
+        }
+
+        if (! empty($context['conversation_summary'])) {
+            $groundingNotes[] = 'Conversation summary grounding used';
+        }
+
+        if (! empty($context['customer_memory'])) {
+            $groundingNotes[] = 'Customer memory grounding used';
+        }
+
+        if ($faqResult !== null && ! empty($faqResult['matched'])) {
+            $groundingNotes[] = 'FAQ grounding used';
+        }
+
+        if ($knowledgeHits !== []) {
+            $groundingNotes[] = 'Knowledge grounding used';
+        }
+
+        if (($orchestrationSnapshot['reply_force_handoff'] ?? false) === true) {
+            $groundingNotes[] = 'Reply constrained by orchestration handoff flag';
+        }
+
+        if (($intentResult['intent'] ?? null) !== null) {
+            $groundingNotes[] = 'Intent-aware grounding applied';
+        }
+
+        if ($reply === '') {
+            $reply = 'Baik, saya bantu dulu ya. Mohon jelaskan sedikit lebih detail agar saya bisa menindaklanjuti dengan tepat.';
+            $groundingNotes[] = 'Empty draft replaced with grounded fallback';
+        }
+
+        $replyDraft['reply'] = $reply;
+        $replyDraft['text'] = $reply;
+        $replyDraft['used_crm_facts'] = array_values(array_unique(array_filter($usedFacts)));
+        $replyDraft['grounding_notes'] = array_values(array_unique(array_filter(array_merge(
+            is_array($replyDraft['grounding_notes'] ?? null) ? $replyDraft['grounding_notes'] : [],
+            $groundingNotes,
+        ))));
+        $replyDraft['message_type'] = $replyDraft['message_type'] ?? 'text';
+        $replyDraft['outbound_payload'] = is_array($replyDraft['outbound_payload'] ?? null)
+            ? $replyDraft['outbound_payload']
+            : [];
+
+        $replyDraft['meta'] = array_merge(
+            is_array($replyDraft['meta'] ?? null) ? $replyDraft['meta'] : [],
+            [
+                'grounded' => true,
+                'grounding_source' => $this->detectGroundingSource($faqResult, $knowledgeHits, $crm),
+            ],
+        );
+
+        return $replyDraft;
+    }
+
     private function fallback(GroundedResponseFacts $facts): GroundedResponseResult
     {
         $officialFacts = $facts->officialFacts;
@@ -83,6 +190,31 @@ class GroundedResponseComposerService
             mode: $facts->mode,
             isFallback: true,
         );
+    }
+
+    /**
+     * @param  array<int, mixed>  $knowledgeHits
+     * @param  array<string, mixed>  $crm
+     */
+    private function detectGroundingSource(?array $faqResult, array $knowledgeHits, array $crm): string
+    {
+        if ($faqResult !== null && ! empty($faqResult['matched']) && $knowledgeHits !== []) {
+            return 'faq+knowledge+crm';
+        }
+
+        if ($faqResult !== null && ! empty($faqResult['matched'])) {
+            return 'faq+crm';
+        }
+
+        if ($knowledgeHits !== []) {
+            return 'knowledge+crm';
+        }
+
+        if ($crm !== []) {
+            return 'crm';
+        }
+
+        return 'fallback';
     }
 
     private function directAnswerFallback(GroundedResponseFacts $facts): string

@@ -171,4 +171,48 @@ class GroundedResponseComposerServiceTest extends TestCase
         $this->assertSame(GroundedResponseMode::HandoffMessage, $result->mode);
         $this->assertStringContainsString('teruskan ke admin', $result->text);
     }
+
+    public function test_it_composes_grounded_reply_metadata_from_crm_and_knowledge(): void
+    {
+        $service = new GroundedResponseComposerService(
+            Mockery::mock(LlmClientService::class),
+            Mockery::mock(GroundedResponsePromptBuilderService::class),
+            app(\App\Services\Support\JsonSchemaValidatorService::class),
+        );
+
+        $result = $service->composeGroundedReply(
+            replyDraft: [
+                'reply' => 'Baik, saya bantu cek.',
+                'used_crm_facts' => ['customer.name'],
+                'meta' => [
+                    'source' => 'ai_reply',
+                ],
+            ],
+            context: [
+                'crm_context' => [
+                    'customer' => ['name' => 'Nerry'],
+                    'conversation' => ['current_intent' => 'booking_inquiry'],
+                    'booking' => ['missing_fields' => ['pickup_location']],
+                    'lead_pipeline' => ['stage' => 'engaged'],
+                    'business_flags' => ['admin_takeover_active' => false],
+                ],
+                'customer_memory' => [
+                    'relationship_memory' => ['is_returning_customer' => true],
+                ],
+                'conversation_summary' => 'Customer asks for booking help.',
+            ],
+            intentResult: ['intent' => 'booking_inquiry'],
+            orchestrationSnapshot: ['reply_force_handoff' => false],
+            knowledgeHits: [['id' => 1]],
+            faqResult: ['matched' => true],
+        );
+
+        $this->assertSame('Baik, saya bantu cek.', $result['reply']);
+        $this->assertContains('lead_pipeline.stage', $result['used_crm_facts']);
+        $this->assertContains('booking.missing_fields', $result['used_crm_facts']);
+        $this->assertContains('Knowledge grounding used', $result['grounding_notes']);
+        $this->assertContains('FAQ grounding used', $result['grounding_notes']);
+        $this->assertSame('faq+knowledge+crm', $result['meta']['grounding_source']);
+        $this->assertTrue($result['meta']['grounded']);
+    }
 }

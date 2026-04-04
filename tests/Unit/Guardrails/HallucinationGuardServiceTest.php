@@ -86,4 +86,45 @@ class HallucinationGuardServiceTest extends TestCase
         $this->assertSame('handoff', $result['meta']['action']);
         $this->assertSame(IntentType::HumanHandoff->value, $result['intent_result']['intent']);
     }
+
+    public function test_it_detects_high_grounding_risk_and_applies_missing_data_fallback(): void
+    {
+        $service = app(HallucinationGuardService::class);
+
+        $risk = $service->inspectGroundingRisk(
+            replyResult: [
+                'reply' => 'Booking Anda sudah dikonfirmasi dan siap berangkat.',
+            ],
+            context: [
+                'crm_context' => [
+                    'booking' => [
+                        'missing_fields' => ['pickup_location', 'destination'],
+                    ],
+                    'conversation' => [],
+                ],
+            ],
+            orchestrationSnapshot: [],
+        );
+
+        $result = $service->enforceHallucinationFallback(
+            replyResult: [
+                'reply' => 'Booking Anda sudah dikonfirmasi dan siap berangkat.',
+            ],
+            riskReport: $risk,
+            context: [
+                'crm_context' => [
+                    'booking' => [
+                        'missing_fields' => ['pickup_location', 'destination'],
+                    ],
+                ],
+            ],
+        );
+
+        $this->assertSame('high', $risk['risk_level']);
+        $this->assertContains('booking_claim_while_data_incomplete', $risk['risk_flags']);
+        $this->assertFalse($risk['is_safe']);
+        $this->assertSame('ask_missing_data', $result['next_action']);
+        $this->assertSame(['pickup_location', 'destination'], $result['data_requests']);
+        $this->assertSame('hallucination_guard_missing_data_fallback', $result['meta']['source']);
+    }
 }

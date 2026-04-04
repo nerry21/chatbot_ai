@@ -253,6 +253,40 @@ class ConversationReplyGuardServiceTest extends TestCase
         ));
     }
 
+    public function test_it_guards_conversation_reply_for_missing_fields_and_human_follow_up(): void
+    {
+        $service = $this->makeServiceWithState(null);
+
+        $result = $service->guardConversationReply(
+            replyResult: [
+                'reply' => '',
+                'next_action' => 'answer_question',
+                'meta' => [],
+            ],
+            context: [
+                'crm_context' => [
+                    'conversation' => [
+                        'needs_human' => true,
+                    ],
+                    'booking' => [
+                        'missing_fields' => ['pickup_location'],
+                    ],
+                ],
+            ],
+            orchestrationSnapshot: [
+                'reply_force_handoff' => true,
+            ],
+        );
+
+        $this->assertSame('ask_missing_data', $result['next_action']);
+        $this->assertSame(['pickup_location'], $result['data_requests']);
+        $this->assertTrue($result['should_escalate']);
+        $this->assertTrue($result['meta']['force_handoff']);
+        $this->assertNotEmpty($result['reply']);
+        $this->assertContains('Conversation guard enforced human follow-up', $result['safety_notes']);
+        $this->assertContains('Conversation guard respected orchestration handoff', $result['safety_notes']);
+    }
+
     private function makeServiceWithState(
         ?array $unavailableState,
         ?array $recentReplyIdentity = null,

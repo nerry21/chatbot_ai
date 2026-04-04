@@ -8,6 +8,129 @@ use App\Models\Conversation;
 class HallucinationGuardService
 {
     /**
+     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @return array{risk_level: string, risk_flags: array<int, string>, is_safe: bool}
+     */
+    public function inspectGroundingRisk(
+        array $replyResult,
+        array $context,
+        array $orchestrationSnapshot = [],
+    ): array {
+        $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
+        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
+
+        $riskFlags = [];
+        $riskLevel = 'low';
+
+        if ($reply === '') {
+            $riskFlags[] = 'empty_reply';
+            $riskLevel = $this->elevateRiskLevel($riskLevel, 'medium');
+        }
+
+        $lower = mb_strtolower($reply, 'UTF-8');
+
+        if (
+            str_contains($lower, 'dipastikan')
+            || str_contains($lower, 'pasti tersedia')
+            || str_contains($lower, 'sudah dikonfirmasi')
+            || str_contains($lower, 'telah diproses')
+        ) {
+            $riskFlags[] = 'unsupported_operational_certainty';
+            $riskLevel = $this->elevateRiskLevel($riskLevel, 'high');
+        }
+
+        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            if (
+                str_contains($lower, 'booking anda sudah dikonfirmasi')
+                || str_contains($lower, 'siap berangkat')
+                || str_contains($lower, 'jadwal anda sudah aman')
+            ) {
+                $riskFlags[] = 'booking_claim_while_data_incomplete';
+                $riskLevel = $this->elevateRiskLevel($riskLevel, 'high');
+            }
+        }
+
+        if (($conversation['summary'] ?? null) === null && str_contains($lower, 'sesuai pembicaraan sebelumnya')) {
+            $riskFlags[] = 'claims_previous_context_without_summary';
+            $riskLevel = $this->elevateRiskLevel($riskLevel, 'medium');
+        }
+
+        if (($orchestrationSnapshot['reply_force_handoff'] ?? false) === true && str_contains($lower, 'saya akan selesaikan langsung')) {
+            $riskFlags[] = 'reply_conflicts_with_handoff';
+            $riskLevel = $this->elevateRiskLevel($riskLevel, 'high');
+        }
+
+        return [
+            'risk_level' => $riskLevel,
+            'risk_flags' => array_values(array_unique($riskFlags)),
+            'is_safe' => $riskLevel !== 'high',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $replyResult
+     * @param  array{risk_level?: string, risk_flags?: array<int, string>, is_safe?: bool}  $riskReport
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    public function enforceHallucinationFallback(
+        array $replyResult,
+        array $riskReport,
+        array $context = [],
+    ): array {
+        if (($riskReport['is_safe'] ?? true) === true) {
+            return $replyResult;
+        }
+
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
+
+        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            return [
+                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', $booking['missing_fields']).'.',
+                'text' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', $booking['missing_fields']).'.',
+                'tone' => 'ramah',
+                'should_escalate' => false,
+                'handoff_reason' => null,
+                'next_action' => 'ask_missing_data',
+                'data_requests' => array_values($booking['missing_fields']),
+                'used_crm_facts' => ['booking.missing_fields'],
+                'safety_notes' => array_values($riskReport['risk_flags'] ?? []),
+                'message_type' => 'text',
+                'outbound_payload' => [],
+                'is_fallback' => true,
+                'meta' => [
+                    'force_handoff' => false,
+                    'source' => 'hallucination_guard_missing_data_fallback',
+                ],
+            ];
+        }
+
+        return [
+            'reply' => 'Baik, agar informasi yang saya sampaikan tetap akurat, percakapan ini akan saya teruskan ke admin kami ya.',
+            'text' => 'Baik, agar informasi yang saya sampaikan tetap akurat, percakapan ini akan saya teruskan ke admin kami ya.',
+            'tone' => 'empatik',
+            'should_escalate' => true,
+            'handoff_reason' => 'Hallucination risk too high',
+            'next_action' => 'handoff_admin',
+            'data_requests' => [],
+            'used_crm_facts' => [],
+            'safety_notes' => array_values($riskReport['risk_flags'] ?? []),
+            'message_type' => 'text',
+            'outbound_payload' => [],
+            'is_fallback' => true,
+            'meta' => [
+                'force_handoff' => true,
+                'source' => 'hallucination_guard_handoff_fallback',
+            ],
+        ];
+    }
+
+    /**
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $reply
      * @param  array<string, mixed>  $context
@@ -241,5 +364,18 @@ class HallucinationGuardService
                 'reason' => null,
             ],
         ];
+    }
+
+    private function elevateRiskLevel(string $currentLevel, string $candidateLevel): string
+    {
+        $priority = [
+            'low' => 1,
+            'medium' => 2,
+            'high' => 3,
+        ];
+
+        return ($priority[$candidateLevel] ?? 0) > ($priority[$currentLevel] ?? 0)
+            ? $candidateLevel
+            : $currentLevel;
     }
 }

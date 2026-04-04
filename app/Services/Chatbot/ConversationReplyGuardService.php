@@ -71,6 +71,72 @@ class ConversationReplyGuardService
     }
 
     /**
+     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @return array<string, mixed>
+     */
+    public function guardConversationReply(
+        array $replyResult,
+        array $context,
+        array $orchestrationSnapshot = [],
+    ): array {
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
+        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
+
+        $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
+        $nextAction = (string) ($replyResult['next_action'] ?? 'answer_question');
+        $notes = is_array($replyResult['safety_notes'] ?? null) ? $replyResult['safety_notes'] : [];
+
+        if ($reply === '') {
+            $reply = 'Baik, saya bantu dulu ya. Mohon jelaskan sedikit lebih detail agar saya bisa menindaklanjuti dengan tepat.';
+            $notes[] = 'Conversation guard filled empty reply';
+        }
+
+        if (mb_strlen($reply, 'UTF-8') > 1200) {
+            $reply = mb_substr($reply, 0, 1200, 'UTF-8');
+            $notes[] = 'Conversation guard trimmed long reply';
+        }
+
+        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            if ($nextAction === 'answer_question') {
+                $replyResult['next_action'] = 'ask_missing_data';
+                $replyResult['data_requests'] = array_values($booking['missing_fields']);
+                $notes[] = 'Conversation guard aligned reply with booking missing fields';
+            }
+        }
+
+        $replyResult['meta'] = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+
+        if (($conversation['needs_human'] ?? false) === true) {
+            $replyResult['should_escalate'] = true;
+            $replyResult['handoff_reason'] = $replyResult['handoff_reason'] ?? 'Conversation requires human follow-up';
+            $replyResult['meta']['force_handoff'] = true;
+            $notes[] = 'Conversation guard enforced human follow-up';
+        }
+
+        if (($orchestrationSnapshot['reply_force_handoff'] ?? false) === true) {
+            $replyResult['should_escalate'] = true;
+            $replyResult['meta']['force_handoff'] = true;
+            $notes[] = 'Conversation guard respected orchestration handoff';
+        }
+
+        $replyResult['reply'] = $reply;
+        $replyResult['text'] = $reply;
+        $replyResult['message_type'] = $replyResult['message_type'] ?? 'text';
+        $replyResult['outbound_payload'] = is_array($replyResult['outbound_payload'] ?? null)
+            ? $replyResult['outbound_payload']
+            : [];
+        $replyResult['data_requests'] = array_values(array_unique(array_filter(
+            is_array($replyResult['data_requests'] ?? null) ? $replyResult['data_requests'] : [],
+        )));
+        $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
+
+        return $replyResult;
+    }
+
+    /**
      * @param  array<string, mixed>  $reply
      */
     public function rememberUnavailableContext(

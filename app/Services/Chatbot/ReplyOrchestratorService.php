@@ -2,6 +2,7 @@
 
 namespace App\Services\Chatbot;
 
+use App\Services\AI\GroundedResponseComposerService;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\Customer;
@@ -11,6 +12,8 @@ use App\Services\AI\ResponseValidationService;
 use App\Services\AI\RuleEngineService;
 use App\Services\Booking\BookingConfirmationService;
 use App\Services\Booking\RouteValidationService;
+use App\Services\Chatbot\Guardrails\HallucinationGuardService;
+use App\Services\Chatbot\Guardrails\PolicyGuardService;
 
 class ReplyOrchestratorService
 {
@@ -35,6 +38,10 @@ class ReplyOrchestratorService
         private readonly ResponseGeneratorService $replyGenerationService,
         private readonly RuleEngineService $ruleEngineService,
         private readonly ResponseValidationService $responseValidationService,
+        private readonly PolicyGuardService $policyGuardService,
+        private readonly HallucinationGuardService $hallucinationGuardService,
+        private readonly ConversationReplyGuardService $conversationReplyGuardService,
+        private readonly GroundedResponseComposerService $groundedResponseComposerService,
         private readonly BookingConfirmationService $confirmationService,
         private readonly RouteValidationService $routeValidator,
     ) {}
@@ -140,6 +147,98 @@ class ReplyOrchestratorService
             'booking_status' => $bookingDecision['booking_status'] ?? null,
             'is_fallback' => (bool) ($replyResult['is_fallback'] ?? false),
         ];
+    }
+
+    /**
+     * Hardening akhir reply supaya grounded, patuh policy, bebas halusinasi,
+     * dan konsisten dengan state conversation + orchestration snapshot.
+     *
+     * @param  array<string, mixed>  $replyDraft
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @param  array<int, mixed>  $knowledgeHits
+     * @param  array<string, mixed>|null  $faqResult
+     * @return array<string, mixed>
+     */
+    public function hardenFinalReply(
+        array $replyDraft,
+        array $context,
+        array $intentResult = [],
+        array $orchestrationSnapshot = [],
+        array $knowledgeHits = [],
+        ?array $faqResult = null,
+    ): array {
+        $grounded = $this->groundedResponseComposerService->composeGroundedReply(
+            replyDraft: $replyDraft,
+            context: $context,
+            intentResult: $intentResult,
+            orchestrationSnapshot: $orchestrationSnapshot,
+            knowledgeHits: $knowledgeHits,
+            faqResult: $faqResult,
+        );
+
+        $hallucinationReport = $this->hallucinationGuardService->inspectGroundingRisk(
+            replyResult: $grounded,
+            context: $context,
+            orchestrationSnapshot: $orchestrationSnapshot,
+        );
+
+        $afterHallucination = $this->hallucinationGuardService->enforceHallucinationFallback(
+            replyResult: $grounded,
+            riskReport: $hallucinationReport,
+            context: $context,
+        );
+
+        $policyReport = $this->policyGuardService->evaluatePolicyCompliance(
+            replyResult: $afterHallucination,
+            context: $context,
+            intentResult: $intentResult,
+            orchestrationSnapshot: $orchestrationSnapshot,
+        );
+
+        $afterPolicy = $this->policyGuardService->applyPolicyFallback(
+            replyResult: $afterHallucination,
+            policyReport: $policyReport,
+            context: $context,
+        );
+
+        $final = $this->conversationReplyGuardService->guardConversationReply(
+            replyResult: $afterPolicy,
+            context: $context,
+            orchestrationSnapshot: $orchestrationSnapshot,
+        );
+
+        $final['reply'] = (string) ($final['reply'] ?? $final['text'] ?? '');
+        $final['text'] = $final['reply'];
+        $final['message_type'] = $final['message_type'] ?? 'text';
+        $final['outbound_payload'] = is_array($final['outbound_payload'] ?? null)
+            ? $final['outbound_payload']
+            : [];
+        $final['used_crm_facts'] = array_values(array_unique(array_filter(
+            is_array($final['used_crm_facts'] ?? null) ? $final['used_crm_facts'] : [],
+        )));
+        $final['safety_notes'] = array_values(array_unique(array_filter(
+            is_array($final['safety_notes'] ?? null) ? $final['safety_notes'] : [],
+        )));
+        $final['grounding_notes'] = array_values(array_unique(array_filter(
+            is_array($final['grounding_notes'] ?? null) ? $final['grounding_notes'] : [],
+        )));
+        $final['meta'] = array_merge(
+            is_array($final['meta'] ?? null) ? $final['meta'] : [],
+            [
+                'hardening_applied' => true,
+                'hallucination_risk_level' => $hallucinationReport['risk_level'] ?? 'unknown',
+                'hallucination_risk_flags' => $hallucinationReport['risk_flags'] ?? [],
+                'policy_violations' => $policyReport['violations'] ?? [],
+                'decision_source' => (is_array($final['meta'] ?? null) ? ($final['meta']['decision_source'] ?? null) : null)
+                    ?? (is_array($final['meta'] ?? null) ? ($final['meta']['source'] ?? null) : null)
+                    ?? 'reply_hardening',
+            ],
+        );
+        $final['is_fallback'] = (bool) ($final['is_fallback'] ?? str_contains((string) ($final['meta']['source'] ?? ''), 'fallback'));
+
+        return $final;
     }
 
     /**

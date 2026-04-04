@@ -104,4 +104,49 @@ class PolicyGuardServiceTest extends TestCase
         $this->assertSame(IntentType::HumanHandoff->value, $result['intent_result']['intent']);
         $this->assertTrue($result['intent_result']['handoff_recommended']);
     }
+
+    public function test_it_flags_non_compliant_reply_when_human_follow_up_is_required(): void
+    {
+        $service = app(PolicyGuardService::class);
+
+        $report = $service->evaluatePolicyCompliance(
+            replyResult: [
+                'reply' => 'Baik, saya bantu jawab langsung.',
+                'should_escalate' => false,
+                'meta' => [
+                    'force_handoff' => false,
+                ],
+            ],
+            context: [
+                'crm_context' => [
+                    'conversation' => [
+                        'needs_human' => true,
+                    ],
+                    'business_flags' => [],
+                    'escalation' => [],
+                ],
+            ],
+            intentResult: [
+                'intent' => 'complaint',
+            ],
+            orchestrationSnapshot: [
+                'reply_force_handoff' => true,
+            ],
+        );
+
+        $fallback = $service->applyPolicyFallback(
+            replyResult: [
+                'reply' => 'Baik, saya bantu jawab langsung.',
+            ],
+            policyReport: $report,
+            context: [],
+        );
+
+        $this->assertFalse($report['is_compliant']);
+        $this->assertContains('needs_human_not_escalated', $report['violations']);
+        $this->assertContains('sensitive_intent_without_handoff', $report['violations']);
+        $this->assertContains('orchestration_handoff_not_respected', $report['violations']);
+        $this->assertTrue($fallback['should_escalate']);
+        $this->assertSame('policy_guard_fallback', $fallback['meta']['source']);
+    }
 }

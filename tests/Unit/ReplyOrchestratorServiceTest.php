@@ -2,12 +2,16 @@
 
 namespace Tests\Unit;
 
+use App\Services\AI\GroundedResponseComposerService;
 use App\Services\AI\IntentClassifierService;
 use App\Services\AI\ResponseGeneratorService;
 use App\Services\AI\ResponseValidationService;
 use App\Services\AI\RuleEngineService;
 use App\Services\Booking\BookingConfirmationService;
 use App\Services\Booking\RouteValidationService;
+use App\Services\Chatbot\ConversationReplyGuardService;
+use App\Services\Chatbot\Guardrails\HallucinationGuardService;
+use App\Services\Chatbot\Guardrails\PolicyGuardService;
 use App\Services\Chatbot\ReplyOrchestratorService;
 use Mockery;
 use Tests\TestCase;
@@ -88,6 +92,10 @@ class ReplyOrchestratorServiceTest extends TestCase
             $replyService,
             $ruleEngine,
             $responseValidation,
+            Mockery::mock(PolicyGuardService::class),
+            Mockery::mock(HallucinationGuardService::class),
+            Mockery::mock(ConversationReplyGuardService::class),
+            Mockery::mock(GroundedResponseComposerService::class),
             Mockery::mock(BookingConfirmationService::class),
             Mockery::mock(RouteValidationService::class),
         );
@@ -151,6 +159,10 @@ class ReplyOrchestratorServiceTest extends TestCase
             $replyService,
             $ruleEngine,
             $responseValidation,
+            Mockery::mock(PolicyGuardService::class),
+            Mockery::mock(HallucinationGuardService::class),
+            Mockery::mock(ConversationReplyGuardService::class),
+            Mockery::mock(GroundedResponseComposerService::class),
             Mockery::mock(BookingConfirmationService::class),
             Mockery::mock(RouteValidationService::class),
         );
@@ -171,6 +183,10 @@ class ReplyOrchestratorServiceTest extends TestCase
             Mockery::mock(ResponseGeneratorService::class),
             Mockery::mock(RuleEngineService::class),
             Mockery::mock(ResponseValidationService::class),
+            Mockery::mock(PolicyGuardService::class),
+            Mockery::mock(HallucinationGuardService::class),
+            Mockery::mock(ConversationReplyGuardService::class),
+            Mockery::mock(GroundedResponseComposerService::class),
             Mockery::mock(BookingConfirmationService::class),
             Mockery::mock(RouteValidationService::class),
         );
@@ -213,5 +229,100 @@ class ReplyOrchestratorServiceTest extends TestCase
         $this->assertSame('ask_confirmation', $snapshot['booking_action']);
         $this->assertSame('draft', $snapshot['booking_status']);
         $this->assertFalse($snapshot['is_fallback']);
+    }
+
+    public function test_it_hardens_final_reply_through_grounding_and_guards(): void
+    {
+        $policyGuard = Mockery::mock(PolicyGuardService::class);
+        $hallucinationGuard = Mockery::mock(HallucinationGuardService::class);
+        $conversationReplyGuard = Mockery::mock(ConversationReplyGuardService::class);
+        $groundedComposer = Mockery::mock(GroundedResponseComposerService::class);
+
+        $groundedComposer->shouldReceive('composeGroundedReply')
+            ->once()
+            ->andReturn([
+                'reply' => 'Baik, mohon lengkapi pickup_location.',
+                'text' => 'Baik, mohon lengkapi pickup_location.',
+                'used_crm_facts' => ['booking.missing_fields'],
+                'meta' => [
+                    'source' => 'grounded_reply',
+                    'grounding_source' => 'crm',
+                ],
+            ]);
+
+        $hallucinationGuard->shouldReceive('inspectGroundingRisk')
+            ->once()
+            ->andReturn([
+                'risk_level' => 'medium',
+                'risk_flags' => ['booking_claim_while_data_incomplete'],
+                'is_safe' => true,
+            ]);
+        $hallucinationGuard->shouldReceive('enforceHallucinationFallback')
+            ->once()
+            ->andReturnUsing(fn (array $replyResult): array => $replyResult);
+
+        $policyGuard->shouldReceive('evaluatePolicyCompliance')
+            ->once()
+            ->andReturn([
+                'is_compliant' => true,
+                'violations' => [],
+            ]);
+        $policyGuard->shouldReceive('applyPolicyFallback')
+            ->once()
+            ->andReturnUsing(fn (array $replyResult): array => $replyResult);
+
+        $conversationReplyGuard->shouldReceive('guardConversationReply')
+            ->once()
+            ->andReturn([
+                'reply' => 'Baik, mohon lengkapi pickup_location.',
+                'text' => 'Baik, mohon lengkapi pickup_location.',
+                'used_crm_facts' => ['booking.missing_fields'],
+                'safety_notes' => ['Conversation guard aligned reply with booking missing fields'],
+                'meta' => [
+                    'source' => 'grounded_reply',
+                    'grounding_source' => 'crm',
+                ],
+            ]);
+
+        $service = new ReplyOrchestratorService(
+            Mockery::mock(IntentClassifierService::class),
+            Mockery::mock(ResponseGeneratorService::class),
+            Mockery::mock(RuleEngineService::class),
+            Mockery::mock(ResponseValidationService::class),
+            $policyGuard,
+            $hallucinationGuard,
+            $conversationReplyGuard,
+            $groundedComposer,
+            Mockery::mock(BookingConfirmationService::class),
+            Mockery::mock(RouteValidationService::class),
+        );
+
+        $result = $service->hardenFinalReply(
+            replyDraft: [
+                'reply' => 'booking sudah dikonfirmasi',
+                'text' => 'booking sudah dikonfirmasi',
+            ],
+            context: [
+                'crm_context' => [
+                    'booking' => [
+                        'missing_fields' => ['pickup_location'],
+                    ],
+                ],
+            ],
+            intentResult: [
+                'intent' => 'booking',
+            ],
+            orchestrationSnapshot: [
+                'reply_force_handoff' => false,
+            ],
+            knowledgeHits: [],
+            faqResult: null,
+        );
+
+        $this->assertSame('Baik, mohon lengkapi pickup_location.', $result['reply']);
+        $this->assertSame('crm', $result['meta']['grounding_source']);
+        $this->assertTrue($result['meta']['hardening_applied']);
+        $this->assertSame('medium', $result['meta']['hallucination_risk_level']);
+        $this->assertSame([], $result['meta']['policy_violations']);
     }
 }
