@@ -40,13 +40,15 @@ class UnderstandingResultAdapterService
         $intentResult = [
             'intent' => $intent,
             'confidence' => min(1.0, max(0.0, $confidence)),
-            'reasoning_short' => $reasoning !== '' ? $reasoning : 'Understanding LLM aktif.',
+            'reasoning_short' => $reasoning !== '' ? $reasoning : 'Understanding LLM + CRM aktif.',
             'sub_intent' => $understanding->subIntent,
             'needs_clarification' => $understanding->needsClarification,
             'clarification_question' => $understanding->clarificationQuestion,
             'handoff_recommended' => $understanding->handoffRecommended,
             'uses_previous_context' => $understanding->usesPreviousContext,
             'llm_primary' => true,
+            'understanding_source' => 'llm_with_crm_context',
+            'crm_context_used' => true,
         ];
 
         $entityResult = $this->mergeLegacyEntities(
@@ -59,6 +61,8 @@ class UnderstandingResultAdapterService
             'entity_result' => $entityResult,
             'meta' => [
                 'llm_primary' => true,
+                'understanding_source' => 'llm_with_crm_context',
+                'crm_context_used' => true,
                 'used_legacy_intent_fallback' => $usedLegacyIntentFallback,
                 'used_legacy_entity_fallback' => $usedLegacyEntityFallback,
                 'legacy_fallback_reason' => $usedLegacyIntentFallback || $usedLegacyEntityFallback

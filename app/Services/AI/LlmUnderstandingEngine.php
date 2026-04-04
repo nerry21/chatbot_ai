@@ -27,6 +27,9 @@ class LlmUnderstandingEngine
         array $conversationState = [],
         array $knownEntities = [],
         array $allowedIntents = [],
+        ?string $conversationSummary = null,
+        array $crmContext = [],
+        bool $adminTakeover = false,
         ?int $conversationId = null,
         ?int $messageId = null,
     ): LlmUnderstandingResult {
@@ -46,6 +49,9 @@ class LlmUnderstandingEngine
             conversationState: $conversationState,
             knownEntities: $knownEntities,
             allowedIntents: $normalizedAllowedIntents,
+            conversationSummary: $conversationSummary,
+            crmContext: $crmContext,
+            adminTakeover: $adminTakeover,
         );
 
         $raw = $this->llmClient->understandMessage([
@@ -55,6 +61,9 @@ class LlmUnderstandingEngine
             'recent_history' => $recentHistory,
             'conversation_state' => $conversationState,
             'known_entities' => $knownEntities,
+            'conversation_summary' => $conversationSummary,
+            'crm_context' => $crmContext,
+            'admin_takeover' => $adminTakeover,
             'allowed_intents' => $normalizedAllowedIntents,
             'system' => $prompts['system'],
             'user' => $prompts['user'],
@@ -79,6 +88,9 @@ class LlmUnderstandingEngine
             conversationState: $input['conversation_state'],
             knownEntities: $input['known_entities'],
             allowedIntents: $allowedIntents,
+            conversationSummary: $input['conversation_summary'] ?? null,
+            crmContext: is_array($input['crm_context'] ?? null) ? $input['crm_context'] : [],
+            adminTakeover: (bool) ($input['admin_takeover'] ?? false),
             conversationId: $contextPayload->conversationId,
             messageId: $contextPayload->messageId,
         );

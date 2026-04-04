@@ -238,7 +238,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             // ── 2. Build base AI context ────────────────────────────────────
             $contextPayload = $contextLoader->load($conversation, $message);
             $messageText = $contextPayload->latestMessageText;
-            $aiContext = $contextPayload->toAiContext();
+
             $crmSnapshot = $crmSnapshotService->build(
                 customer: $customer,
                 conversation: $conversation,
@@ -248,6 +248,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 entityResult: [],
                 bookingDecision: null,
             );
+
+            $contextPayload = $contextPayload->withCrmContext($crmSnapshot);
+            $aiContext = $contextPayload->toAiContext();
             $aiContext['crm_context'] = $crmSnapshot;
 
             // ── 2.5 Knowledge retrieval (Tahap 10) ──────────────────────────

@@ -58,7 +58,11 @@ class UnderstandingOutputParserService
             $data['clarification_question'] ?? null,
             $needsClarification,
         );
-        $reasoningSummary = $this->normalizeReasoningSummary($data['reasoning_summary'] ?? null);
+        $reasoningSummary = $this->normalizeReasoningSummary(
+            $data['reasoning_summary']
+                ?? $data['reasoning_short']
+                ?? null
+        );
 
         if ($intent === $fallbackIntent && $confidence <= 0.30 && $clarificationQuestion === null) {
             $needsClarification = true;
@@ -73,7 +77,11 @@ class UnderstandingOutputParserService
             entities: $entities,
             needsClarification: $needsClarification,
             clarificationQuestion: $clarificationQuestion,
-            handoffRecommended: $this->normalizeBoolean($data['handoff_recommended'] ?? null),
+            handoffRecommended: $this->normalizeBoolean(
+                $data['handoff_recommended']
+                    ?? $data['should_escalate']
+                    ?? null
+            ),
             reasoningSummary: $reasoningSummary,
         );
     }

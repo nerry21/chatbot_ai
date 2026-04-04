@@ -4,6 +4,11 @@ namespace App\Services\AI;
 
 class PromptBuilderService
 {
+    public function __construct(
+        private readonly UnderstandingCrmContextFormatterService $crmFormatter,
+    ) {
+    }
+
     // -------------------------------------------------------------------------
     // Public builders - each returns ['system' => '...', 'user' => '...']
     // -------------------------------------------------------------------------
@@ -555,107 +560,18 @@ class PromptBuilderService
      */
     private function appendUnifiedCrmContextLines(array $lines, array $context): array
     {
-        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $block = $this->crmFormatter->formatForUnderstanding(
+            crmContext: is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [],
+            conversationSummary: isset($context['conversation_summary']) ? (string) $context['conversation_summary'] : null,
+            adminTakeover: (bool) ($context['admin_takeover'] ?? false),
+        );
 
-        if ($crm === []) {
+        if (trim($block) === '') {
             return $lines;
         }
 
-        $lines[] = '=== KONTEKS CRM TERPADU (FAKTA BISNIS) ===';
-
-        $customer = is_array($crm['customer'] ?? null) ? $crm['customer'] : [];
-        $hubspot = is_array($crm['hubspot'] ?? null) ? $crm['hubspot'] : [];
-        $lead = is_array($crm['lead_pipeline'] ?? null) ? $crm['lead_pipeline'] : [];
-        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
-        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
-        $escalation = is_array($crm['escalation'] ?? null) ? $crm['escalation'] : [];
-        $flags = is_array($crm['business_flags'] ?? null) ? $crm['business_flags'] : [];
-
-        if (! empty($customer['name'])) {
-            $lines[] = 'Nama pelanggan: '.$customer['name'];
-        }
-        if (! empty($customer['phone_e164'])) {
-            $lines[] = 'Nomor pelanggan: '.$customer['phone_e164'];
-        }
-        if (! empty($customer['tags']) && is_array($customer['tags'])) {
-            $lines[] = 'Tag pelanggan: '.implode(', ', $customer['tags']);
-        }
-
-        if (! empty($hubspot['lifecycle_stage'])) {
-            $lines[] = 'Lifecycle HubSpot: '.$hubspot['lifecycle_stage'];
-        }
-        if (! empty($hubspot['lead_status'])) {
-            $lines[] = 'Lead status HubSpot: '.$hubspot['lead_status'];
-        }
-        if (! empty($hubspot['company'])) {
-            $lines[] = 'Perusahaan: '.$hubspot['company'];
-        }
-        if (! empty($hubspot['owner_id'])) {
-            $lines[] = 'Owner HubSpot: '.$hubspot['owner_id'];
-        }
-        if (! empty($hubspot['source'])) {
-            $lines[] = 'Sumber lead CRM: '.$hubspot['source'];
-        }
-
-        $hubspotAiMemory = is_array($hubspot['ai_memory'] ?? null) ? $hubspot['ai_memory'] : [];
-        if (! empty($hubspotAiMemory['last_ai_intent'])) {
-            $lines[] = 'AI memory intent terakhir: '.$hubspotAiMemory['last_ai_intent'];
-        }
-        if (! empty($hubspotAiMemory['customer_interest_topic'])) {
-            $lines[] = 'Topik minat pelanggan CRM: '.$hubspotAiMemory['customer_interest_topic'];
-        }
-        if (array_key_exists('needs_human_followup', $hubspotAiMemory)) {
-            $lines[] = 'Follow-up human dari CRM: '.($hubspotAiMemory['needs_human_followup'] ? 'ya' : 'tidak');
-        }
-
-        if (! empty($lead['stage'])) {
-            $lines[] = 'Stage pipeline internal: '.$lead['stage'];
-        }
-
-        if (! empty($conversation['current_intent'])) {
-            $lines[] = 'Intent percakapan sebelumnya: '.$conversation['current_intent'];
-        }
-        if (! empty($conversation['summary'])) {
-            $lines[] = 'Ringkasan percakapan CRM: '.$conversation['summary'];
-        }
-        if (array_key_exists('needs_human', $conversation)) {
-            $lines[] = 'Perlu human follow-up: '.($conversation['needs_human'] ? 'ya' : 'tidak');
-        }
-
-        if (! empty($booking['booking_status'])) {
-            $lines[] = 'Status booking: '.$booking['booking_status'];
-        }
-        if (! empty($booking['pickup_location'])) {
-            $lines[] = 'Pickup booking: '.$booking['pickup_location'];
-        }
-        if (! empty($booking['destination'])) {
-            $lines[] = 'Tujuan booking: '.$booking['destination'];
-        }
-        if (! empty($booking['departure_date'])) {
-            $lines[] = 'Tanggal keberangkatan: '.$booking['departure_date'];
-        }
-        if (! empty($booking['departure_time'])) {
-            $lines[] = 'Jam keberangkatan: '.$booking['departure_time'];
-        }
-        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
-            $lines[] = 'Data booking yang masih kurang: '.implode(', ', $booking['missing_fields']);
-        }
-
-        if (($escalation['has_open_escalation'] ?? false) === true) {
-            $lines[] = 'Ada escalation terbuka: ya';
-            if (! empty($escalation['priority'])) {
-                $lines[] = 'Prioritas escalation: '.$escalation['priority'];
-            }
-            if (! empty($escalation['reason'])) {
-                $lines[] = 'Alasan escalation: '.$escalation['reason'];
-            }
-        }
-
-        if (($flags['admin_takeover_active'] ?? false) === true) {
-            $lines[] = 'Admin takeover aktif: ya';
-        }
-        if (($flags['bot_paused'] ?? false) === true) {
-            $lines[] = 'Bot sedang pause: ya';
+        foreach (explode("\n", $block) as $line) {
+            $lines[] = $line;
         }
 
         $lines[] = '';

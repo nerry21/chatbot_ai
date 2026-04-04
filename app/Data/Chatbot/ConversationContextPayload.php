@@ -95,6 +95,26 @@ final readonly class ConversationContextPayload
     }
 
     /**
+     * @param  array<string, mixed>  $crmContext
+     */
+    public function withCrmContext(array $crmContext): self
+    {
+        return new self(
+            conversationId: $this->conversationId,
+            messageId: $this->messageId,
+            latestMessageText: $this->latestMessageText,
+            recentMessages: $this->recentMessages,
+            conversationState: $this->conversationState,
+            knownEntities: $this->knownEntities,
+            resolvedContext: $this->resolvedContext,
+            conversationSummary: $this->conversationSummary,
+            customerMemory: $this->customerMemory,
+            crmContext: $crmContext,
+            adminTakeover: $this->adminTakeover,
+        );
+    }
+
+    /**
      * @return array<int, array{role: string, text: string, sent_at: string|null}>
      */
     private function recentHistoryForUnderstanding(): array
