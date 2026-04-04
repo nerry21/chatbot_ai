@@ -49,6 +49,8 @@ class HubSpotContextServiceTest extends TestCase
                     'lifecyclestage' => 'customer',
                     'hs_lead_status' => 'OPEN',
                     'hubspotscore' => '42',
+                    'last_ai_intent' => 'booking',
+                    'needs_human_followup' => 'true',
                 ],
             ],
         ]);
@@ -61,6 +63,8 @@ class HubSpotContextServiceTest extends TestCase
         $this->assertSame('OPEN', $context['lead_status']);
         $this->assertSame('42', $context['score']);
         $this->assertSame('crm_sync_payload', $context['source']);
+        $this->assertSame('booking', $context['ai_memory']['last_ai_intent'] ?? null);
+        $this->assertTrue((bool) ($context['ai_memory']['needs_human_followup'] ?? false));
     }
 
     public function test_it_refreshes_context_from_hubspot_api_when_enabled(): void
@@ -100,6 +104,8 @@ class HubSpotContextServiceTest extends TestCase
                     'lifecyclestage' => 'opportunity',
                     'hs_lead_status' => 'QUALIFIED',
                     'hubspotscore' => '88',
+                    'admin_takeover_active' => 'false',
+                    'customer_interest_topic' => 'corporate travel',
                 ],
             ]),
         ]);
@@ -112,6 +118,8 @@ class HubSpotContextServiceTest extends TestCase
         $this->assertSame('QUALIFIED', $context['lead_status']);
         $this->assertSame('88', $context['score']);
         $this->assertSame('hubspot_api', $context['source']);
+        $this->assertSame('corporate travel', $context['ai_memory']['customer_interest_topic'] ?? null);
+        $this->assertFalse((bool) ($context['ai_memory']['admin_takeover_active'] ?? true));
 
         $crmContact->refresh();
 

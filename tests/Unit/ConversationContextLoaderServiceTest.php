@@ -129,6 +129,11 @@ class ConversationContextLoaderServiceTest extends TestCase
             'bot_paused' => true,
         ]);
 
+        $customer->update([
+            'preferred_pickup' => 'Ujung Batu',
+            'preferred_destination' => 'Pekanbaru',
+        ]);
+
         CrmContact::create([
             'customer_id' => $customer->id,
             'provider' => 'hubspot',
@@ -195,6 +200,10 @@ class ConversationContextLoaderServiceTest extends TestCase
         $this->assertSame('draft', $payload->crmContext['booking']['booking_status'] ?? null);
         $this->assertTrue((bool) ($payload->crmContext['escalation']['has_open_escalation'] ?? false));
         $this->assertTrue((bool) ($payload->crmContext['business_flags']['bot_paused'] ?? false));
+        $this->assertSame('Nerry', $payload->customerMemory['customer_profile']['name'] ?? null);
+        $this->assertSame('Ujung Batu', $payload->customerMemory['relationship_memory']['preferred_pickup'] ?? null);
+        $this->assertSame('engaged', $payload->customerMemory['crm_memory']['latest_lead_stage'] ?? null);
+        $this->assertTrue((bool) ($payload->customerMemory['business_memory']['followup_recommended'] ?? false));
         $this->assertSame($payload->crmContext, $understandingInput['crm_context']);
         $this->assertSame($payload->crmContext, $aiContext['crm_context']);
         $this->assertSame($payload->crmContext, $understandingInput['conversation_state']['crm_context'] ?? []);

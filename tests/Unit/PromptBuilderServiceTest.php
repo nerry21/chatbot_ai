@@ -19,13 +19,13 @@ class PromptBuilderServiceTest extends TestCase
             'message_text' => 'saya mau booking ke pekanbaru',
             'intent_result' => ['intent' => 'booking'],
             'customer_memory' => [
-                'primary_name' => 'Nerry',
-                'preferred_pickup' => 'Ujung Batu',
-                'preferred_destination' => 'Pekanbaru',
-                'hubspot' => [
-                    'company' => 'PT Travel Jaya',
-                    'lifecycle_stage' => 'customer',
-                    'lead_status' => 'OPEN',
+                'customer_profile' => [
+                    'name' => 'Nerry',
+                    'phone_e164' => '+6281234567890',
+                ],
+                'relationship_memory' => [
+                    'preferred_pickup' => 'Ujung Batu',
+                    'preferred_destination' => 'Pekanbaru',
                 ],
             ],
             'crm_context' => [
@@ -33,6 +33,11 @@ class PromptBuilderServiceTest extends TestCase
                     'name' => 'Nerry',
                     'phone_e164' => '+6281234567890',
                     'tags' => ['pelanggan_baru', 'booking_draft'],
+                ],
+                'hubspot' => [
+                    'company' => 'PT Travel Jaya',
+                    'lifecycle_stage' => 'customer',
+                    'lead_status' => 'OPEN',
                 ],
                 'lead_pipeline' => [
                     'stage' => 'engaged',
@@ -83,14 +88,8 @@ class PromptBuilderServiceTest extends TestCase
             'message_text' => 'berapa harga ke pekanbaru',
             'intent_result' => ['intent' => 'tanya_harga'],
             'customer_memory' => [
-                'primary_name' => 'Nerry',
-                'hubspot' => [
-                    'company' => 'PT Travel Jaya',
-                    'jobtitle' => 'Procurement',
-                    'lifecycle_stage' => 'opportunity',
-                    'lead_status' => 'QUALIFIED',
-                    'score' => '77',
-                    'source' => 'hubspot_api',
+                'customer_profile' => [
+                    'name' => 'Nerry',
                 ],
             ],
             'crm_context' => [
@@ -98,6 +97,14 @@ class PromptBuilderServiceTest extends TestCase
                     'name' => 'Nerry',
                     'phone_e164' => '+6281234567890',
                     'tags' => ['pernah_booking'],
+                ],
+                'hubspot' => [
+                    'company' => 'PT Travel Jaya',
+                    'job_title' => 'Procurement',
+                    'lifecycle_stage' => 'opportunity',
+                    'lead_status' => 'QUALIFIED',
+                    'score' => '77',
+                    'source' => 'hubspot_api',
                 ],
                 'lead_pipeline' => [
                     'stage' => 'awaiting_confirmation',

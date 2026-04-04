@@ -76,7 +76,8 @@ class CRMWritebackService
 
         $needsEscalation = (bool) $conversation->needs_human
             || ($intentEnum !== null && $intentEnum->requiresHuman())
-            || (($finalReply['meta']['force_handoff'] ?? false) === true);
+            || (($finalReply['meta']['force_handoff'] ?? false) === true)
+            || (($summaryResult['needs_human_followup'] ?? false) === true);
 
         if ($needsEscalation) {
             EscalateConversationToAdminJob::dispatch(

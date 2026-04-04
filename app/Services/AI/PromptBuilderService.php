@@ -164,17 +164,24 @@ class PromptBuilderService
     public function buildSummaryPrompt(array $context): array
     {
         $system = <<<'SYSTEM'
-        Kamu adalah pencatat ringkasan percakapan layanan transportasi.
-        Buat ringkasan singkat percakapan berikut dalam 2-3 kalimat bahasa Indonesia.
-        Fokus pada: intent utama pelanggan, informasi perjalanan yang sudah dikumpulkan, dan status percakapan saat ini.
+        Kamu adalah pencatat ringkasan bisnis percakapan layanan transportasi.
+        Buat memory bisnis yang ringkas, faktual, dan bisa dipakai ulang oleh AI, CRM, dan admin follow-up.
+        Fokus pada: topik utama pelanggan, intent utama, status percakapan saat ini, dan langkah lanjut yang paling relevan.
 
         ATURAN:
         1. Kembalikan JSON valid SAJA.
-        2. Ringkasan harus faktual - hanya dari apa yang ada dalam percakapan.
+        2. Ringkasan harus faktual, singkat, dan hanya dari data yang tersedia.
         3. JANGAN menambahkan informasi yang tidak ada.
+        4. summary maksimal 2-3 kalimat bahasa Indonesia.
+        5. next_action harus singkat dan operasional bila memang ada.
 
         FORMAT OUTPUT:
-        {"summary": "ringkasan percakapan di sini"}
+        {
+          "summary": "ringkasan bisnis percakapan",
+          "intent": "intent_utama_atau_kosong",
+          "sentiment": "positive|neutral|negative|urgent|kosong",
+          "next_action": "langkah berikutnya atau kosong"
+        }
         SYSTEM;
 
         $user = $this->formatSummaryUserPrompt($context);
@@ -210,17 +217,20 @@ class PromptBuilderService
         $memory = $context['customer_memory'] ?? [];
         if (! empty($memory)) {
             $lines[] = '=== INFO PELANGGAN ===';
-            if (! empty($memory['primary_name'])) {
-                $lines[] = "Nama: {$memory['primary_name']}";
+            $name = $this->customerNameFromMemory($memory);
+            if ($name !== null) {
+                $lines[] = "Nama: {$name}";
             }
-            if (! empty($memory['preferred_pickup'])) {
-                $lines[] = "Titik jemput biasa: {$memory['preferred_pickup']}";
+            $preferredPickup = $this->preferredPickupFromMemory($memory);
+            if ($preferredPickup !== null) {
+                $lines[] = "Titik jemput biasa: {$preferredPickup}";
             }
-            if (! empty($memory['preferred_destination'])) {
-                $lines[] = "Tujuan biasa: {$memory['preferred_destination']}";
+            $preferredDestination = $this->preferredDestinationFromMemory($memory);
+            if ($preferredDestination !== null) {
+                $lines[] = "Tujuan biasa: {$preferredDestination}";
             }
 
-            $hubspot = is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
+            $hubspot = $this->hubspotPromptContext($context);
             if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_intent_tasks', true)) {
                 $lines[] = '';
                 $lines[] = '=== INFO CRM HUBSPOT ===';
@@ -274,16 +284,18 @@ class PromptBuilderService
         $memory = $context['customer_memory'] ?? [];
         if (! empty($memory)) {
             $lines[] = '=== PREFERENSI PELANGGAN SEBELUMNYA ===';
-            if (! empty($memory['preferred_pickup'])) {
-                $lines[] = "Titik jemput biasa: {$memory['preferred_pickup']}";
+            $preferredPickup = $this->preferredPickupFromMemory($memory);
+            if ($preferredPickup !== null) {
+                $lines[] = "Titik jemput biasa: {$preferredPickup}";
             }
-            if (! empty($memory['preferred_destination'])) {
-                $lines[] = "Tujuan biasa: {$memory['preferred_destination']}";
+            $preferredDestination = $this->preferredDestinationFromMemory($memory);
+            if ($preferredDestination !== null) {
+                $lines[] = "Tujuan biasa: {$preferredDestination}";
             }
             $lines[] = '(Gunakan preferensi di atas HANYA jika pelanggan mengkonfirmasinya secara eksplisit dalam percakapan ini)';
             $lines[] = '';
 
-            $hubspot = is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
+            $hubspot = $this->hubspotPromptContext($context);
             if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_extraction_tasks', true)) {
                 $lines[] = '=== KONTEKS CRM HUBSPOT ===';
                 if (! empty($hubspot['company'])) {
@@ -334,8 +346,8 @@ class PromptBuilderService
         }
 
         $memory = $context['customer_memory'] ?? [];
-        $name = $memory['primary_name'] ?? null;
-        $hubspot = is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
+        $name = $this->customerNameFromMemory(is_array($memory) ? $memory : []);
+        $hubspot = $this->hubspotPromptContext($context);
 
         if ($name !== null) {
             $lines[] = "Nama pelanggan: {$name}";
@@ -346,8 +358,8 @@ class PromptBuilderService
             if (! empty($hubspot['company'])) {
                 $lines[] = "Perusahaan: {$hubspot['company']}";
             }
-            if (! empty($hubspot['jobtitle'])) {
-                $lines[] = "Jabatan: {$hubspot['jobtitle']}";
+            if (! empty($hubspot['job_title'] ?? $hubspot['jobtitle'] ?? null)) {
+                $lines[] = 'Jabatan: '.($hubspot['job_title'] ?? $hubspot['jobtitle']);
             }
             if (! empty($hubspot['lifecycle_stage'])) {
                 $lines[] = "Lifecycle stage: {$hubspot['lifecycle_stage']}";
@@ -441,9 +453,52 @@ class PromptBuilderService
         $lines = [];
 
         $memory = $context['customer_memory'] ?? [];
-        if (! empty($memory['primary_name'])) {
-            $lines[] = "Pelanggan: {$memory['primary_name']} ({$memory['phone_e164']})";
+        $customerName = $this->customerNameFromMemory(is_array($memory) ? $memory : []);
+        $customerPhone = $this->customerPhoneFromMemory(is_array($memory) ? $memory : []);
+
+        if ($customerName !== null) {
+            $label = $customerPhone !== null
+                ? "{$customerName} ({$customerPhone})"
+                : $customerName;
+
+            $lines[] = "Pelanggan: {$label}";
             $lines[] = '';
+        }
+
+        $lines = $this->appendUnifiedCrmContextLines($lines, $context);
+
+        $conversation = is_array($context['conversation'] ?? null) ? $context['conversation'] : [];
+
+        if ($conversation !== []) {
+            $lines[] = '=== PAYLOAD RINGKASAN BISNIS ===';
+
+            if (! empty($conversation['current_intent'])) {
+                $lines[] = 'Intent saat ini: '.$conversation['current_intent'];
+            }
+            if (array_key_exists('needs_human', $conversation)) {
+                $lines[] = 'Perlu human follow-up: '.($conversation['needs_human'] ? 'ya' : 'tidak');
+            }
+            if (! empty($conversation['handoff_mode'])) {
+                $lines[] = 'Mode handoff: '.$conversation['handoff_mode'];
+            }
+            if (array_key_exists('bot_paused', $conversation)) {
+                $lines[] = 'Bot paused: '.($conversation['bot_paused'] ? 'ya' : 'tidak');
+            }
+            if (! empty($conversation['last_message_at'])) {
+                $lines[] = 'Interaksi terakhir: '.$conversation['last_message_at'];
+            }
+            if (! empty($conversation['existing_summary'])) {
+                $lines[] = 'Summary sebelumnya: '.$conversation['existing_summary'];
+            }
+
+            $lines[] = '';
+            $lines[] = '=== TRANSKRIP TERBARU ===';
+
+            foreach (($conversation['recent_transcript'] ?? []) as $line) {
+                $lines[] = (string) $line;
+            }
+
+            return implode("\n", $lines);
         }
 
         $lines[] = '=== PERCAKAPAN ===';
@@ -502,6 +557,23 @@ class PromptBuilderService
         if (! empty($hubspot['company'])) {
             $lines[] = 'Perusahaan: '.$hubspot['company'];
         }
+        if (! empty($hubspot['owner_id'])) {
+            $lines[] = 'Owner HubSpot: '.$hubspot['owner_id'];
+        }
+        if (! empty($hubspot['source'])) {
+            $lines[] = 'Sumber lead CRM: '.$hubspot['source'];
+        }
+
+        $hubspotAiMemory = is_array($hubspot['ai_memory'] ?? null) ? $hubspot['ai_memory'] : [];
+        if (! empty($hubspotAiMemory['last_ai_intent'])) {
+            $lines[] = 'AI memory intent terakhir: '.$hubspotAiMemory['last_ai_intent'];
+        }
+        if (! empty($hubspotAiMemory['customer_interest_topic'])) {
+            $lines[] = 'Topik minat pelanggan CRM: '.$hubspotAiMemory['customer_interest_topic'];
+        }
+        if (array_key_exists('needs_human_followup', $hubspotAiMemory)) {
+            $lines[] = 'Follow-up human dari CRM: '.($hubspotAiMemory['needs_human_followup'] ? 'ya' : 'tidak');
+        }
 
         if (! empty($lead['stage'])) {
             $lines[] = 'Stage pipeline internal: '.$lead['stage'];
@@ -556,6 +628,65 @@ class PromptBuilderService
         $lines[] = '';
 
         return $lines;
+    }
+
+    /**
+     * @param  array<string, mixed>  $memory
+     */
+    private function customerNameFromMemory(array $memory): ?string
+    {
+        $name = $memory['customer_profile']['name'] ?? $memory['primary_name'] ?? null;
+
+        return is_string($name) && trim($name) !== '' ? trim($name) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $memory
+     */
+    private function customerPhoneFromMemory(array $memory): ?string
+    {
+        $phone = $memory['customer_profile']['phone_e164'] ?? $memory['phone_e164'] ?? null;
+
+        return is_string($phone) && trim($phone) !== '' ? trim($phone) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $memory
+     */
+    private function preferredPickupFromMemory(array $memory): ?string
+    {
+        $pickup = $memory['relationship_memory']['preferred_pickup'] ?? $memory['preferred_pickup'] ?? null;
+
+        return is_string($pickup) && trim($pickup) !== '' ? trim($pickup) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $memory
+     */
+    private function preferredDestinationFromMemory(array $memory): ?string
+    {
+        $destination = $memory['relationship_memory']['preferred_destination'] ?? $memory['preferred_destination'] ?? null;
+
+        return is_string($destination) && trim($destination) !== '' ? trim($destination) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function hubspotPromptContext(array $context): array
+    {
+        $crmHubspot = is_array($context['crm_context']['hubspot'] ?? null)
+            ? $context['crm_context']['hubspot']
+            : [];
+
+        if ($crmHubspot !== []) {
+            return $crmHubspot;
+        }
+
+        $memory = is_array($context['customer_memory'] ?? null) ? $context['customer_memory'] : [];
+
+        return is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
     }
 
     private function styleInstruction(string $style): string
