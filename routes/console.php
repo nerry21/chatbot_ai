@@ -45,3 +45,9 @@ Schedule::command('chatbot:reactivate-timed-out-bots --limit=100')
     ->withoutOverlapping()
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/chatbot-bot-auto-resume.log'));
+
+Schedule::command('statuses:deactivate-expired')
+    ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->appendOutputTo(storage_path('logs/statuses-deactivate-expired.log'));

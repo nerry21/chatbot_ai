@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\AdminMobile\OmnichannelCallReadinessCacheClearContr
 use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
 use App\Http\Controllers\Api\AdminMobile\StatusUpdateController as AdminMobileStatusUpdateController;
 use App\Http\Controllers\Api\AdminMobile\WorkspaceController as AdminMobileWorkspaceController;
+use App\Http\Controllers\Api\Customer\StatusFeedController as CustomerStatusFeedController;
 use App\Http\Controllers\Api\Mobile\AuthController;
 use App\Http\Controllers\Api\Mobile\LiveChatController;
 use App\Http\Controllers\Api\Mobile\LiveChatMessageController;
@@ -41,6 +42,15 @@ Route::prefix('mobile')
                 Route::post('conversations/{conversation}/messages', [LiveChatMessageController::class, 'store'])->name('conversations.messages.store');
                 Route::get('conversations/{conversation}/poll', [LiveChatController::class, 'poll'])->name('conversations.poll');
                 Route::post('conversations/{conversation}/mark-read', [LiveChatController::class, 'markRead'])->name('conversations.mark-read');
+            });
+
+        Route::prefix('status-feed')
+            ->middleware('mobile.auth')
+            ->name('status-feed.')
+            ->group(function (): void {
+                Route::get('/', [CustomerStatusFeedController::class, 'index'])->name('index');
+                Route::get('{statusUpdate}', [CustomerStatusFeedController::class, 'show'])->name('show');
+                Route::post('{statusUpdate}/view', [CustomerStatusFeedController::class, 'markViewed'])->name('view');
             });
     });
 

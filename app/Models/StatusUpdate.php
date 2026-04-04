@@ -62,6 +62,7 @@ class StatusUpdate extends Model
     {
         return $query
             ->where('is_active', true)
+            ->whereNotNull('posted_at')
             ->where(function (Builder $builder): void {
                 $builder->whereNull('expires_at')
                     ->orWhere('expires_at', '>', now());

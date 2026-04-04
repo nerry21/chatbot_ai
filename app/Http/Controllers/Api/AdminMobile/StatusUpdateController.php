@@ -100,9 +100,11 @@ class StatusUpdateController extends Controller
             'status' => $this->transformStatus($statusUpdate),
             'view_summary' => [
                 'total_views' => $statusUpdate->views->count(),
-                'recent_viewers' => $statusUpdate->views
-                    ->sortByDesc('viewed_at')
-                    ->take(20)
+                'recent_viewers' => $statusUpdate->views()
+                    ->with('customer')
+                    ->latest('viewed_at')
+                    ->limit(50)
+                    ->get()
                     ->map(fn ($view): array => [
                         'customer_id' => (int) $view->customer_id,
                         'name' => (string) ($view->customer?->name ?: 'Customer'),
