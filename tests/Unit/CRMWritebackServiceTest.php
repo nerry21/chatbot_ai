@@ -4,12 +4,13 @@ namespace Tests\Unit;
 
 use App\Enums\ConversationStatus;
 use App\Jobs\EscalateConversationToAdminJob;
+use App\Jobs\SyncContactToCrmJob;
+use App\Jobs\SyncConversationSummaryToCrmJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\Customer;
 use App\Models\LeadPipeline;
 use App\Services\CRM\ContactTaggingService;
-use App\Services\CRM\CrmSyncService;
 use App\Services\CRM\CRMWritebackService;
 use App\Services\CRM\LeadPipelineService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -78,19 +79,7 @@ class CRMWritebackServiceTest extends TestCase
             })
             ->andReturn($lead);
 
-        $crmSync = Mockery::mock(CrmSyncService::class);
-        $crmSync->shouldReceive('syncCustomer')
-            ->once()
-            ->withArgs(fn (Customer $argCustomer): bool => $argCustomer->is($customer))
-            ->andReturn(['status' => 'synced', 'external_id' => 'hs-123']);
-        $crmSync->shouldReceive('syncConversationSummary')
-            ->once()
-            ->withArgs(function (Customer $argCustomer, Conversation $argConversation) use ($customer, $conversation): bool {
-                return $argCustomer->is($customer) && $argConversation->is($conversation);
-            })
-            ->andReturn(['status' => 'success']);
-
-        $service = new CRMWritebackService($contactTagging, $leadPipeline, $crmSync);
+        $service = new CRMWritebackService($contactTagging, $leadPipeline);
 
         $result = $service->syncDecision(
             conversation: $conversation,
@@ -113,6 +102,10 @@ class CRMWritebackServiceTest extends TestCase
                         'customer_id' => $customer->id,
                     ],
                 ],
+                'orchestration' => [
+                    'intent' => 'human_handoff',
+                    'reply_source' => 'llm_reply_with_crm_context',
+                ],
             ],
         );
 
@@ -120,11 +113,14 @@ class CRMWritebackServiceTest extends TestCase
         $this->assertSame(['human_handoff'], $result['tags']);
         $this->assertSame('engaged', $result['lead_stage']);
         $this->assertSame(55, $result['lead_id']);
-        $this->assertSame('synced', $result['contact_sync']['status']);
-        $this->assertSame('success', $result['summary_sync']['status']);
+        $this->assertSame('queued', $result['contact_sync']['status']);
+        $this->assertSame('queued', $result['summary_sync']['status']);
         $this->assertTrue($result['needs_escalation']);
         $this->assertTrue($result['context_snapshot']['crm_context_present']);
+        $this->assertTrue($result['context_snapshot']['orchestration_present']);
 
         Queue::assertPushed(EscalateConversationToAdminJob::class, 1);
+        Queue::assertPushed(SyncContactToCrmJob::class, 1);
+        Queue::assertPushed(SyncConversationSummaryToCrmJob::class, 1);
     }
 }

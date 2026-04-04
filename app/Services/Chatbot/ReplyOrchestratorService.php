@@ -110,6 +110,39 @@ class ReplyOrchestratorService
     }
 
     /**
+     * Snapshot final untuk audit, observability, dan CRM writeback.
+     *
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $entityResult
+     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>|null  $bookingDecision
+     * @return array<string, mixed>
+     */
+    public function buildFinalSnapshot(
+        array $intentResult,
+        array $entityResult,
+        array $replyResult,
+        ?array $bookingDecision = null,
+    ): array {
+        $replyMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+
+        return [
+            'intent' => $intentResult['intent'] ?? null,
+            'intent_confidence' => $intentResult['confidence'] ?? null,
+            'intent_reasoning' => $intentResult['reasoning_short'] ?? null,
+            'entity_keys' => array_values(array_map('strval', array_keys($entityResult))),
+            'reply_source' => $replyMeta['decision_source'] ?? $replyMeta['source'] ?? null,
+            'reply_action' => $replyMeta['action'] ?? ($replyResult['next_action'] ?? null),
+            'reply_force_handoff' => (bool) ($replyMeta['force_handoff'] ?? ($replyResult['should_escalate'] ?? false)),
+            'reply_next_action' => $replyResult['next_action'] ?? null,
+            'handoff_reason' => $replyResult['handoff_reason'] ?? null,
+            'booking_action' => $bookingDecision['action'] ?? null,
+            'booking_status' => $bookingDecision['booking_status'] ?? null,
+            'is_fallback' => (bool) ($replyResult['is_fallback'] ?? false),
+        ];
+    }
+
+    /**
      * Compose the final outbound reply text by combining:
      *  - booking engine decision (takes priority when present)
      *  - AI-generated reply from Tahap 3 (fallback when no booking decision)

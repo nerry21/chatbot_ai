@@ -22,6 +22,7 @@ enum AuditActionType: string
     case WhatsAppSendFailure      = 'whatsapp_send_failure';
     case WhatsAppSendSkipped      = 'whatsapp_send_skipped';
     case BotReplySkippedTakeover  = 'bot_reply_skipped_takeover';
+    case BotReplyGenerated        = 'bot_reply_generated';
     case NotificationMarkRead     = 'notification_mark_read';
     case NotificationMarkAllRead  = 'notification_mark_all_read';
     // Tahap 9 — Reliability
@@ -54,6 +55,7 @@ enum AuditActionType: string
             self::WhatsAppSendFailure     => 'Pengiriman WhatsApp gagal',
             self::WhatsAppSendSkipped     => 'Pengiriman WhatsApp dilewati',
             self::BotReplySkippedTakeover => 'Auto-reply bot diblokir (admin takeover aktif)',
+            self::BotReplyGenerated       => 'Auto-reply bot berhasil disusun',
             self::NotificationMarkRead       => 'Notifikasi ditandai dibaca',
             self::NotificationMarkAllRead    => 'Semua notifikasi ditandai dibaca',
             self::MessageResendManual        => 'Admin kirim ulang pesan outbound secara manual',

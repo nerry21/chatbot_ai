@@ -129,6 +129,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         $guardResult = [];
         $ruleEvaluation = ['rule_hits' => [], 'actions' => []];
         $replyAuditSnapshot = [];
+        $orchestrationSnapshot = [];
         $summaryResult = ['summary' => ''];
         $replyResult = [
             'text' => '',
@@ -547,6 +548,23 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             }
 
             // ── 9. Persist all results ──────────────────────────────────────
+            $orchestrationSnapshot = $replyOrchestrator->buildFinalSnapshot(
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                replyResult: $finalReply,
+                bookingDecision: $bookingDecision,
+            );
+            $orchestrationSnapshot['conversation_id'] = $conversation->id;
+            $orchestrationSnapshot['message_id'] = $message->id;
+            $orchestrationSnapshot['crm_context_present'] = ! empty($contextPayload->crmContext);
+            $orchestrationSnapshot['knowledge_hits_count'] = count($knowledgeHits);
+            $orchestrationSnapshot['used_faq'] = (bool) ($replyResult['used_faq'] ?? false);
+            $orchestrationSnapshot['used_knowledge'] = (bool) ($replyResult['used_knowledge'] ?? false);
+            $orchestrationSnapshot['rule_hits'] = is_array($ruleEvaluation['rule_hits'] ?? null)
+                ? array_values($ruleEvaluation['rule_hits'])
+                : [];
+            $orchestrationSnapshot['reply_orchestration'] = $replyAuditSnapshot;
+
             $outboundMessage = $this->persistResults(
                 conversation        : $conversation,
                 message             : $message,
@@ -620,10 +638,17 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                         'reply_guard' => $guardResult,
                         'rule_evaluation' => $ruleEvaluation,
                         'reply_orchestration' => $replyAuditSnapshot,
+                        'final_orchestration' => $orchestrationSnapshot,
                         'entity_result' => $entityResult,
                         'reply_result' => $replyResult,
                     ],
                 ),
+            );
+
+            $audit->recordAiOrchestration(
+                conversationId: $conversation->id,
+                message: 'AI orchestration final snapshot recorded.',
+                snapshot: $orchestrationSnapshot,
             );
 
             $this->runCrmOperations(
@@ -632,7 +657,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 intentResult   : $intentResult,
                 summaryResult  : $summaryResult,
                 finalReply     : $finalReply,
-                contextSnapshot: $contextPayload?->toArray() ?? [],
+                contextSnapshot: array_merge(
+                    $contextPayload?->toArray() ?? [],
+                    ['orchestration' => $orchestrationSnapshot],
+                ),
                 crmWriteback   : $crmWriteback,
             );
 

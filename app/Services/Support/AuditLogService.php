@@ -61,4 +61,26 @@ class AuditLogService
             return null;
         }
     }
+
+    /**
+     * Audit khusus untuk keputusan orchestration AI end-to-end.
+     *
+     * @param  array<string, mixed>  $snapshot
+     */
+    public function recordAiOrchestration(
+        int $conversationId,
+        string $message,
+        array $snapshot = [],
+        ?int $actorUserId = null,
+    ): ?AuditLog {
+        return $this->record(AuditActionType::BotReplyGenerated, [
+            'actor_user_id' => $actorUserId,
+            'conversation_id' => $conversationId,
+            'message' => $message,
+            'context' => [
+                'ai_orchestration' => true,
+                'snapshot' => $snapshot,
+            ],
+        ]);
+    }
 }

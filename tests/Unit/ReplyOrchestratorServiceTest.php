@@ -163,4 +163,55 @@ class ReplyOrchestratorServiceTest extends TestCase
         $this->assertSame('tanya_harga', $result['intent_result']['intent']);
         $this->assertSame('Baik, saya bantu cek.', $result['reply_result']['reply']);
     }
+
+    public function test_it_builds_final_snapshot_for_audit_and_writeback(): void
+    {
+        $service = new ReplyOrchestratorService(
+            Mockery::mock(IntentClassifierService::class),
+            Mockery::mock(ResponseGeneratorService::class),
+            Mockery::mock(RuleEngineService::class),
+            Mockery::mock(ResponseValidationService::class),
+            Mockery::mock(BookingConfirmationService::class),
+            Mockery::mock(RouteValidationService::class),
+        );
+
+        $snapshot = $service->buildFinalSnapshot(
+            intentResult: [
+                'intent' => 'booking_inquiry',
+                'confidence' => 0.82,
+                'reasoning_short' => 'Customer asks about route and availability.',
+            ],
+            entityResult: [
+                'origin' => 'Pekanbaru',
+                'destination' => 'Duri',
+            ],
+            replyResult: [
+                'next_action' => 'offer_next_step',
+                'handoff_reason' => null,
+                'should_escalate' => false,
+                'is_fallback' => false,
+                'meta' => [
+                    'source' => 'llm_reply_with_crm_context',
+                    'action' => 'answer_question',
+                    'force_handoff' => false,
+                ],
+            ],
+            bookingDecision: [
+                'action' => 'ask_confirmation',
+                'booking_status' => 'draft',
+            ],
+        );
+
+        $this->assertSame('booking_inquiry', $snapshot['intent']);
+        $this->assertSame(0.82, $snapshot['intent_confidence']);
+        $this->assertSame('Customer asks about route and availability.', $snapshot['intent_reasoning']);
+        $this->assertSame(['origin', 'destination'], $snapshot['entity_keys']);
+        $this->assertSame('llm_reply_with_crm_context', $snapshot['reply_source']);
+        $this->assertSame('answer_question', $snapshot['reply_action']);
+        $this->assertFalse($snapshot['reply_force_handoff']);
+        $this->assertSame('offer_next_step', $snapshot['reply_next_action']);
+        $this->assertSame('ask_confirmation', $snapshot['booking_action']);
+        $this->assertSame('draft', $snapshot['booking_status']);
+        $this->assertFalse($snapshot['is_fallback']);
+    }
 }

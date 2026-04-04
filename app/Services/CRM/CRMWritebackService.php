@@ -4,6 +4,8 @@ namespace App\Services\CRM;
 
 use App\Enums\IntentType;
 use App\Jobs\EscalateConversationToAdminJob;
+use App\Jobs\SyncContactToCrmJob;
+use App\Jobs\SyncConversationSummaryToCrmJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Support\WaLog;
@@ -13,7 +15,6 @@ class CRMWritebackService
     public function __construct(
         private readonly ContactTaggingService $contactTaggingService,
         private readonly LeadPipelineService $leadPipelineService,
-        private readonly CrmSyncService $crmSyncService,
     ) {}
 
     /**
@@ -64,14 +65,13 @@ class CRMWritebackService
             intent: $intent,
         );
 
-        $contactSync = $this->crmSyncService->syncCustomer($customer);
+        SyncContactToCrmJob::dispatch($customer->id);
+        $contactSync = ['status' => 'queued'];
 
         $summarySync = ['status' => 'skipped', 'reason' => 'no_summary'];
         if (! empty($summaryResult['summary'])) {
-            $summarySync = $this->crmSyncService->syncConversationSummary(
-                customer: $customer,
-                conversation: $conversation,
-            );
+            SyncConversationSummaryToCrmJob::dispatch($customer->id, $conversation->id);
+            $summarySync = ['status' => 'queued'];
         }
 
         $needsEscalation = (bool) $conversation->needs_human
@@ -96,6 +96,8 @@ class CRMWritebackService
             'contact_sync' => $contactSync['status'] ?? null,
             'summary_sync' => $summarySync['status'] ?? null,
             'needs_escalation' => $needsEscalation,
+            'crm_context_present' => ! empty($contextSnapshot['crm_context']),
+            'orchestration_present' => ! empty($contextSnapshot['orchestration']),
         ]);
 
         return [
@@ -108,6 +110,7 @@ class CRMWritebackService
             'needs_escalation' => $needsEscalation,
             'context_snapshot' => [
                 'crm_context_present' => ! empty($contextSnapshot['crm_context']),
+                'orchestration_present' => ! empty($contextSnapshot['orchestration']),
                 'conversation_id' => $conversation->id,
                 'customer_id' => $customer->id,
             ],
