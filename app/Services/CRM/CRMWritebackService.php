@@ -15,6 +15,8 @@ class CRMWritebackService
     public function __construct(
         private readonly ContactTaggingService $contactTaggingService,
         private readonly LeadPipelineService $leadPipelineService,
+        private readonly CrmSyncService $crmSyncService,
+        private readonly CrmDecisionNoteBuilderService $decisionNoteBuilder,
     ) {}
 
     /**
@@ -74,6 +76,23 @@ class CRMWritebackService
             $summarySync = ['status' => 'queued'];
         }
 
+        $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
+        $decisionNote = $this->decisionNoteBuilder->build(
+            customer: $customer,
+            conversation: $conversation,
+            intentResult: $intentResult,
+            summaryResult: $summaryResult,
+            finalReply: $finalReply,
+            contextSnapshot: $contextSnapshot,
+        );
+
+        if (trim($decisionNote) !== '') {
+            $decisionNoteSync = $this->crmSyncService->appendConversationDecisionNote(
+                customer: $customer,
+                note: $decisionNote,
+            );
+        }
+
         $needsEscalation = (bool) $conversation->needs_human
             || ($intentEnum !== null && $intentEnum->requiresHuman())
             || (($finalReply['meta']['force_handoff'] ?? false) === true)
@@ -95,6 +114,7 @@ class CRMWritebackService
             'tags' => $tags,
             'contact_sync' => $contactSync['status'] ?? null,
             'summary_sync' => $summarySync['status'] ?? null,
+            'decision_note_sync' => $decisionNoteSync['status'] ?? null,
             'needs_escalation' => $needsEscalation,
             'crm_context_present' => ! empty($contextSnapshot['crm_context']),
             'orchestration_present' => ! empty($contextSnapshot['orchestration']),
@@ -110,6 +130,7 @@ class CRMWritebackService
             'lead_id' => $lead?->id,
             'contact_sync' => $contactSync,
             'summary_sync' => $summarySync,
+            'decision_note_sync' => $decisionNoteSync,
             'needs_escalation' => $needsEscalation,
             'context_snapshot' => [
                 'crm_context_present' => ! empty($contextSnapshot['crm_context']),

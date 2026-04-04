@@ -4,55 +4,17 @@ namespace Tests\Feature;
 
 use App\Jobs\ProcessIncomingWhatsAppMessage;
 use App\Models\ConversationMessage;
-use App\Services\OpenAiChatService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
-use Mockery;
 use Tests\TestCase;
 
 class WhatsAppWebhookOpenAiSeedTest extends TestCase
 {
     use RefreshDatabase;
 
-    protected function tearDown(): void
-    {
-        Mockery::close();
-
-        parent::tearDown();
-    }
-
-    public function test_webhook_persists_openai_seed_into_inbound_message(): void
+    public function test_webhook_persists_ingress_seed_into_inbound_message(): void
     {
         Queue::fake([ProcessIncomingWhatsAppMessage::class]);
-
-        config([
-            'openai.enabled' => true,
-            'openai.seed_on_webhook' => true,
-            'services.openai.api_key' => 'test-key',
-        ]);
-
-        $mock = Mockery::mock(OpenAiChatService::class);
-        $mock->shouldReceive('detectIntent')
-            ->once()
-            ->andReturn([
-                'intent' => 'booking',
-                'confidence' => 0.91,
-                'reason' => 'user mau pesan travel',
-            ]);
-        $mock->shouldReceive('extractBookingData')
-            ->once()
-            ->andReturn([
-                'passenger_name' => 'Nerry',
-                'origin' => 'Pasir Pengaraian',
-                'destination' => 'Pekanbaru',
-                'departure_date' => '2026-03-29',
-                'departure_time' => '08:00',
-                'seat_count' => 2,
-                'phone' => null,
-                'notes' => null,
-            ]);
-
-        $this->app->instance(OpenAiChatService::class, $mock);
 
         $payload = [
             'object' => 'whatsapp_business_account',
@@ -101,11 +63,17 @@ class WhatsAppWebhookOpenAiSeedTest extends TestCase
             ->where('wa_message_id', 'wamid.TEST-SEED-001')
             ->firstOrFail();
 
-        $this->assertSame('booking', $message->ai_intent);
-        $this->assertEquals(0.91, (float) $message->ai_confidence);
+        $this->assertNull($message->ai_intent);
+        $this->assertNull($message->ai_confidence);
         $this->assertIsArray($message->raw_payload);
-        $this->assertSame('booking', $message->raw_payload['_openai_seed']['intent']['intent'] ?? null);
-        $this->assertSame('Pekanbaru', $message->raw_payload['_openai_seed']['booking_data']['destination'] ?? null);
+        $this->assertSame('whatsapp_webhook_ingress', $message->raw_payload['_ingress_seed']['source'] ?? null);
+        $this->assertSame('whatsapp', $message->raw_payload['_ingress_seed']['channel'] ?? null);
+        $this->assertSame('text', $message->raw_payload['_ingress_seed']['message_type'] ?? null);
+        $this->assertTrue((bool) ($message->raw_payload['_ingress_seed']['has_text'] ?? false));
+        $this->assertSame(
+            'Nama saya Nerry, 2 kursi dari Pasir Pengaraian ke Pekanbaru besok jam 8',
+            $message->raw_payload['_ingress_seed']['text_preview'] ?? null
+        );
 
         Queue::assertPushed(ProcessIncomingWhatsAppMessage::class, 1);
     }

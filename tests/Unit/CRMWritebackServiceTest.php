@@ -11,6 +11,8 @@ use App\Models\Conversation;
 use App\Models\Customer;
 use App\Models\LeadPipeline;
 use App\Services\CRM\ContactTaggingService;
+use App\Services\CRM\CrmDecisionNoteBuilderService;
+use App\Services\CRM\CrmSyncService;
 use App\Services\CRM\CRMWritebackService;
 use App\Services\CRM\LeadPipelineService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -79,7 +81,21 @@ class CRMWritebackServiceTest extends TestCase
             })
             ->andReturn($lead);
 
-        $service = new CRMWritebackService($contactTagging, $leadPipeline);
+        $decisionNoteBuilder = Mockery::mock(CrmDecisionNoteBuilderService::class);
+        $decisionNoteBuilder->shouldReceive('build')
+            ->once()
+            ->andReturn("=== AI Decision Snapshot ===\nIntent : human_handoff");
+
+        $crmSyncService = Mockery::mock(CrmSyncService::class);
+        $crmSyncService->shouldReceive('appendConversationDecisionNote')
+            ->once()
+            ->withArgs(function (Customer $argCustomer, string $note) use ($customer): bool {
+                return $argCustomer->is($customer)
+                    && str_contains($note, 'AI Decision Snapshot');
+            })
+            ->andReturn(['status' => 'synced']);
+
+        $service = new CRMWritebackService($contactTagging, $leadPipeline, $crmSyncService, $decisionNoteBuilder);
 
         $result = $service->syncDecision(
             conversation: $conversation,
@@ -115,6 +131,7 @@ class CRMWritebackServiceTest extends TestCase
         $this->assertSame(55, $result['lead_id']);
         $this->assertSame('queued', $result['contact_sync']['status']);
         $this->assertSame('queued', $result['summary_sync']['status']);
+        $this->assertSame('synced', $result['decision_note_sync']['status']);
         $this->assertTrue($result['needs_escalation']);
         $this->assertTrue($result['context_snapshot']['crm_context_present']);
         $this->assertTrue($result['context_snapshot']['orchestration_present']);
@@ -153,7 +170,15 @@ class CRMWritebackServiceTest extends TestCase
             ->once()
             ->andReturn(null);
 
-        $service = new CRMWritebackService($contactTagging, $leadPipeline);
+        $decisionNoteBuilder = Mockery::mock(CrmDecisionNoteBuilderService::class);
+        $decisionNoteBuilder->shouldReceive('build')
+            ->once()
+            ->andReturn('');
+
+        $crmSyncService = Mockery::mock(CrmSyncService::class);
+        $crmSyncService->shouldNotReceive('appendConversationDecisionNote');
+
+        $service = new CRMWritebackService($contactTagging, $leadPipeline, $crmSyncService, $decisionNoteBuilder);
 
         $result = $service->syncDecision(
             conversation: $conversation,
@@ -171,6 +196,7 @@ class CRMWritebackServiceTest extends TestCase
         );
 
         $this->assertSame('skipped', $result['summary_sync']['status']);
+        $this->assertSame('skipped', $result['decision_note_sync']['status']);
 
         Queue::assertPushed(SyncContactToCrmJob::class, 1);
         Queue::assertNotPushed(SyncConversationSummaryToCrmJob::class);

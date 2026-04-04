@@ -105,6 +105,31 @@ class PolicyGuardServiceTest extends TestCase
         $this->assertTrue($result['intent_result']['handoff_recommended']);
     }
 
+    public function test_it_blocks_auto_reply_when_crm_bot_is_paused(): void
+    {
+        $result = app(PolicyGuardService::class)->guard(
+            conversation: new Conversation(['handoff_mode' => 'bot']),
+            intentResult: [
+                'intent' => IntentType::Booking->value,
+                'confidence' => 0.91,
+            ],
+            entityResult: [],
+            understandingResult: [],
+            resolvedContext: [],
+            conversationState: [],
+            crmContext: [
+                'business_flags' => [
+                    'bot_paused' => true,
+                ],
+            ],
+        );
+
+        $this->assertTrue($result['meta']['block_auto_reply']);
+        $this->assertSame('blocked_bot_paused', $result['meta']['action']);
+        $this->assertContains('crm_bot_paused', $result['meta']['reasons']);
+        $this->assertSame(IntentType::HumanHandoff->value, $result['intent_result']['intent']);
+    }
+
     public function test_it_flags_non_compliant_reply_when_human_follow_up_is_required(): void
     {
         $service = app(PolicyGuardService::class);

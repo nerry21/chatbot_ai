@@ -37,6 +37,7 @@ class PolicyGuardService
         array $understandingResult = [],
         array $resolvedContext = [],
         array $conversationState = [],
+        array $crmContext = [],
     ): array {
         $intentResult = $this->normalizeIntentResult($intentResult);
         [$entityResult, $hydratedContextFields] = $this->hydrateEntitiesFromResolvedContext(
@@ -47,6 +48,42 @@ class PolicyGuardService
 
         $reasons = [];
         $action = 'allow';
+
+        $crmBusinessFlags = is_array($crmContext['business_flags'] ?? null)
+            ? $crmContext['business_flags']
+            : [];
+
+        $crmEscalation = is_array($crmContext['escalation'] ?? null)
+            ? $crmContext['escalation']
+            : [];
+
+        if (($crmBusinessFlags['bot_paused'] ?? false) === true) {
+            $reasons[] = 'crm_bot_paused';
+
+            return [
+                'intent_result' => $this->handoffIntent(
+                    intentResult: $intentResult,
+                    reasoning: 'Bot sedang dipause dari konteks CRM/runtime.',
+                ),
+                'entity_result' => $entityResult,
+                'meta' => [
+                    'guard_group' => 'policy',
+                    'action' => 'blocked_bot_paused',
+                    'block_auto_reply' => true,
+                    'reasons' => $reasons,
+                    'hydrated_context_fields' => $hydratedContextFields,
+                ],
+            ];
+        }
+
+        if (($crmEscalation['has_open_escalation'] ?? false) === true) {
+            $action = 'handoff';
+            $reasons[] = 'crm_open_escalation';
+            $intentResult = $this->handoffIntent(
+                intentResult: $intentResult,
+                reasoning: 'CRM menunjukkan ada eskalasi aktif, jadi auto reply dibatasi.',
+            );
+        }
 
         if (
             $this->adminTakeoverGuard->shouldSuppressAutomation($conversation)

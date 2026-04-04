@@ -7,10 +7,15 @@ use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Models\Escalation;
 use App\Models\LeadPipeline;
+use App\Services\CRM\CRMContextService;
 use Illuminate\Support\Str;
 
 class CustomerMemoryService
 {
+    public function __construct(
+        private readonly CRMContextService $crmContextService,
+    ) {}
+
     /**
      * Build a structured memory snapshot for a customer.
      *
@@ -22,7 +27,7 @@ class CustomerMemoryService
      */
     public function buildMemory(Customer $customer): array
     {
-        $customer->loadMissing('tags', 'crmContact');
+        $customer->loadMissing('aliases', 'tags', 'crmContact');
 
         $latestLead = LeadPipeline::query()
             ->where('customer_id', $customer->id)
@@ -33,6 +38,12 @@ class CustomerMemoryService
             ->where('customer_id', $customer->id)
             ->latest('last_message_at')
             ->first();
+
+        $crmContext = $this->crmContextService->build(
+            customer: $customer,
+            conversation: $latestConversation,
+            booking: null,
+        );
 
         $latestEscalation = Escalation::query()
             ->whereHas('conversation', function ($q) use ($customer): void {
@@ -64,6 +75,21 @@ class CustomerMemoryService
             ->all();
 
         return $this->clean([
+            'customer_id' => $customer->id,
+            'primary_name' => $customer->name,
+            'aliases' => $customer->aliases->pluck('alias_name')->filter()->values()->all(),
+            'phone_e164' => $customer->phone_e164,
+            'email' => $customer->email,
+            'total_bookings' => (int) ($customer->total_bookings ?? 0),
+            'last_interaction_at' => $customer->last_interaction_at?->toIso8601String(),
+            'preferred_pickup' => $customer->preferred_pickup,
+            'preferred_destination' => $customer->preferred_destination,
+            'preferred_departure_time' => $customer->preferred_departure_time?->toIso8601String(),
+            'last_conversation_summary' => $latestConversation?->summary,
+            'last_inbound_message' => $this->lastMessageText($latestConversation, 'inbound'),
+            'last_outbound_message' => $this->lastMessageText($latestConversation, 'outbound'),
+            'crm_context' => $crmContext,
+            'hubspot' => is_array($crmContext['hubspot'] ?? null) ? $crmContext['hubspot'] : [],
             'customer_profile' => [
                 'customer_id' => $customer->id,
                 'name' => $customer->name,
@@ -93,11 +119,11 @@ class CustomerMemoryService
 
             'crm_memory' => [
                 'crm_contact_id' => $customer->crmContact?->external_contact_id,
-                'latest_lead_stage' => $latestLead?->stage,
-                'lead_owner_admin_id' => $latestLead?->owner_admin_id,
-                'lead_notes' => $latestLead?->notes,
-                'last_escalation_status' => $latestEscalation?->status,
-                'last_escalation_reason' => $latestEscalation?->reason,
+                'latest_lead_stage' => $crmContext['lead_pipeline']['stage'] ?? $latestLead?->stage,
+                'lead_owner_admin_id' => $crmContext['lead_pipeline']['owner_admin_id'] ?? $latestLead?->owner_admin_id,
+                'lead_notes' => $crmContext['lead_pipeline']['notes'] ?? $latestLead?->notes,
+                'last_escalation_status' => $crmContext['escalation']['status'] ?? $latestEscalation?->status,
+                'last_escalation_reason' => $crmContext['escalation']['reason'] ?? $latestEscalation?->reason,
             ],
 
             'business_memory' => [
@@ -109,6 +135,23 @@ class CustomerMemoryService
                     || in_array($latestEscalation?->status, ['open', 'assigned'], true),
             ],
         ]);
+    }
+
+    private function lastMessageText(?Conversation $conversation, string $direction): ?string
+    {
+        if ($conversation === null) {
+            return null;
+        }
+
+        $message = $conversation->messages()
+            ->where('direction', $direction)
+            ->whereNotNull('message_text')
+            ->latest('id')
+            ->first();
+
+        $text = trim((string) ($message?->message_text ?? ''));
+
+        return $text !== '' ? $text : null;
     }
 
     /**

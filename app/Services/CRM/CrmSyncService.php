@@ -109,6 +109,41 @@ class CrmSyncService
         }
     }
 
+    /**
+     * Append decision snapshot AI sebagai note ke CRM contact.
+     *
+     * @return array{status: string, reason?: string, error?: string}
+     */
+    public function appendConversationDecisionNote(Customer $customer, string $note): array
+    {
+        try {
+            if (trim($note) === '') {
+                return ['status' => 'skipped', 'reason' => 'empty_note'];
+            }
+
+            $crmContact = CrmContact::where('customer_id', $customer->id)->first();
+
+            if ($crmContact === null || empty($crmContact->external_contact_id)) {
+                return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
+            }
+
+            $result = $this->hubspot->appendNote($crmContact->external_contact_id, $note);
+
+            if (in_array($result['status'], ['success', 'skipped'], true)) {
+                return ['status' => $result['status']];
+            }
+
+            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+        } catch (\Throwable $e) {
+            Log::error('[CrmSync] appendConversationDecisionNote exception', [
+                'customer_id' => $customer->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['status' => 'error', 'error' => $e->getMessage()];
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------

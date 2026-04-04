@@ -185,8 +185,18 @@ class HallucinationGuardService
 
         $intent = IntentType::tryFrom((string) ($intentResult['intent'] ?? ''));
         $text = (string) ($reply['text'] ?? '');
+        $crmContext = is_array($context['crm_context'] ?? null)
+            ? $context['crm_context']
+            : [];
+
+        $hasOperationalFacts = ! empty($crmContext['booking'])
+            || ! empty($crmContext['lead_pipeline'])
+            || ! empty($crmContext['conversation'])
+            || ! empty($crmContext['hubspot']);
+
         $hasGroundedKnowledge = ($context['faq_result']['matched'] ?? false) === true
-            || ! empty($context['knowledge_hits']);
+            || ! empty($context['knowledge_hits'])
+            || $hasOperationalFacts;
 
         if ($intent !== null && $this->isSensitiveOperationalIntent($intent) && ! $hasGroundedKnowledge) {
             return $this->clarify(

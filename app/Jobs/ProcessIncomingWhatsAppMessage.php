@@ -30,6 +30,7 @@ use App\Services\Chatbot\ConversationReplyGuardService;
 use App\Services\Chatbot\Guardrails\AdminTakeoverGuardService;
 use App\Services\Chatbot\Guardrails\PolicyGuardService;
 use App\Services\Chatbot\ReplyOrchestratorService;
+use App\Services\CRM\CrmOrchestrationSnapshotService;
 use App\Services\CRM\CRMWritebackService;
 use App\Services\Knowledge\FaqResolverService;
 use App\Services\Knowledge\KnowledgeBaseService;
@@ -80,6 +81,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ReplyOrchestratorService $replyOrchestrator,
         ConversationOutboundRouterService $outboundRouter,
         CRMWritebackService $crmWriteback,
+        CrmOrchestrationSnapshotService $crmSnapshotService,
         AuditLogService $audit,
         KnowledgeBaseService $knowledgeBase,
         FaqResolverService $faqResolver,
@@ -128,6 +130,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         $ruleEvaluation = ['rule_hits' => [], 'actions' => []];
         $replyAuditSnapshot = [];
         $orchestrationSnapshot = [];
+        $crmSnapshot = [];
         $summaryResult = ['summary' => ''];
         $replyResult = [
             'text' => '',
@@ -236,7 +239,16 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $contextPayload = $contextLoader->load($conversation, $message);
             $messageText = $contextPayload->latestMessageText;
             $aiContext = $contextPayload->toAiContext();
-            $aiContext['crm_context'] = $contextPayload->crmContext;
+            $crmSnapshot = $crmSnapshotService->build(
+                customer: $customer,
+                conversation: $conversation,
+                booking: null,
+                contextPayload: $contextPayload->toArray(),
+                intentResult: [],
+                entityResult: [],
+                bookingDecision: null,
+            );
+            $aiContext['crm_context'] = $crmSnapshot;
 
             // ── 2.5 Knowledge retrieval (Tahap 10) ──────────────────────────
             // Fetch once, reuse across all AI steps.
@@ -315,6 +327,17 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['entity_result'] = $entityResult;
             $aiContext['understanding_meta'] = $adaptedUnderstanding['meta'];
 
+            $crmSnapshot = $crmSnapshotService->build(
+                customer: $customer,
+                conversation: $conversation,
+                booking: null,
+                contextPayload: $contextPayload->toArray(),
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                bookingDecision: null,
+            );
+            $aiContext['crm_context'] = $crmSnapshot;
+
             $faqResult = $faqResolver->resolve($messageText, $knowledgeHits);
             $aiContext['faq_result'] = $faqResult;
             $policyGuardResult = $policyGuard->guard(
@@ -324,6 +347,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 understandingResult: $aiContext['understanding_result'] ?? [],
                 resolvedContext: $contextPayload->resolvedContext,
                 conversationState: $contextPayload->conversationState,
+                crmContext: $crmSnapshot,
             );
             $intentResult = $policyGuardResult['intent_result'];
             $entityResult = $policyGuardResult['entity_result'];
@@ -331,8 +355,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['entity_result'] = $entityResult;
             $aiContext['policy_guard'] = $policyGuardResult['meta'];
             if ($faqResult['matched'] ?? false) {
-                $updated = AiLog::where('conversation_id', $conversationId)
-                    ->where('message_id', $messageId)
+                $updated = AiLog::where('conversation_id', $conversation->id)
+                    ->where('message_id', $message->id)
                     ->whereIn('task_type', ['reply_generation', 'grounded_response_composition'])
                     ->latest()
                     ->limit(1)
@@ -400,6 +424,17 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $bookingDecision = $flowDecision['booking_decision'] ?? null;
             $finalReply = $flowDecision['reply'];
             $intentResult = $flowDecision['intent_result'] ?? $intentResult;
+
+            $crmSnapshot = $crmSnapshotService->build(
+                customer: $customer,
+                conversation: $conversation,
+                booking: $booking,
+                contextPayload: $contextPayload->toArray(),
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                bookingDecision: $bookingDecision,
+            );
+            $aiContext['crm_context'] = $crmSnapshot;
 
             $replyTemplateRequiresComposition = $this->shouldComposeAiReply($finalReply);
             $groundedReplyUsed = false;
@@ -654,7 +689,13 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                     contextSummary: trim((string) ($summaryResult['summary'] ?? '')) !== ''
                         ? (string) $summaryResult['summary']
                         : $contextPayload?->conversationSummary,
-                    contextSnapshot: $contextPayload?->toArray() ?? [],
+                    contextSnapshot: array_merge(
+                        $contextPayload?->toArray() ?? [],
+                        [
+                            'crm_context' => $crmSnapshot,
+                            'orchestration' => $orchestrationSnapshot,
+                        ],
+                    ),
                     understandingResult: is_array($aiContext['understanding_result'] ?? null)
                         ? $aiContext['understanding_result']
                         : [],
@@ -695,8 +736,12 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 summaryResult  : $summaryResult,
                 finalReply     : $finalReply,
                 contextSnapshot: array_merge(
+                    $aiContext,
                     $contextPayload?->toArray() ?? [],
-                    ['orchestration' => $orchestrationSnapshot],
+                    [
+                        'crm_context' => $crmSnapshot,
+                        'orchestration' => $orchestrationSnapshot,
+                    ],
                 ),
                 crmWriteback   : $crmWriteback,
             );
@@ -744,7 +789,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                     contextSummary: trim((string) ($summaryResult['summary'] ?? '')) !== ''
                         ? (string) $summaryResult['summary']
                         : $conversation->summary,
-                    contextSnapshot: $contextPayload?->toArray() ?? [],
+                    contextSnapshot: array_merge(
+                        $contextPayload?->toArray() ?? [],
+                        ['crm_context' => $crmSnapshot],
+                    ),
                     understandingResult: is_array($aiContext['understanding_result'] ?? null)
                         ? $aiContext['understanding_result']
                         : [],

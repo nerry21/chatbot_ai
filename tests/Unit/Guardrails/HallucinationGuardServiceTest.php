@@ -61,6 +61,40 @@ class HallucinationGuardServiceTest extends TestCase
         $this->assertSame('allow', $result['meta']['action']);
     }
 
+    public function test_it_treats_crm_operational_facts_as_grounding_for_sensitive_reply(): void
+    {
+        $result = app(HallucinationGuardService::class)->guardReply(
+            conversation: new Conversation(['handoff_mode' => 'bot']),
+            intentResult: [
+                'intent' => IntentType::TanyaJam->value,
+                'confidence' => 0.94,
+            ],
+            reply: [
+                'text' => 'Jadwal tersedia jam 08.00 WIB untuk rute tersebut.',
+                'is_fallback' => false,
+                'message_type' => 'text',
+                'outbound_payload' => [],
+                'meta' => [
+                    'source' => 'ai_reply',
+                    'action' => 'pass_through',
+                ],
+            ],
+            context: [
+                'crm_context' => [
+                    'conversation' => [
+                        'current_intent' => 'tanya_jam',
+                    ],
+                    'booking' => [
+                        'booking_status' => 'draft',
+                    ],
+                ],
+            ],
+        );
+
+        $this->assertFalse($result['meta']['blocked']);
+        $this->assertSame('allow', $result['meta']['action']);
+    }
+
     public function test_it_handoffs_promo_or_policy_claims_without_grounding(): void
     {
         $result = app(HallucinationGuardService::class)->guardReply(
