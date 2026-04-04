@@ -7,6 +7,7 @@ use App\Support\WaLog;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
 class MetaWhatsAppCallingApiService
@@ -223,6 +224,123 @@ class MetaWhatsAppCallingApiService
                 'error_permission_status' => WhatsAppCallSession::PERMISSION_FAILED,
             ],
         );
+    }
+
+    /**
+     * Ambil ringkasan eligibility nomor WhatsApp dari Graph API.
+     *
+     * @return array<string, mixed>
+     */
+    public function getPhoneNumberEligibility(?string $phoneNumberId = null, bool $forceRefresh = false): array
+    {
+        $resolvedPhoneNumberId = trim((string) ($phoneNumberId ?: $this->phoneNumberId));
+
+        $fields = implode(',', [
+            'id',
+            'display_phone_number',
+            'verified_name',
+            'quality_rating',
+            'messaging_limit_tier',
+            'name_status',
+            'code_verification_status',
+            'platform_type',
+            'status',
+        ]);
+
+        $cacheEnabled = (bool) config('chatbot.whatsapp.calling.eligibility_cache_enabled', true);
+        $cacheTtlSeconds = max(60, (int) config('chatbot.whatsapp.calling.eligibility_cache_ttl_seconds', 600));
+        $cacheKey = sprintf(
+            'whatsapp:calling:eligibility:%s:%s',
+            $resolvedPhoneNumberId,
+            md5($fields)
+        );
+
+        if ($cacheEnabled && ! $forceRefresh) {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached) && $cached !== []) {
+                $cached['meta'] = array_merge($cached['meta'] ?? [], [
+                    'from_cache' => true,
+                    'cache_key' => $cacheKey,
+                    'cache_ttl_seconds' => $cacheTtlSeconds,
+                ]);
+
+                return $cached;
+            }
+        }
+
+        $logContext = $this->buildLogContext(
+            [
+                'phone_number_id' => $resolvedPhoneNumberId,
+                'fields' => $fields,
+                'cache_enabled' => $cacheEnabled,
+                'force_refresh' => $forceRefresh,
+            ],
+            endpoint: $this->buildBaseUrl(sprintf('/%s', $resolvedPhoneNumberId)),
+            action: 'get_phone_number_eligibility',
+            requestSummary: [
+                'phone_number_id' => $resolvedPhoneNumberId,
+                'fields' => $fields,
+                'cache_enabled' => $cacheEnabled,
+                'force_refresh' => $forceRefresh,
+            ],
+        );
+
+        if (($configurationError = $this->configurationError($resolvedPhoneNumberId, 'call_eligibility_fetch_failed')) !== null) {
+            $this->auditService->error('call_config_error', array_merge($logContext, [
+                'result' => 'failed',
+                'normalized_result' => $configurationError,
+            ]));
+
+            return $configurationError;
+        }
+
+        $result = $this->sendRequest(
+            method: 'GET',
+            endpointPath: sprintf('/%s?fields=%s', $resolvedPhoneNumberId, urlencode($fields)),
+            logContext: $logContext,
+            normalizationContext: [
+                'success_action' => 'call_eligibility_retrieved',
+                'failure_action' => 'call_eligibility_fetch_failed',
+                'error_permission_status' => null,
+            ],
+        );
+
+        if ($cacheEnabled && is_array($result) && ($result['ok'] ?? false) === true) {
+            Cache::put($cacheKey, $result, now()->addSeconds($cacheTtlSeconds));
+
+            $result['meta'] = array_merge($result['meta'] ?? [], [
+                'from_cache' => false,
+                'cache_key' => $cacheKey,
+                'cache_ttl_seconds' => $cacheTtlSeconds,
+            ]);
+        }
+
+        return $result;
+    }
+
+    public function forgetPhoneNumberEligibilityCache(?string $phoneNumberId = null): void
+    {
+        $resolvedPhoneNumberId = trim((string) ($phoneNumberId ?: $this->phoneNumberId));
+
+        $fields = implode(',', [
+            'id',
+            'display_phone_number',
+            'verified_name',
+            'quality_rating',
+            'messaging_limit_tier',
+            'name_status',
+            'code_verification_status',
+            'platform_type',
+            'status',
+        ]);
+
+        $cacheKey = sprintf(
+            'whatsapp:calling:eligibility:%s:%s',
+            $resolvedPhoneNumberId,
+            md5($fields)
+        );
+
+        Cache::forget($cacheKey);
     }
 
     /**

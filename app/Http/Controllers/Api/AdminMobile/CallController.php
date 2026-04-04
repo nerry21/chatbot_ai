@@ -240,11 +240,14 @@ class CallController extends Controller
             return $this->errorResponse('Sesi admin mobile tidak valid.', [], 401);
         }
 
-        $summary = $this->callReadinessService->summary();
+        $forceRefresh = $request->boolean('force_refresh');
+        $summary = $this->callReadinessService->summary($forceRefresh);
 
         return response()->json([
             'success' => true,
-            'message' => 'Readiness calling berhasil diambil.',
+            'message' => $forceRefresh
+                ? 'Readiness calling berhasil diambil (fresh).'
+                : 'Readiness calling berhasil diambil.',
             'data' => $summary,
         ]);
     }

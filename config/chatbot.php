@@ -680,6 +680,8 @@ return [
             'dedup_enabled' => (bool) env('WHATSAPP_CALL_DEDUP_ENABLED', true),
             'webhook_signature_enabled' => (bool) env('WHATSAPP_CALL_WEBHOOK_SIGNATURE_ENABLED', false),
             'action_lock_seconds' => (int) env('WHATSAPP_CALL_ACTION_LOCK_SECONDS', 8),
+            'eligibility_cache_enabled' => env('WHATSAPP_CALLING_ELIGIBILITY_CACHE_ENABLED', true),
+            'eligibility_cache_ttl_seconds' => (int) env('WHATSAPP_CALLING_ELIGIBILITY_CACHE_TTL_SECONDS', 600),
             'log_verbose' => (bool) env('WHATSAPP_CALL_LOG_VERBOSE', false),
         ],
 

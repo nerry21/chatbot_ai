@@ -12,7 +12,7 @@ class WhatsAppCallReadinessService
     /**
      * @return array<string, mixed>
      */
-    public function summary(): array
+    public function summary(bool $forceRefresh = false): array
     {
         $baseUrl = trim((string) config('chatbot.whatsapp.calling.base_url', ''));
         $apiVersion = trim((string) config('chatbot.whatsapp.calling.api_version', ''));
@@ -48,17 +48,33 @@ class WhatsAppCallReadinessService
         $remoteSettings = $phoneNumberId !== ''
             ? $this->metaCallingApiService->getPhoneNumberSettings($phoneNumberId)
             : [];
+        $phoneEligibility = $phoneNumberId !== ''
+            ? $this->metaCallingApiService->getPhoneNumberEligibility($phoneNumberId, $forceRefresh)
+            : [];
 
         $remoteCallingEnabled = $this->resolveRemoteCallingEnabled($remoteSettings);
+        $messagingLimitTier = $this->resolveMessagingLimitTier($phoneEligibility);
+        $qualityRating = $this->resolveQualityRating($phoneEligibility);
+        $tierEligibleForCalling = $this->isMessagingTierEligibleForCalling($messagingLimitTier);
+        $eligibilityReason = $this->resolveEligibilityReason(
+            remoteCallingEnabled: $remoteCallingEnabled,
+            messagingLimitTier: $messagingLimitTier,
+            tierEligibleForCalling: $tierEligibleForCalling,
+            remoteSettingsError: data_get($remoteSettings, 'error.message'),
+        );
+        $eligibilityMeta = $this->extractEligibilityMeta($phoneEligibility);
 
         $logDirectory = storage_path('logs');
         $emergencyLog = storage_path('logs/whatsapp-emergency.log');
         $callingEnabled = (bool) config('chatbot.whatsapp.calling.enabled', false);
         $configComplete = $missing === [];
-        $isReady = $configComplete && $remoteCallingEnabled !== false;
+        $isReady = $configComplete
+            && $remoteCallingEnabled !== false
+            && $tierEligibleForCalling !== false;
         $storageLogsWritable = is_dir($logDirectory) && is_writable($logDirectory);
         $remoteSettingsOk = (bool) ($remoteSettings['ok'] ?? false);
         $remoteSettingsError = data_get($remoteSettings, 'error.message');
+        $phoneEligibilityOk = (bool) ($phoneEligibility['ok'] ?? false);
 
         return [
             'ok' => $isReady,
@@ -84,6 +100,12 @@ class WhatsAppCallReadinessService
             'remote_settings_ok' => $remoteSettingsOk,
             'remote_calling_enabled' => $remoteCallingEnabled,
             'remote_settings_error' => $remoteSettingsError,
+            'phone_eligibility_ok' => $phoneEligibilityOk,
+            'messaging_limit_tier' => $messagingLimitTier,
+            'quality_rating' => $qualityRating,
+            'tier_eligible_for_calling' => $tierEligibleForCalling,
+            'eligibility_reason' => $eligibilityReason,
+            'eligibility_meta' => $eligibilityMeta,
             'checks' => [
                 [
                     'key' => 'backend_calling_flag',
@@ -120,6 +142,17 @@ class WhatsAppCallReadinessService
                             : 'Status calling pada nomor belum dapat dipastikan.'),
                 ],
                 [
+                    'key' => 'messaging_limit_tier',
+                    'label' => 'Messaging limit tier memenuhi syarat calling',
+                    'ok' => $tierEligibleForCalling === true,
+                    'message' => $tierEligibleForCalling === true
+                        ? sprintf('Messaging limit tier nomor adalah %s dan sudah memenuhi syarat calling.', $messagingLimitTier ?? '-')
+                        : sprintf(
+                            'Messaging limit tier nomor saat ini adalah %s. Minimal 2000+ diperlukan oleh Meta agar calling bisa diaktifkan.',
+                            $messagingLimitTier ?? '-'
+                        ),
+                ],
+                [
                     'key' => 'log_storage',
                     'label' => 'Storage logs writable',
                     'ok' => $storageLogsWritable,
@@ -128,6 +161,31 @@ class WhatsAppCallReadinessService
                         : 'Folder storage/logs belum siap ditulis.',
                 ],
             ],
+        ];
+    }
+
+    /**
+     * Hapus cache eligibility nomor WhatsApp.
+     *
+     * @return array<string, mixed>
+     */
+    public function clearEligibilityCache(): array
+    {
+        $phoneNumberId = trim((string) config('chatbot.whatsapp.calling.phone_number_id', ''));
+
+        if ($phoneNumberId === '') {
+            return [
+                'ok' => false,
+                'message' => 'Phone number ID belum dikonfigurasi.',
+            ];
+        }
+
+        $this->metaCallingApiService->forgetPhoneNumberEligibilityCache($phoneNumberId);
+
+        return [
+            'ok' => true,
+            'message' => 'Eligibility cache berhasil dihapus.',
+            'phone_number_id' => $phoneNumberId,
         ];
     }
 
@@ -174,6 +232,85 @@ class WhatsAppCallReadinessService
             || str_contains($message, 'not enabled for this phone number')
         ) {
             return false;
+        }
+
+        return null;
+    }
+
+    private function resolveMessagingLimitTier(array $eligibility): ?string
+    {
+        $raw = is_array($eligibility['raw'] ?? null) ? $eligibility['raw'] : [];
+        $value = trim((string) ($raw['messaging_limit_tier'] ?? ''));
+
+        return $value !== '' ? $value : null;
+    }
+
+    private function resolveQualityRating(array $eligibility): ?string
+    {
+        $raw = is_array($eligibility['raw'] ?? null) ? $eligibility['raw'] : [];
+        $value = trim((string) ($raw['quality_rating'] ?? ''));
+
+        return $value !== '' ? $value : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function extractEligibilityMeta(array $eligibility): array
+    {
+        $meta = $eligibility['meta'] ?? [];
+
+        return [
+            'from_cache' => (bool) ($meta['from_cache'] ?? false),
+            'cache_key' => $meta['cache_key'] ?? null,
+            'cache_ttl_seconds' => isset($meta['cache_ttl_seconds'])
+                ? (int) $meta['cache_ttl_seconds']
+                : null,
+        ];
+    }
+
+    private function isMessagingTierEligibleForCalling(?string $tier): ?bool
+    {
+        if ($tier === null) {
+            return null;
+        }
+
+        $normalized = strtoupper(trim($tier));
+
+        return in_array($normalized, [
+            'TIER_10K',
+            'TIER_100K',
+            'TIER_UNLIMITED',
+        ], true);
+    }
+
+    private function resolveEligibilityReason(
+        ?bool $remoteCallingEnabled,
+        ?string $messagingLimitTier,
+        ?bool $tierEligibleForCalling,
+        ?string $remoteSettingsError,
+    ): ?string {
+        if ($remoteCallingEnabled === true) {
+            return null;
+        }
+
+        if ($tierEligibleForCalling === false && $messagingLimitTier !== null) {
+            return sprintf(
+                'Calling belum bisa diaktifkan karena messaging limit tier nomor masih %s. Minimal 2000+ diperlukan oleh Meta.',
+                $messagingLimitTier
+            );
+        }
+
+        $normalizedError = strtolower(trim((string) $remoteSettingsError));
+        if (
+            $normalizedError !== ''
+            && (
+                str_contains($normalizedError, 'calling api not enabled')
+                || str_contains($normalizedError, 'calling cannot be enabled')
+                || str_contains($normalizedError, 'not enabled for this phone number')
+            )
+        ) {
+            return 'Calling belum aktif pada nomor WhatsApp ini di sisi Meta.';
         }
 
         return null;

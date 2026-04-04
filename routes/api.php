@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AdminMobile\CallAnalyticsController as AdminMobileC
 use App\Http\Controllers\Api\AdminMobile\CallController as AdminMobileCallController;
 use App\Http\Controllers\Api\AdminMobile\ContactController as AdminMobileContactController;
 use App\Http\Controllers\Api\AdminMobile\MediaController as AdminMobileMediaController;
+use App\Http\Controllers\Api\AdminMobile\OmnichannelCallReadinessCacheClearController as AdminMobileCallReadinessCacheClearController;
 use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
 use App\Http\Controllers\Api\AdminMobile\WorkspaceController as AdminMobileWorkspaceController;
 use App\Http\Controllers\Api\Mobile\AuthController;
@@ -63,6 +64,7 @@ Route::prefix('admin-mobile')
         Route::middleware('admin.mobile.auth')->group(function (): void {
             Route::get('workspace', [AdminMobileWorkspaceController::class, 'workspace'])->name('workspace');
             Route::get('call/readiness', [AdminMobileCallController::class, 'readiness'])->name('call.readiness');
+            Route::post('call/readiness/clear-cache', AdminMobileCallReadinessCacheClearController::class)->name('call.readiness.clear-cache');
             Route::get('conversations', [AdminMobileWorkspaceController::class, 'conversations'])->name('conversations.index');
             Route::get('conversations/{conversation}', [AdminMobileWorkspaceController::class, 'detail'])->name('conversations.show');
             Route::get('conversations/{conversation}/messages', [AdminMobileWorkspaceController::class, 'messages'])->name('conversations.messages.index');
