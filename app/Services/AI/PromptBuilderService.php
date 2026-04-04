@@ -52,6 +52,8 @@ class PromptBuilderService
         {
           "intent": "nama_intent",
           "confidence": 0.90,
+          "should_escalate": false,
+          "entities": {},
           "reasoning_short": "alasan singkat"
         }
         SYSTEM;
@@ -130,6 +132,8 @@ class PromptBuilderService
         10. Terdengar seperti admin travel WhatsApp di Indonesia: hangat, sopan, ringkas, dan profesional.
         11. Hindari bahasa birokratis, kaku, terlalu formal, atau terasa seperti template sistem.
         12. Hindari bullet/list kecuali memang perlu untuk merangkum data.
+        13. Kembalikan JSON valid SAJA, tanpa teks di luar JSON.
+        14. Isi field "reply" dengan jawaban final yang natural, ringkas, dan aman.
 
         INTENT SAAT INI: {$intentLabel}
 
@@ -199,14 +203,26 @@ class PromptBuilderService
     private function formatIntentUserPrompt(array $context): string
     {
         $lines = [];
+        $latestMessage = $context['message_text'] ?? $context['latest_message'] ?? '(kosong)';
+        $recentMessages = $this->promptMessages($context, 'recent_messages', 'recent_history');
 
         $lines[] = '=== PESAN TERBARU PELANGGAN ===';
-        $lines[] = $context['message_text'] ?? '(kosong)';
+        $lines[] = $latestMessage;
         $lines[] = '';
 
-        if (! empty($context['recent_messages'])) {
+        $lines = $this->appendDecisionHierarchyLines($lines);
+        $lines = $this->appendUnifiedCrmContextLines($lines, $context);
+        $lines = $this->appendActionBiasLines($lines, $context);
+
+        if (! empty($context['conversation_summary'])) {
+            $lines[] = '=== RINGKASAN BISNIS TERAKHIR ===';
+            $lines[] = (string) $context['conversation_summary'];
+            $lines[] = '';
+        }
+
+        if ($recentMessages !== []) {
             $lines[] = '=== RIWAYAT PERCAKAPAN (terbaru terakhir) ===';
-            foreach ($context['recent_messages'] as $msg) {
+            foreach ($recentMessages as $msg) {
                 $dir = ($msg['direction'] ?? 'inbound') === 'inbound' ? 'Pelanggan' : 'Bot';
                 $text = $msg['text'] ?? '';
                 $lines[] = "[{$dir}]: {$text}";
@@ -247,8 +263,6 @@ class PromptBuilderService
 
             $lines[] = '';
         }
-
-        $lines = $this->appendUnifiedCrmContextLines($lines, $context);
 
         if (
             config('chatbot.knowledge.include_in_intent_tasks', false)
@@ -336,6 +350,7 @@ class PromptBuilderService
     private function formatReplyUserPrompt(array $context): string
     {
         $lines = [];
+        $messageText = $context['message_text'] ?? $context['latest_message'] ?? '(kosong)';
 
         if (
             config('chatbot.knowledge.include_in_reply_tasks', true)
@@ -376,7 +391,10 @@ class PromptBuilderService
             $lines[] = '';
         }
 
+        $lines = $this->appendDecisionHierarchyLines($lines);
         $lines = $this->appendUnifiedCrmContextLines($lines, $context);
+        $lines = $this->appendReplyGuardrailLines($lines, $context);
+        $lines = $this->appendActionBiasLines($lines, $context);
 
         $intent = $context['intent_result']['intent'] ?? 'unknown';
         $lines[] = "Intent: {$intent}";
@@ -439,8 +457,23 @@ class PromptBuilderService
             $lines[] = '';
         }
 
+        $lines[] = '=== FORMAT OUTPUT WAJIB ===';
+        $lines[] = 'Kembalikan JSON object valid dengan field berikut:';
+        $lines[] = '{';
+        $lines[] = '  "reply": "string",';
+        $lines[] = '  "tone": "formal|ramah|empatik|tegas",';
+        $lines[] = '  "should_escalate": true/false,';
+        $lines[] = '  "handoff_reason": "string|null",';
+        $lines[] = '  "next_action": "ask_missing_data|answer_question|offer_next_step|handoff_admin|safe_fallback",';
+        $lines[] = '  "data_requests": ["field1", "field2"],';
+        $lines[] = '  "used_crm_facts": ["fact1", "fact2"],';
+        $lines[] = '  "safety_notes": ["note1", "note2"]';
+        $lines[] = '}';
+        $lines[] = 'Jangan tambahkan teks di luar JSON.';
+        $lines[] = '';
+
         $lines[] = '=== PESAN PELANGGAN ===';
-        $lines[] = $context['message_text'] ?? '(kosong)';
+        $lines[] = $messageText;
 
         return implode("\n", $lines);
     }
@@ -631,6 +664,105 @@ class PromptBuilderService
     }
 
     /**
+     * @param  array<int, string>  $lines
+     * @return array<int, string>
+     */
+    private function appendDecisionHierarchyLines(array $lines): array
+    {
+        $lines[] = '=== HIRARKI KEPUTUSAN WAJIB ===';
+        $lines[] = '1. Patuhi system policy dan aturan keamanan.';
+        $lines[] = '2. Patuhi rules bisnis / SOP internal.';
+        $lines[] = '3. Gunakan fakta CRM, state percakapan, dan data booking sebagai sumber kebenaran.';
+        $lines[] = '4. Gunakan reasoning LLM hanya untuk memahami maksud, merangkum, dan menyusun bahasa.';
+        $lines[] = '5. Jangan mengarang fakta di luar context.';
+        $lines[] = '6. Jika data tidak cukup, pilih jawaban aman atau arahkan ke admin.';
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
+     * @param  array<int, string>  $lines
+     * @param  array<string, mixed>  $context
+     * @return array<int, string>
+     */
+    private function appendReplyGuardrailLines(array $lines, array $context): array
+    {
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $flags = is_array($crm['business_flags'] ?? null) ? $crm['business_flags'] : [];
+        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
+        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
+        $escalation = is_array($crm['escalation'] ?? null) ? $crm['escalation'] : [];
+
+        $lines[] = '=== BATASAN WAJABAN OPERASIONAL ===';
+        $lines[] = '- Jangan menyatakan sesuatu sebagai pasti jika data tidak ada.';
+        $lines[] = '- Jangan membuat janji operasional tanpa dasar dari context.';
+        $lines[] = '- Jangan mengubah fakta CRM, booking, atau escalation.';
+        $lines[] = '- Jika pelanggan butuh admin atau kasus sensitif, arahkan ke admin dengan sopan.';
+        $lines[] = '- Jika booking belum lengkap, fokus minta data yang masih kurang.';
+        $lines[] = '- Jika admin takeover aktif, jangan bertindak seolah bot bebas mengambil keputusan besar.';
+
+        if (($flags['admin_takeover_active'] ?? false) === true) {
+            $lines[] = '- Kondisi saat ini: admin takeover aktif.';
+        }
+
+        if (($conversation['needs_human'] ?? false) === true) {
+            $lines[] = '- Kondisi saat ini: conversation ditandai perlu human follow-up.';
+        }
+
+        if (($escalation['has_open_escalation'] ?? false) === true) {
+            $lines[] = '- Kondisi saat ini: ada escalation terbuka.';
+        }
+
+        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            $lines[] = '- Data booking yang harus diprioritaskan: '.implode(', ', $booking['missing_fields']);
+        }
+
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
+     * @param  array<int, string>  $lines
+     * @param  array<string, mixed>  $context
+     * @return array<int, string>
+     */
+    private function appendActionBiasLines(array $lines, array $context): array
+    {
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $lead = is_array($crm['lead_pipeline'] ?? null) ? $crm['lead_pipeline'] : [];
+        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
+        $customer = is_array($crm['customer'] ?? null) ? $crm['customer'] : [];
+
+        $lines[] = '=== ARAH TINDAKAN YANG DIUTAMAKAN ===';
+
+        if (($customer['total_bookings'] ?? 0) > 0) {
+            $lines[] = '- Pelanggan ini pernah bertransaksi. Jaga kesinambungan konteks.';
+        } else {
+            $lines[] = '- Pelanggan ini kemungkinan baru. Gunakan penjelasan singkat dan jelas.';
+        }
+
+        if (! empty($lead['stage'])) {
+            $lines[] = '- Stage pipeline saat ini: '.$lead['stage'].'. Sesuaikan jawaban dengan tahap hubungan pelanggan.';
+        }
+
+        if (($booking['ready_for_confirmation'] ?? false) === true) {
+            $lines[] = '- Booking tampak siap dikonfirmasi, tetapi jangan menyatakan final jika rules melarang.';
+        }
+
+        if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            $lines[] = '- Prioritas tindakan: lengkapi data booking yang kurang terlebih dahulu.';
+        } else {
+            $lines[] = '- Prioritas tindakan: bantu pelanggan maju satu langkah berikutnya secara aman.';
+        }
+
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
      * @param  array<string, mixed>  $memory
      */
     private function customerNameFromMemory(array $memory): ?string
@@ -687,6 +819,43 @@ class PromptBuilderService
         $memory = is_array($context['customer_memory'] ?? null) ? $context['customer_memory'] : [];
 
         return is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @return array<int, array<string, mixed>>
+     */
+    private function promptMessages(array $context, string $primaryKey, string $fallbackKey): array
+    {
+        $messages = is_array($context[$primaryKey] ?? null)
+            ? $context[$primaryKey]
+            : [];
+
+        if ($messages === [] && is_array($context[$fallbackKey] ?? null)) {
+            $messages = $context[$fallbackKey];
+        }
+
+        return array_values(array_filter(array_map(function ($message): ?array {
+            if (! is_array($message)) {
+                return null;
+            }
+
+            $text = isset($message['text']) ? trim((string) $message['text']) : '';
+            $role = trim((string) ($message['role'] ?? ''));
+            $direction = trim((string) ($message['direction'] ?? ''));
+
+            if ($direction === '' && $role !== '') {
+                $direction = $role === 'customer' || $role === 'user'
+                    ? 'inbound'
+                    : 'outbound';
+            }
+
+            return [
+                'direction' => $direction !== '' ? $direction : 'inbound',
+                'text' => $text,
+                'sent_at' => isset($message['sent_at']) ? (string) $message['sent_at'] : null,
+            ];
+        }, $messages)));
     }
 
     private function styleInstruction(string $style): string

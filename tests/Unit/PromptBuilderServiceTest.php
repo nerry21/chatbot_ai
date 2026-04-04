@@ -32,6 +32,7 @@ class PromptBuilderServiceTest extends TestCase
                 'customer' => [
                     'name' => 'Nerry',
                     'phone_e164' => '+6281234567890',
+                    'total_bookings' => 0,
                     'tags' => ['pelanggan_baru', 'booking_draft'],
                 ],
                 'hubspot' => [
@@ -53,9 +54,11 @@ class PromptBuilderServiceTest extends TestCase
                     'destination' => 'Pekanbaru',
                     'departure_date' => '2026-04-05',
                     'departure_time' => '08:00',
+                    'ready_for_confirmation' => false,
                     'missing_fields' => ['passenger_count'],
                 ],
             ],
+            'conversation_summary' => 'Pelanggan sedang menanyakan booking Pekanbaru.',
         ];
 
         $intentPrompt = $service->buildIntentPrompt($context);
@@ -71,6 +74,10 @@ class PromptBuilderServiceTest extends TestCase
         $this->assertStringContainsString('Lifecycle stage: customer', $extractionPrompt['user']);
         $this->assertStringContainsString('Lead status: OPEN', $extractionPrompt['user']);
         $this->assertStringContainsString('=== KONTEKS CRM TERPADU (FAKTA BISNIS) ===', $intentPrompt['user']);
+        $this->assertStringContainsString('=== HIRARKI KEPUTUSAN WAJIB ===', $intentPrompt['user']);
+        $this->assertStringContainsString('=== ARAH TINDAKAN YANG DIUTAMAKAN ===', $intentPrompt['user']);
+        $this->assertStringContainsString('Pelanggan ini kemungkinan baru. Gunakan penjelasan singkat dan jelas.', $intentPrompt['user']);
+        $this->assertStringContainsString('=== RINGKASAN BISNIS TERAKHIR ===', $intentPrompt['user']);
         $this->assertStringContainsString('Stage pipeline internal: engaged', $intentPrompt['user']);
         $this->assertStringContainsString('Status booking: draft', $intentPrompt['user']);
         $this->assertStringContainsString('Data booking yang masih kurang: passenger_count', $intentPrompt['user']);
@@ -96,6 +103,7 @@ class PromptBuilderServiceTest extends TestCase
                 'customer' => [
                     'name' => 'Nerry',
                     'phone_e164' => '+6281234567890',
+                    'total_bookings' => 4,
                     'tags' => ['pernah_booking'],
                 ],
                 'hubspot' => [
@@ -113,6 +121,10 @@ class PromptBuilderServiceTest extends TestCase
                     'current_intent' => 'tanya_harga',
                     'summary' => 'Customer bertanya harga.',
                     'needs_human' => true,
+                ],
+                'booking' => [
+                    'missing_fields' => ['pickup_location', 'destination'],
+                    'ready_for_confirmation' => false,
                 ],
                 'escalation' => [
                     'has_open_escalation' => true,
@@ -134,8 +146,15 @@ class PromptBuilderServiceTest extends TestCase
         $this->assertStringContainsString('HubSpot score: 77', $prompt['user']);
         $this->assertStringContainsString('Sumber CRM: hubspot_api', $prompt['user']);
         $this->assertStringContainsString('=== KONTEKS CRM TERPADU (FAKTA BISNIS) ===', $prompt['user']);
+        $this->assertStringContainsString('=== HIRARKI KEPUTUSAN WAJIB ===', $prompt['user']);
+        $this->assertStringContainsString('=== BATASAN WAJABAN OPERASIONAL ===', $prompt['user']);
+        $this->assertStringContainsString('=== ARAH TINDAKAN YANG DIUTAMAKAN ===', $prompt['user']);
+        $this->assertStringContainsString('=== FORMAT OUTPUT WAJIB ===', $prompt['user']);
         $this->assertStringContainsString('Stage pipeline internal: awaiting_confirmation', $prompt['user']);
         $this->assertStringContainsString('Ada escalation terbuka: ya', $prompt['user']);
         $this->assertStringContainsString('Admin takeover aktif: ya', $prompt['user']);
+        $this->assertStringContainsString('Kondisi saat ini: admin takeover aktif.', $prompt['user']);
+        $this->assertStringContainsString('Data booking yang harus diprioritaskan: pickup_location, destination', $prompt['user']);
+        $this->assertStringContainsString('Pelanggan ini pernah bertransaksi. Jaga kesinambungan konteks.', $prompt['user']);
     }
 }
