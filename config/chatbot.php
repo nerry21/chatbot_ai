@@ -407,6 +407,14 @@ return [
             'portal_id' => env('HUBSPOT_PORTAL_ID', ''),
         ],
 
+        'ai_context' => [
+            'enabled' => (bool) env('CRM_AI_CONTEXT_ENABLED', true),
+            'ttl_seconds' => (int) env('CRM_AI_CONTEXT_TTL_SECONDS', 600),
+            'include_in_intent_tasks' => (bool) env('CRM_AI_CONTEXT_INCLUDE_IN_INTENT', true),
+            'include_in_extraction_tasks' => (bool) env('CRM_AI_CONTEXT_INCLUDE_IN_EXTRACTION', true),
+            'include_in_reply_tasks' => (bool) env('CRM_AI_CONTEXT_INCLUDE_IN_REPLY', true),
+        ],
+
     ],
 
     /*

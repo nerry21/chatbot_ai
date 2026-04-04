@@ -10,15 +10,16 @@ use App\Models\AiLog;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
+use App\Models\Customer;
 use App\Services\AI\ConversationSummaryService;
 use App\Services\AI\EntityExtractorService;
 use App\Services\AI\GroundedResponseComposerService;
 use App\Services\AI\GroundedResponseFactsBuilderService;
 use App\Services\AI\IntentClassifierService;
+use App\Services\AI\Learning\LearningSignalLoggerService;
 use App\Services\AI\LlmUnderstandingEngine;
 use App\Services\AI\ResponseGeneratorService;
 use App\Services\AI\UnderstandingResultAdapterService;
-use App\Services\AI\Learning\LearningSignalLoggerService;
 use App\Services\Booking\BookingAssistantService;
 use App\Services\Booking\BookingFlowStateMachine;
 use App\Services\Chatbot\BotAutomationToggleService;
@@ -44,7 +45,7 @@ use Illuminate\Support\Facades\Cache;
 
 class ProcessIncomingWhatsAppMessage implements ShouldQueue
 {
-    use Queueable, InteractsWithQueue, SerializesModels;
+    use InteractsWithQueue, Queueable, SerializesModels;
 
     /** Maximum attempts before the job is marked as permanently failed. */
     public int $tries = 3;
@@ -55,8 +56,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     public int $timeout = 120;
 
     public function __construct(
-        public readonly int    $messageId,
-        public readonly int    $conversationId,
+        public readonly int $messageId,
+        public readonly int $conversationId,
         public readonly string $traceId = '',
     ) {}
 
@@ -68,24 +69,24 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         HallucinationGuardService $hallucinationGuard,
         GroundedResponseFactsBuilderService $groundedFactsBuilder,
         GroundedResponseComposerService $groundedComposer,
-        LlmUnderstandingEngine     $understandingEngine,
+        LlmUnderstandingEngine $understandingEngine,
         UnderstandingResultAdapterService $understandingAdapter,
-        IntentClassifierService    $intentClassifier,
-        EntityExtractorService     $entityExtractor,
-        ResponseGeneratorService   $responseGenerator,
+        IntentClassifierService $intentClassifier,
+        EntityExtractorService $entityExtractor,
+        ResponseGeneratorService $responseGenerator,
         ConversationSummaryService $summaryService,
         LearningSignalLoggerService $learningSignalLogger,
         ConversationManagerService $conversationManager,
-        BookingAssistantService    $bookingAssistant,
-        BookingFlowStateMachine    $bookingFlow,
+        BookingAssistantService $bookingAssistant,
+        BookingFlowStateMachine $bookingFlow,
         ConversationReplyGuardService $replyGuard,
-        ReplyOrchestratorService   $replyOrchestrator,
+        ReplyOrchestratorService $replyOrchestrator,
         ConversationOutboundRouterService $outboundRouter,
-        ContactTaggingService      $contactTagging,
-        LeadPipelineService        $leadPipeline,
-        AuditLogService            $audit,
-        KnowledgeBaseService       $knowledgeBase,
-        FaqResolverService         $faqResolver,
+        ContactTaggingService $contactTagging,
+        LeadPipelineService $leadPipeline,
+        AuditLogService $audit,
+        KnowledgeBaseService $knowledgeBase,
+        FaqResolverService $faqResolver,
     ): void {
         // ── 0. Restore trace ID from parent request ─────────────────────────
         if ($this->traceId !== '') {
@@ -95,20 +96,21 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         $jobStartMs = (int) round(microtime(true) * 1000);
 
         WaLog::info('[Job:ProcessIncoming] Started', [
-            'message_id'      => $this->messageId,
+            'message_id' => $this->messageId,
             'conversation_id' => $this->conversationId,
-            'attempt'         => $this->attempts(),
+            'attempt' => $this->attempts(),
         ]);
 
         // ── 1. Load models ─────────────────────────────────────────────────
-        $message      = ConversationMessage::find($this->messageId);
+        $message = ConversationMessage::find($this->messageId);
         $conversation = Conversation::with('customer')->find($this->conversationId);
 
         if ($message === null || $conversation === null) {
             WaLog::warning('[Job:ProcessIncoming] Model not found — aborting', [
-                'message_id'      => $this->messageId,
+                'message_id' => $this->messageId,
                 'conversation_id' => $this->conversationId,
             ]);
+
             return;
         }
 
@@ -116,6 +118,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             WaLog::warning('[Job:ProcessIncoming] Customer not found — aborting', [
                 'conversation_id' => $this->conversationId,
             ]);
+
             return;
         }
 
@@ -169,21 +172,21 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             if ($adminTakeoverGuard->shouldSuppressAutomation($conversation)) {
                 $takeoverContext = $adminTakeoverGuard->context($conversation);
                 WaLog::info('[Job:ProcessIncoming] SKIPPED — admin takeover active', [
-                    'conversation_id'  => $conversation->id,
+                    'conversation_id' => $conversation->id,
                     'handoff_admin_id' => $takeoverContext['handoff_admin_id'],
-                    'handoff_at'       => $takeoverContext['handoff_at'],
+                    'handoff_at' => $takeoverContext['handoff_at'],
                 ]);
 
                 // Audit: record the suppressed auto-reply
                 $audit->record(AuditActionType::BotReplySkippedTakeover, [
-                    'actor_user_id'   => null, // System action
+                    'actor_user_id' => null, // System action
                     'conversation_id' => $conversation->id,
-                    'message'         => 'Auto-reply bot diblokir karena admin takeover aktif.',
-                    'context'         => [
-                        'conversation_id'  => $conversation->id,
-                        'message_id'       => $message->id,
+                    'message' => 'Auto-reply bot diblokir karena admin takeover aktif.',
+                    'context' => [
+                        'conversation_id' => $conversation->id,
+                        'message_id' => $message->id,
                         'handoff_admin_id' => $takeoverContext['handoff_admin_id'],
-                        'text_preview'     => $message->textPreview(80),
+                        'text_preview' => $message->textPreview(80),
                     ],
                 ]);
 
@@ -243,16 +246,16 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 messageText   : $messageText,
             );
 
-            $aiContext['knowledge_hits']  = $knowledgeHits ?: null; // null = no hits (cleaner for logging)
+            $aiContext['knowledge_hits'] = $knowledgeHits ?: null; // null = no hits (cleaner for logging)
             $aiContext['knowledge_block'] = $knowledgeBlock;
-            $aiContext['knowledge_hint']  = $knowledgeHint;
+            $aiContext['knowledge_hint'] = $knowledgeHint;
 
             // ── 3. LLM-first understanding ─────────────────────────────────
             $stepStart = (int) round(microtime(true) * 1000);
             WaLog::debug('[Job:ProcessIncoming] AI:understanding START', [
                 'conversation_id' => $conversation->id,
                 'message_preview' => mb_substr($messageText, 0, 60),
-                'knowledge_hits'  => count($knowledgeHits),
+                'knowledge_hits' => count($knowledgeHits),
             ]);
             $understandingResult = $understandingEngine->understandFromContext(
                 contextPayload: $contextPayload,
@@ -261,11 +264,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['understanding_result'] = $understandingResult->toArray();
             WaLog::info('[Job:ProcessIncoming] AI:understanding END', [
                 'conversation_id' => $conversation->id,
-                'intent'          => $understandingResult->intent,
-                'confidence'      => $understandingResult->confidence,
+                'intent' => $understandingResult->intent,
+                'confidence' => $understandingResult->confidence,
                 'needs_clarification' => $understandingResult->needsClarification,
                 'handoff_recommended' => $understandingResult->handoffRecommended,
-                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
             // ── 3.5 FAQ resolver (Tahap 10) ─────────────────────────────────
@@ -277,16 +280,16 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             if ($understandingAdapter->needsLegacyFallback($understandingResult)) {
                 WaLog::warning('[Job:ProcessIncoming] Understanding fallback triggered - using legacy backup', [
                     'conversation_id' => $conversation->id,
-                    'message_id'      => $message->id,
+                    'message_id' => $message->id,
                 ]);
 
                 $stepStart = (int) round(microtime(true) * 1000);
                 $legacyIntentResult = $intentClassifier->classify($aiContext);
                 WaLog::info('[Job:ProcessIncoming] AI:intent fallback END', [
                     'conversation_id' => $conversation->id,
-                    'intent'          => $legacyIntentResult['intent'] ?? null,
-                    'confidence'      => $legacyIntentResult['confidence'] ?? null,
-                    'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                    'intent' => $legacyIntentResult['intent'] ?? null,
+                    'confidence' => $legacyIntentResult['confidence'] ?? null,
+                    'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
                 ]);
 
                 $stepStart = (int) round(microtime(true) * 1000);
@@ -295,8 +298,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 ]));
                 WaLog::info('[Job:ProcessIncoming] AI:extraction fallback END', [
                     'conversation_id' => $conversation->id,
-                    'entity_keys'     => array_keys($legacyEntityResult),
-                    'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                    'entity_keys' => array_keys($legacyEntityResult),
+                    'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
                 ]);
             }
 
@@ -336,8 +339,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                     ->update(['quality_label' => 'faq_direct']);
                 WaLog::info('[Job:ProcessIncoming] FAQ matched — LLM reply may be skipped', [
                     'conversation_id' => $conversation->id,
-                    'faq_id'          => $faqResult['id'] ?? null,
-                    'score'           => $faqResult['score'] ?? null,
+                    'faq_id' => $faqResult['id'] ?? null,
+                    'score' => $faqResult['score'] ?? null,
                 ]);
             }
 
@@ -350,8 +353,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['entity_result'] = $entityResult;
             WaLog::debug('[Job:ProcessIncoming] AI:extraction END', [
                 'conversation_id' => $conversation->id,
-                'entity_keys'     => array_keys($entityResult),
-                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                'entity_keys' => array_keys($entityResult),
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
             // ── 5. Reply generation deferred until action is chosen ─────────
@@ -367,20 +370,20 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             ];
             WaLog::info('[Job:ProcessIncoming] AI:reply DEFERRED', [
                 'conversation_id' => $conversation->id,
-                'is_fallback'     => $replyResult['is_fallback'] ?? false,
-                'source'          => $replyResult['meta']['source'] ?? null,
-                'used_faq'        => $replyResult['used_faq'] ?? false,
-                'used_knowledge'  => $replyResult['used_knowledge'] ?? false,
-                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                'is_fallback' => $replyResult['is_fallback'] ?? false,
+                'source' => $replyResult['meta']['source'] ?? null,
+                'used_faq' => $replyResult['used_faq'] ?? false,
+                'used_knowledge' => $replyResult['used_knowledge'] ?? false,
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
             // ── 6. Summary deferred until final response is chosen ──────────
-            $stepStart     = (int) round(microtime(true) * 1000);
+            $stepStart = (int) round(microtime(true) * 1000);
             $summaryResult = ['summary' => ''];
             WaLog::debug('[Job:ProcessIncoming] AI:summary DEFERRED', [
                 'conversation_id' => $conversation->id,
-                'has_summary'     => ! empty($summaryResult['summary']),
-                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                'has_summary' => ! empty($summaryResult['summary']),
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
             // ── 7. Rule-guided validation + business action selection ───────
@@ -416,8 +419,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 $stepStart = (int) round(microtime(true) * 1000);
                 WaLog::debug('[Job:ProcessIncoming] AI:grounded_reply START', [
                     'conversation_id' => $conversation->id,
-                    'booking_action'  => $bookingDecision['action'] ?? null,
-                    'mode'            => $groundedFacts->mode->value,
+                    'booking_action' => $bookingDecision['action'] ?? null,
+                    'mode' => $groundedFacts->mode->value,
                 ]);
                 $groundedResult = $groundedComposer->compose($groundedFacts);
                 $replyResult = [
@@ -441,11 +444,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 );
                 WaLog::info('[Job:ProcessIncoming] AI:grounded_reply END', [
                     'conversation_id' => $conversation->id,
-                    'is_fallback'     => $replyResult['is_fallback'] ?? false,
-                    'used_faq'        => $replyResult['used_faq'] ?? false,
-                    'used_knowledge'  => $replyResult['used_knowledge'] ?? false,
-                    'mode'            => $groundedFacts->mode->value,
-                    'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                    'is_fallback' => $replyResult['is_fallback'] ?? false,
+                    'used_faq' => $replyResult['used_faq'] ?? false,
+                    'used_knowledge' => $replyResult['used_knowledge'] ?? false,
+                    'mode' => $groundedFacts->mode->value,
+                    'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
                 ]);
             } else {
                 $replyResult = $this->replyResultFromFinalReply($finalReply);
@@ -464,12 +467,12 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['intent_result'] = $intentResult;
             $aiContext['hallucination_guard'] = $hallucinationGuardResult['meta'];
 
-            $stepStart     = (int) round(microtime(true) * 1000);
+            $stepStart = (int) round(microtime(true) * 1000);
             $summaryResult = $summaryService->summarize($conversation, $aiContext);
             WaLog::debug('[Job:ProcessIncoming] AI:summary END', [
                 'conversation_id' => $conversation->id,
-                'has_summary'     => ! empty($summaryResult['summary']),
-                'duration_ms'     => (int) round(microtime(true) * 1000) - $stepStart,
+                'has_summary' => ! empty($summaryResult['summary']),
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
             $guardResult = $replyGuard->guardReply(
@@ -486,33 +489,33 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
             if ($guardResult['close_intent_detected']) {
                 $intentResult = array_merge($intentResult, [
-                    'intent'          => IntentType::CloseIntent->value,
-                    'confidence'      => max((float) ($intentResult['confidence'] ?? 0), 0.99),
+                    'intent' => IntentType::CloseIntent->value,
+                    'confidence' => max((float) ($intentResult['confidence'] ?? 0), 0.99),
                     'reasoning_short' => 'Close intent detected after unavailable route.',
                 ]);
 
                 WaLog::info('[Job:ProcessIncoming] Close intent detected — conversation will be closed politely', [
                     'conversation_id' => $conversation->id,
-                    'message_id'      => $message->id,
-                    'text_preview'    => $message->textPreview(80),
+                    'message_id' => $message->id,
+                    'text_preview' => $message->textPreview(80),
                 ]);
             }
 
             if ($guardResult['unavailable_repeat_blocked']) {
                 WaLog::info('[Job:ProcessIncoming] Unavailable route no-repeat guard applied', [
                     'conversation_id' => $conversation->id,
-                    'message_id'      => $message->id,
-                    'booking_action'  => $bookingDecision['action'] ?? null,
-                    'text_preview'    => $message->textPreview(80),
+                    'message_id' => $message->id,
+                    'booking_action' => $bookingDecision['action'] ?? null,
+                    'text_preview' => $message->textPreview(80),
                 ]);
             }
 
             if ($guardResult['state_repeat_rewritten'] ?? false) {
                 WaLog::info('[Job:ProcessIncoming] Booking prompt rewritten to short reminder', [
                     'conversation_id' => $conversation->id,
-                    'message_id'      => $message->id,
-                    'reply_action'    => $finalReply['meta']['action'] ?? null,
-                    'text_preview'    => mb_substr((string) ($finalReply['text'] ?? ''), 0, 80),
+                    'message_id' => $message->id,
+                    'reply_action' => $finalReply['meta']['action'] ?? null,
+                    'text_preview' => mb_substr((string) ($finalReply['text'] ?? ''), 0, 80),
                 ]);
             }
 
@@ -542,7 +545,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
                 WaLog::info('[Job:ProcessIncoming] Conversation closed after close intent', [
                     'conversation_id' => $conversation->id,
-                    'message_id'      => $message->id,
+                    'message_id' => $message->id,
                 ]);
             }
 
@@ -607,28 +610,28 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
             WaLog::info('[Job:ProcessIncoming] Pipeline complete', [
                 'conversation_id' => $conversation->id,
-                'message_id'      => $message->id,
-                'intent'          => $intentResult['intent'],
-                'confidence'      => $intentResult['confidence'],
-                'booking_action'  => $bookingDecision['action'] ?? null,
-                'is_fallback'     => $finalReply['is_fallback'],
-                'used_knowledge'  => $replyResult['used_knowledge'] ?? false,
-                'used_faq'        => $replyResult['used_faq'] ?? false,
+                'message_id' => $message->id,
+                'intent' => $intentResult['intent'],
+                'confidence' => $intentResult['confidence'],
+                'booking_action' => $bookingDecision['action'] ?? null,
+                'is_fallback' => $finalReply['is_fallback'],
+                'used_knowledge' => $replyResult['used_knowledge'] ?? false,
+                'used_faq' => $replyResult['used_faq'] ?? false,
                 'knowledge_count' => count($knowledgeHits),
-                'outbound_id'     => $outboundMessage?->id,
+                'outbound_id' => $outboundMessage?->id,
                 'outbound_skipped' => $outboundMessage === null,
-                'duration_ms'     => $durationMs,
+                'duration_ms' => $durationMs,
             ]);
         } catch (\Throwable $e) {
             $durationMs = (int) round(microtime(true) * 1000) - $jobStartMs;
 
             WaLog::error('[Job:ProcessIncoming] Pipeline error — emergency fallback triggered', [
                 'conversation_id' => $this->conversationId,
-                'message_id'      => $this->messageId,
-                'error'           => $e->getMessage(),
-                'file'            => $e->getFile() . ':' . $e->getLine(),
-                'duration_ms'     => $durationMs,
-                'trace'           => $e->getTraceAsString(),
+                'message_id' => $this->messageId,
+                'error' => $e->getMessage(),
+                'file' => $e->getFile().':'.$e->getLine(),
+                'duration_ms' => $durationMs,
+                'trace' => $e->getTraceAsString(),
             ]);
 
             $emergencyOutbound = $this->saveEmergencyFallback(
@@ -725,9 +728,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
      * Uses `latest()` so multiple retries of the same message don't corrupt earlier logs.
      *
      * @param  array<int, array<string, mixed>>  $knowledgeHits
-     * @param  array<string, mixed>              $intentResult
-     * @param  array<string, mixed>              $replyResult
-     * @param  array<string, mixed>              $faqResult
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>  $faqResult
      */
     private function updateQualityLabels(
         int $conversationId,
@@ -756,9 +759,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 if ($updated === 0 && config('chatbot.ai_quality.store_knowledge_hits', true)) {
                     AiLog::writeLog('reply_generation', 'success', [
                         'conversation_id' => $conversationId,
-                        'message_id'      => $messageId,
-                        'quality_label'   => 'faq_direct',
-                        'knowledge_hits'  => ! empty($knowledgeHits) ? $knowledgeHits : null,
+                        'message_id' => $messageId,
+                        'quality_label' => 'faq_direct',
+                        'knowledge_hits' => ! empty($knowledgeHits) ? $knowledgeHits : null,
                     ]);
                 }
             } else {
@@ -783,8 +786,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         } catch (\Throwable $e) {
             WaLog::warning('[Job:ProcessIncoming] quality label update failed (non-fatal)', [
                 'conversation_id' => $conversationId,
-                'message_id'      => $messageId,
-                'error'           => $e->getMessage(),
+                'message_id' => $messageId,
+                'error' => $e->getMessage(),
             ]);
         }
     }
@@ -801,9 +804,13 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ContactTaggingService $contactTagging,
         LeadPipelineService $leadPipeline,
     ): void {
+        if (! config('chatbot.crm.enabled', true)) {
+            return;
+        }
+
         try {
-            $customer   = $conversation->customer;
-            $intentStr  = $intentResult['intent'] ?? null;
+            $customer = $conversation->customer;
+            $intentStr = $intentResult['intent'] ?? null;
             $intentEnum = $intentStr !== null ? IntentType::tryFrom($intentStr) : null;
 
             // a. Apply CRM tags
@@ -817,7 +824,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 || ($intentEnum !== null && $intentEnum->requiresHuman());
 
             if ($needsEscalation) {
-                \App\Jobs\EscalateConversationToAdminJob::dispatch(
+                EscalateConversationToAdminJob::dispatch(
                     $conversation->id,
                     $intentResult['reasoning_short'] ?? $intentStr ?? '',
                     'normal',
@@ -825,11 +832,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             }
 
             // d. Async contact sync
-            \App\Jobs\SyncContactToCrmJob::dispatch($customer->id);
+            SyncContactToCrmJob::dispatch($customer->id);
 
             // e. Async summary sync
             if (! empty($summaryResult['summary'])) {
-                \App\Jobs\SyncConversationSummaryToCrmJob::dispatch(
+                SyncConversationSummaryToCrmJob::dispatch(
                     $customer->id,
                     $conversation->id,
                 );
@@ -837,8 +844,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         } catch (\Throwable $e) {
             WaLog::error('[Job:ProcessIncoming] CRM layer failed (non-fatal)', [
                 'conversation_id' => $conversation->id,
-                'error'           => $e->getMessage(),
-                'file'            => $e->getFile() . ':' . $e->getLine(),
+                'error' => $e->getMessage(),
+                'file' => $e->getFile().':'.$e->getLine(),
             ]);
         }
     }
@@ -846,11 +853,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     public function failed(\Throwable $exception): void
     {
         WaLog::critical('[Job:ProcessIncoming] permanently failed after retries', [
-            'message_id'      => $this->messageId,
+            'message_id' => $this->messageId,
             'conversation_id' => $this->conversationId,
-            'error'           => $exception->getMessage(),
-            'file'            => $exception->getFile() . ':' . $exception->getLine(),
-            'trace'           => $exception->getTraceAsString(),
+            'error' => $exception->getMessage(),
+            'file' => $exception->getFile().':'.$exception->getLine(),
+            'trace' => $exception->getTraceAsString(),
         ]);
     }
 
@@ -914,9 +921,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         array $entityResult,
         BookingAssistantService $bookingAssistant,
     ): array {
-        $intentEnum       = IntentType::tryFrom($intentResult['intent']);
+        $intentEnum = IntentType::tryFrom($intentResult['intent']);
         $isBookingRelated = $intentEnum !== null && $intentEnum->isBookingRelated();
-        $existingDraft    = $bookingAssistant->findExistingDraft($conversation);
+        $existingDraft = $bookingAssistant->findExistingDraft($conversation);
 
         if (! $isBookingRelated && $existingDraft === null) {
             return [null, null];
@@ -940,9 +947,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
         WaLog::info('[Job:ProcessIncoming] booking engine decision', [
             'conversation_id' => $conversation->id,
-            'booking_id'      => $booking->id,
-            'action'          => $bookingDecision['action'],
-            'booking_status'  => $bookingDecision['booking_status'],
+            'booking_id' => $booking->id,
+            'action' => $bookingDecision['action'],
+            'booking_status' => $bookingDecision['booking_status'],
         ]);
 
         return [$booking, $bookingDecision];
@@ -953,7 +960,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
      * outbound reply is eventually sent.
      *
      * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
-     * @param  array{summary: string}                                             $summaryResult
+     * @param  array{summary: string}  $summaryResult
      */
     private function persistConversationResults(
         Conversation $conversation,
@@ -974,8 +981,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
      *
      * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
      * @param  array{text: string, is_fallback: bool, meta: array<string, mixed>}  $finalReply
-     * @param  array<string, mixed>                                                $guardResult
-     * @param  array<string, mixed>|null                                           $bookingDecision
+     * @param  array<string, mixed>  $guardResult
+     * @param  array<string, mixed>|null  $bookingDecision
      */
     private function persistResults(
         Conversation $conversation,
@@ -1023,13 +1030,13 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
         if ($replyGuard->shouldSkipRepeat($conversation, $latestOutbound, $finalReply, $replyIdentity, $inboundContextFingerprint)) {
             WaLog::info('[Job:ProcessIncoming] Anti-repeat skip — outbound identical to latest reply', [
-                'conversation_id'    => $conversation->id,
-                'message_id'         => $message->id,
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
                 'latest_outbound_id' => $latestOutbound?->id,
-                'latest_preview'     => $latestOutbound?->textPreview(80),
-                'candidate_preview'  => mb_substr((string) $finalReply['text'], 0, 80),
-                'reply_source'       => $finalReply['meta']['source'] ?? null,
-                'reply_action'       => $finalReply['meta']['action'] ?? null,
+                'latest_preview' => $latestOutbound?->textPreview(80),
+                'candidate_preview' => mb_substr((string) $finalReply['text'], 0, 80),
+                'reply_source' => $finalReply['meta']['source'] ?? null,
+                'reply_action' => $finalReply['meta']['action'] ?? null,
                 'outbound_fingerprint' => $replyIdentity['outbound_fingerprint'] ?? null,
                 'state_response_hash' => $replyIdentity['state_response_hash'] ?? null,
                 'inbound_context_fingerprint' => $replyIdentity['inbound_context_fingerprint'] ?? null,
@@ -1077,8 +1084,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
      *
      * @param  array{intent: string, confidence: float, reasoning_short: string}  $intentResult
      * @param  array{text: string, is_fallback: bool, meta: array<string, mixed>}  $finalReply
-     * @param  array<string, mixed>                                                $replyIdentity
-     * @param  array<string, mixed>|null                                           $bookingDecision
+     * @param  array<string, mixed>  $replyIdentity
+     * @param  array<string, mixed>|null  $bookingDecision
      */
     private function persistOutboundReply(
         Conversation $conversation,
@@ -1089,10 +1096,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ?array $bookingDecision,
     ): ConversationMessage {
         $rawPayload = array_filter([
-            'source'        => $finalReply['meta']['source'] ?? 'ai_generated',
-            'reply_action'  => $finalReply['meta']['action'] ?? null,
-            'is_fallback'   => $finalReply['is_fallback'],
-            'intent'        => $intentResult['intent'],
+            'source' => $finalReply['meta']['source'] ?? 'ai_generated',
+            'reply_action' => $finalReply['meta']['action'] ?? null,
+            'is_fallback' => $finalReply['is_fallback'],
+            'intent' => $intentResult['intent'],
             'booking_action' => $bookingDecision['action'] ?? null,
             'outbound_fingerprint' => $replyIdentity['outbound_fingerprint'] ?? null,
             'response_hash' => $replyIdentity['response_hash'] ?? null,
@@ -1154,6 +1161,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     ): void {
         if ($guardResult['close_conversation'] ?? false) {
             $replyGuard->clearUnavailableContext($conversation);
+
             return;
         }
 
@@ -1189,8 +1197,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             ->reverse()
             ->map(fn (ConversationMessage $m) => [
                 'direction' => $m->direction->value,
-                'text'      => $m->message_text,
-                'sent_at'   => $m->sent_at?->toDateTimeString(),
+                'text' => $m->message_text,
+                'sent_at' => $m->sent_at?->toDateTimeString(),
             ])
             ->values()
             ->all();
@@ -1199,25 +1207,25 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     private function notifyInboundDuringTakeover(
         ConversationMessage $message,
         Conversation $conversation,
-        \App\Models\Customer $customer,
+        Customer $customer,
     ): void {
         try {
             $customerName = $customer->name ?? $customer->phone_e164 ?? 'Pelanggan';
 
             AdminNotification::create([
-                'type'    => 'inbound_during_takeover',
-                'title'   => "Pesan baru saat takeover: {$customerName}",
-                'body'    => implode("\n", [
+                'type' => 'inbound_during_takeover',
+                'title' => "Pesan baru saat takeover: {$customerName}",
+                'body' => implode("\n", [
                     'Pesan masuk saat admin takeover aktif (bot tidak membalas).',
-                    'Percakapan : #' . $conversation->id,
-                    'Customer   : ' . $customerName . ' (' . ($customer->phone_e164 ?? '-') . ')',
-                    'Pesan      : ' . $message->textPreview(200),
+                    'Percakapan : #'.$conversation->id,
+                    'Customer   : '.$customerName.' ('.($customer->phone_e164 ?? '-').')',
+                    'Pesan      : '.$message->textPreview(200),
                 ]),
                 'payload' => [
-                    'conversation_id'  => $conversation->id,
-                    'message_id'       => $message->id,
+                    'conversation_id' => $conversation->id,
+                    'message_id' => $message->id,
                     'handoff_admin_id' => $conversation->handoff_admin_id,
-                    'customer_id'      => $customer->id,
+                    'customer_id' => $customer->id,
                 ],
                 'is_read' => false,
             ]);
@@ -1314,13 +1322,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         } catch (\Throwable $inner) {
             WaLog::error('[Job:ProcessIncoming] emergency fallback also failed', [
                 'error' => $inner->getMessage(),
-                'file'  => $inner->getFile() . ':' . $inner->getLine(),
+                'file' => $inner->getFile().':'.$inner->getLine(),
             ]);
         }
 
         return null;
     }
 }
-
-
-

@@ -5,7 +5,7 @@ namespace App\Services\AI;
 class PromptBuilderService
 {
     // -------------------------------------------------------------------------
-    // Public builders — each returns ['system' => '...', 'user' => '...']
+    // Public builders - each returns ['system' => '...', 'user' => '...']
     // -------------------------------------------------------------------------
 
     /**
@@ -117,12 +117,12 @@ class PromptBuilderService
 
         GAYA KOMUNIKASI: {$styleGuide}
 
-        ATURAN KETAT — WAJIB DIIKUTI:
+        ATURAN KETAT - WAJIB DIIKUTI:
         1. JANGAN mengarang atau menyebutkan harga, jadwal, ketersediaan, atau nomor booking yang tidak ada dalam data.
         2. JANGAN membuat keputusan bisnis final (konfirmasi booking, pembatalan resmi, dll.).
         3. Jika informasi tidak tersedia, katakan dengan jujur bahwa kamu akan cek atau minta info lebih.
         4. Sapa pelanggan dengan nama jika tersedia.
-        5. Respons maksimal 3-4 kalimat — ringkas dan tepat sasaran.
+        5. Respons maksimal 3-4 kalimat - ringkas dan tepat sasaran.
         6. Bahasa Indonesia yang sopan dan natural.
         7. JANGAN tambahkan emoji kecuali memang diperlukan.
         8. Jika ada knowledge base di bawah, PRIORITASKAN informasinya. Jangan mengarang aturan, harga, atau jadwal di luar knowledge/data sistem.
@@ -170,7 +170,7 @@ class PromptBuilderService
 
         ATURAN:
         1. Kembalikan JSON valid SAJA.
-        2. Ringkasan harus faktual — hanya dari apa yang ada dalam percakapan.
+        2. Ringkasan harus faktual - hanya dari apa yang ada dalam percakapan.
         3. JANGAN menambahkan informasi yang tidak ada.
 
         FORMAT OUTPUT:
@@ -186,7 +186,9 @@ class PromptBuilderService
     // Private formatters
     // -------------------------------------------------------------------------
 
-    /** @param array<string, mixed> $context */
+    /**
+     * @param  array<string, mixed>  $context
+     */
     private function formatIntentUserPrompt(array $context): string
     {
         $lines = [];
@@ -217,10 +219,25 @@ class PromptBuilderService
             if (! empty($memory['preferred_destination'])) {
                 $lines[] = "Tujuan biasa: {$memory['preferred_destination']}";
             }
+
+            $hubspot = is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
+            if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_intent_tasks', true)) {
+                $lines[] = '';
+                $lines[] = '=== INFO CRM HUBSPOT ===';
+                if (! empty($hubspot['lifecycle_stage'])) {
+                    $lines[] = "Lifecycle stage: {$hubspot['lifecycle_stage']}";
+                }
+                if (! empty($hubspot['lead_status'])) {
+                    $lines[] = "Lead status: {$hubspot['lead_status']}";
+                }
+                if (! empty($hubspot['company'])) {
+                    $lines[] = "Perusahaan: {$hubspot['company']}";
+                }
+            }
+
             $lines[] = '';
         }
 
-        // Tahap 10: compact knowledge hint (only when config allows — keeps intent prompt lean)
         if (
             config('chatbot.knowledge.include_in_intent_tasks', false)
             && ! empty($context['knowledge_hint'])
@@ -232,7 +249,9 @@ class PromptBuilderService
         return implode("\n", $lines);
     }
 
-    /** @param array<string, mixed> $context */
+    /**
+     * @param  array<string, mixed>  $context
+     */
     private function formatExtractionUserPrompt(array $context): string
     {
         $lines = [];
@@ -261,6 +280,22 @@ class PromptBuilderService
             }
             $lines[] = '(Gunakan preferensi di atas HANYA jika pelanggan mengkonfirmasinya secara eksplisit dalam percakapan ini)';
             $lines[] = '';
+
+            $hubspot = is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
+            if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_extraction_tasks', true)) {
+                $lines[] = '=== KONTEKS CRM HUBSPOT ===';
+                if (! empty($hubspot['company'])) {
+                    $lines[] = "Perusahaan: {$hubspot['company']}";
+                }
+                if (! empty($hubspot['lifecycle_stage'])) {
+                    $lines[] = "Lifecycle stage: {$hubspot['lifecycle_stage']}";
+                }
+                if (! empty($hubspot['lead_status'])) {
+                    $lines[] = "Lead status: {$hubspot['lead_status']}";
+                }
+                $lines[] = '(Gunakan data CRM hanya sebagai konteks tambahan, jangan mengada-ada detail yang tidak disebut pelanggan.)';
+                $lines[] = '';
+            }
         }
 
         $intent = $context['intent_result']['intent'] ?? null;
@@ -268,7 +303,6 @@ class PromptBuilderService
             $lines[] = "Intent terdeteksi: {$intent}";
         }
 
-        // Tahap 10: compact knowledge hint (only when config allows)
         if (
             config('chatbot.knowledge.include_in_extraction_tasks', false)
             && ! empty($context['knowledge_hint'])
@@ -280,12 +314,13 @@ class PromptBuilderService
         return implode("\n", $lines);
     }
 
-    /** @param array<string, mixed> $context */
+    /**
+     * @param  array<string, mixed>  $context
+     */
     private function formatReplyUserPrompt(array $context): string
     {
         $lines = [];
 
-        // Tahap 10: knowledge context block injected first so AI sees it before query
         if (
             config('chatbot.knowledge.include_in_reply_tasks', true)
             && ! empty($context['knowledge_block'])
@@ -296,9 +331,33 @@ class PromptBuilderService
 
         $memory = $context['customer_memory'] ?? [];
         $name = $memory['primary_name'] ?? null;
+        $hubspot = is_array($memory['hubspot'] ?? null) ? $memory['hubspot'] : [];
 
         if ($name !== null) {
             $lines[] = "Nama pelanggan: {$name}";
+        }
+
+        if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_reply_tasks', true)) {
+            $lines[] = '=== INFO CRM HUBSPOT ===';
+            if (! empty($hubspot['company'])) {
+                $lines[] = "Perusahaan: {$hubspot['company']}";
+            }
+            if (! empty($hubspot['jobtitle'])) {
+                $lines[] = "Jabatan: {$hubspot['jobtitle']}";
+            }
+            if (! empty($hubspot['lifecycle_stage'])) {
+                $lines[] = "Lifecycle stage: {$hubspot['lifecycle_stage']}";
+            }
+            if (! empty($hubspot['lead_status'])) {
+                $lines[] = "Lead status: {$hubspot['lead_status']}";
+            }
+            if (! empty($hubspot['score'])) {
+                $lines[] = "HubSpot score: {$hubspot['score']}";
+            }
+            if (! empty($hubspot['source'])) {
+                $lines[] = "Sumber CRM: {$hubspot['source']}";
+            }
+            $lines[] = '';
         }
 
         $intent = $context['intent_result']['intent'] ?? 'unknown';
@@ -368,7 +427,9 @@ class PromptBuilderService
         return implode("\n", $lines);
     }
 
-    /** @param array<string, mixed> $context */
+    /**
+     * @param  array<string, mixed>  $context
+     */
     private function formatSummaryUserPrompt(array $context): string
     {
         $lines = [];
