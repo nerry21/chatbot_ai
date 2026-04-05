@@ -146,6 +146,13 @@ class ReplyOrchestratorService
             'booking_action' => $bookingDecision['action'] ?? null,
             'booking_status' => $bookingDecision['booking_status'] ?? null,
             'is_fallback' => (bool) ($replyResult['is_fallback'] ?? false),
+            'grounding_source' => $replyMeta['grounding_source'] ?? null,
+            'used_crm_facts' => is_array($replyResult['used_crm_facts'] ?? null)
+                ? array_values(array_unique($replyResult['used_crm_facts']))
+                : [],
+            'decision_trace' => is_array($replyMeta['decision_trace'] ?? null)
+                ? $replyMeta['decision_trace']
+                : [],
         ];
     }
 
@@ -178,16 +185,15 @@ class ReplyOrchestratorService
             faqResult: $faqResult,
         );
 
-        $hallucinationReport = $this->hallucinationGuardService->inspectGroundingRisk(
-            replyResult: $grounded,
-            context: $context,
-            orchestrationSnapshot: $orchestrationSnapshot,
-        );
-
-        $afterHallucination = $this->hallucinationGuardService->enforceHallucinationFallback(
-            replyResult: $grounded,
-            riskReport: $hallucinationReport,
-            context: $context,
+        $afterHallucination = $this->hallucinationGuardService->guardReply(
+            conversation: $context['conversation'],
+            intentResult: $intentResult,
+            reply: $grounded,
+            context: [
+                ...$context,
+                'faq_result' => $faqResult ?? [],
+                'knowledge_hits' => $knowledgeHits,
+            ],
         );
 
         $policyReport = $this->policyGuardService->evaluatePolicyCompliance(
@@ -212,9 +218,7 @@ class ReplyOrchestratorService
         $final['reply'] = (string) ($final['reply'] ?? $final['text'] ?? '');
         $final['text'] = $final['reply'];
         $final['message_type'] = $final['message_type'] ?? 'text';
-        $final['outbound_payload'] = is_array($final['outbound_payload'] ?? null)
-            ? $final['outbound_payload']
-            : [];
+        $final['outbound_payload'] = is_array($final['outbound_payload'] ?? null) ? $final['outbound_payload'] : [];
         $final['used_crm_facts'] = array_values(array_unique(array_filter(
             is_array($final['used_crm_facts'] ?? null) ? $final['used_crm_facts'] : [],
         )));
@@ -224,18 +228,30 @@ class ReplyOrchestratorService
         $final['grounding_notes'] = array_values(array_unique(array_filter(
             is_array($final['grounding_notes'] ?? null) ? $final['grounding_notes'] : [],
         )));
+
+        $existingMeta = is_array($final['meta'] ?? null) ? $final['meta'] : [];
+        $decisionTrace = [];
+
+        foreach ([
+            $existingMeta['decision_trace'] ?? [],
+            $afterHallucination['meta']['decision_trace'] ?? [],
+            $policyReport['decision_trace_policy'] ?? [],
+        ] as $tracePart) {
+            if (is_array($tracePart) && $tracePart !== []) {
+                $decisionTrace[] = $tracePart;
+            }
+        }
+
         $final['meta'] = array_merge(
-            is_array($final['meta'] ?? null) ? $final['meta'] : [],
+            $existingMeta,
             [
                 'hardening_applied' => true,
-                'hallucination_risk_level' => $hallucinationReport['risk_level'] ?? 'unknown',
-                'hallucination_risk_flags' => $hallucinationReport['risk_flags'] ?? [],
+                'decision_source' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
                 'policy_violations' => $policyReport['violations'] ?? [],
-                'decision_source' => (is_array($final['meta'] ?? null) ? ($final['meta']['decision_source'] ?? null) : null)
-                    ?? (is_array($final['meta'] ?? null) ? ($final['meta']['source'] ?? null) : null)
-                    ?? 'reply_hardening',
+                'decision_trace' => $decisionTrace,
             ],
         );
+
         $final['is_fallback'] = (bool) ($final['is_fallback'] ?? str_contains((string) ($final['meta']['source'] ?? ''), 'fallback'));
 
         return $final;

@@ -36,29 +36,21 @@ class CrmOrchestrationSnapshotService
             booking: $booking,
         );
 
-        $conversationState = is_array($contextPayload['conversation_state'] ?? null)
-            ? $contextPayload['conversation_state']
-            : [];
-
-        $resolvedContext = is_array($contextPayload['resolved_context'] ?? null)
-            ? $contextPayload['resolved_context']
-            : [];
-
-        $knownEntities = is_array($contextPayload['known_entities'] ?? null)
-            ? $contextPayload['known_entities']
-            : [];
-
-        $customerMemory = is_array($contextPayload['customer_memory'] ?? null)
-            ? $contextPayload['customer_memory']
-            : [];
+        $conversationState = is_array($contextPayload['conversation_state'] ?? null) ? $contextPayload['conversation_state'] : [];
+        $resolvedContext = is_array($contextPayload['resolved_context'] ?? null) ? $contextPayload['resolved_context'] : [];
+        $knownEntities = is_array($contextPayload['known_entities'] ?? null) ? $contextPayload['known_entities'] : [];
+        $customerMemory = is_array($contextPayload['customer_memory'] ?? null) ? $contextPayload['customer_memory'] : [];
+        $decisionTrace = is_array($contextPayload['decision_trace'] ?? null) ? $contextPayload['decision_trace'] : [];
+        $understandingMeta = is_array($contextPayload['understanding_meta'] ?? null) ? $contextPayload['understanding_meta'] : [];
 
         $snapshot = [
-            'snapshot_version' => 1,
+            'snapshot_version' => 2,
             'generated_at' => now()->toIso8601String(),
 
             'customer' => $this->clean($crmContext['customer'] ?? []),
             'hubspot' => $this->clean($crmContext['hubspot'] ?? []),
             'lead_pipeline' => $this->clean($crmContext['lead_pipeline'] ?? []),
+
             'conversation' => $this->clean(array_merge(
                 is_array($crmContext['conversation'] ?? null) ? $crmContext['conversation'] : [],
                 [
@@ -67,13 +59,14 @@ class CrmOrchestrationSnapshotService
                     'needs_human' => (bool) ($conversation->needs_human ?? false),
                 ],
             )),
+
             'booking' => $this->clean(array_merge(
                 is_array($crmContext['booking'] ?? null) ? $crmContext['booking'] : [],
-                $bookingDecision !== null ? [
-                    'decision' => $this->clean($bookingDecision),
-                ] : [],
+                $bookingDecision !== null ? ['decision' => $this->clean($bookingDecision)] : [],
             )),
+
             'escalation' => $this->clean($crmContext['escalation'] ?? []),
+
             'business_flags' => $this->clean(array_merge(
                 is_array($crmContext['business_flags'] ?? null) ? $crmContext['business_flags'] : [],
                 [
@@ -96,14 +89,14 @@ class CrmOrchestrationSnapshotService
 
             'ai_decision' => $this->clean([
                 'intent' => $intentResult['intent'] ?? null,
-                'confidence' => isset($intentResult['confidence'])
-                    ? (float) $intentResult['confidence']
-                    : null,
+                'confidence' => isset($intentResult['confidence']) ? (float) $intentResult['confidence'] : null,
                 'reasoning_short' => $intentResult['reasoning_short'] ?? null,
                 'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
                 'clarification_question' => $intentResult['clarification_question'] ?? null,
                 'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
                 'entity_result' => $entityResult,
+                'understanding_meta' => $understandingMeta,
+                'decision_trace' => $decisionTrace,
             ]),
         ];
 

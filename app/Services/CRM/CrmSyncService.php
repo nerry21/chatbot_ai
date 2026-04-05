@@ -2,7 +2,6 @@
 
 namespace App\Services\CRM;
 
-use App\Jobs\RetryDecisionNoteToCrmJob;
 use App\Models\Conversation;
 use App\Models\CrmContact;
 use App\Models\Customer;
@@ -14,15 +13,8 @@ class CrmSyncService
         private readonly HubSpotService $hubspot,
     ) {}
 
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
-
     /**
-     * Ensure a CrmContact record exists for the customer and attempt to sync
-     * it to the external CRM provider (HubSpot).
-     *
-     * @return array{status: string, external_id?: string, error?: string}
+     * @return array{status:string, external_id?:string, error?:string, reason?:string}
      */
     public function syncCustomer(Customer $customer): array
     {
@@ -32,28 +24,21 @@ class CrmSyncService
                 ['provider' => 'hubspot', 'sync_status' => 'pending'],
             );
 
-            $result = $this->hubspot->upsertContact(
-                $this->buildContactPayload($customer)
-            );
-
-            if ($result['status'] === 'success') {
-                $crmContact->markSynced(
-                    $result['contact_id'],
-                    $result['data'] ?? [],
-                );
-
-                return ['status' => 'synced', 'external_id' => $result['contact_id']];
-            }
-
-            if ($result['status'] === 'skipped') {
+            if (! $this->hubspot->isEnabled()) {
                 $crmContact->markLocalOnly();
 
-                return ['status' => 'local_only'];
+                return ['status' => 'local_only', 'reason' => 'hubspot_disabled'];
             }
 
-            $crmContact->markFailed($result['error'] ?? 'unknown');
+            $payload = $this->buildContactPayload($customer);
+            $result = $this->hubspot->upsertContact($payload);
 
-            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+            return $this->handleContactSyncResult(
+                customer: $customer,
+                crmContact: $crmContact,
+                result: $result,
+                fallbackPayload: ['properties' => $payload],
+            );
         } catch (\Throwable $e) {
             Log::error('[CrmSync] syncCustomer failed', [
                 'customer_id' => $customer->id,
@@ -65,10 +50,8 @@ class CrmSyncService
     }
 
     /**
-     * Sync customer contact plus AI/CRM runtime properties to the external CRM.
-     *
      * @param  array<string, mixed>  $context
-     * @return array{status: string, reason?: string, error?: string}
+     * @return array{status:string, reason?:string, error?:string, unknown_properties?:array<int,string>, applied_properties?:array<string,mixed>, removed_properties?:array<int,string>}
      */
     public function syncCustomerSnapshot(Customer $customer, array $context = []): array
     {
@@ -76,74 +59,51 @@ class CrmSyncService
             $properties = $this->buildContactPayload($customer, $context);
 
             if ($properties === []) {
-                Log::info('[CrmSync] syncCustomerSnapshot result', [
-                    'customer_id' => $customer->id,
-                    'status' => 'skipped',
-                    'reason' => 'empty_properties',
-                ]);
-
                 return ['status' => 'skipped', 'reason' => 'empty_properties'];
             }
 
-            $crmContact = CrmContact::where('customer_id', $customer->id)->first();
+            $crmContact = $this->ensureCrmContact($customer);
 
             if ($crmContact === null || empty($crmContact->external_contact_id)) {
-                $seedResult = $this->syncCustomer($customer);
-                $crmContact = CrmContact::where('customer_id', $customer->id)->first();
-
-                if ($crmContact === null || empty($crmContact->external_contact_id)) {
-                    Log::info('[CrmSync] syncCustomerSnapshot result', [
-                        'customer_id' => $customer->id,
-                        'status' => 'skipped',
-                        'reason' => 'no_crm_contact',
-                        'seed_status' => $seedResult['status'] ?? null,
-                    ]);
-
-                    return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
-                }
-            }
-
-            if (! method_exists($this->hubspot, 'updateContactProperties')) {
-                Log::info('[CrmSync] syncCustomerSnapshot result', [
-                    'customer_id' => $customer->id,
-                    'status' => 'skipped',
-                    'reason' => 'update_contact_properties_not_supported',
-                ]);
-
-                return ['status' => 'skipped', 'reason' => 'update_contact_properties_not_supported'];
+                return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
             }
 
             $result = $this->hubspot->updateContactProperties(
-                $crmContact->external_contact_id,
+                (string) $crmContact->external_contact_id,
                 $properties,
             );
 
             if (($result['status'] ?? null) === 'success') {
-                $crmContact->markSynced(
-                    $crmContact->external_contact_id,
-                    is_array($result['data'] ?? null) ? $result['data'] : ($crmContact->sync_payload ?? []),
+                $this->persistSuccessfulSnapshot(
+                    crmContact: $crmContact,
+                    resultData: is_array($result['data'] ?? null) ? $result['data'] : [],
+                    appliedProperties: is_array($result['applied_properties'] ?? null) ? $result['applied_properties'] : $properties,
                 );
 
-                Log::info('[CrmSync] syncCustomerSnapshot success', [
-                    'customer_id' => $customer->id,
-                    'property_keys' => array_keys($properties),
-                ]);
-
-                return ['status' => 'success'];
+                return [
+                    'status' => 'success',
+                    'unknown_properties' => is_array($result['unknown_properties'] ?? null) ? $result['unknown_properties'] : [],
+                    'applied_properties' => is_array($result['applied_properties'] ?? null) ? $result['applied_properties'] : $properties,
+                    'removed_properties' => is_array($result['removed_properties'] ?? null) ? $result['removed_properties'] : [],
+                ];
             }
 
-            Log::info('[CrmSync] syncCustomerSnapshot result', [
-                'customer_id' => $customer->id,
-                'status' => $result['status'] ?? null,
-            ]);
-
             if (($result['status'] ?? null) === 'skipped') {
-                return ['status' => 'skipped', 'reason' => $result['reason'] ?? 'unknown'];
+                return [
+                    'status' => 'skipped',
+                    'reason' => $result['reason'] ?? 'unknown',
+                    'unknown_properties' => is_array($result['unknown_properties'] ?? null) ? $result['unknown_properties'] : [],
+                    'removed_properties' => is_array($result['removed_properties'] ?? null) ? $result['removed_properties'] : [],
+                ];
             }
 
             $crmContact->markFailed($result['error'] ?? 'unknown');
 
-            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+            return [
+                'status' => 'failed',
+                'error' => $result['error'] ?? 'unknown',
+                'unknown_properties' => is_array($result['unknown_properties'] ?? null) ? $result['unknown_properties'] : [],
+            ];
         } catch (\Throwable $e) {
             Log::error('[CrmSync] syncCustomerSnapshot exception', [
                 'customer_id' => $customer->id,
@@ -155,72 +115,27 @@ class CrmSyncService
     }
 
     /**
-     * Append the conversation summary as a note on the customer's CRM contact.
-     * Skipped gracefully when HubSpot is disabled or the contact has not been
-     * synced yet.
-     *
-     * @return array{status: string, reason?: string, error?: string}
+     * @return array{status:string, reason?:string, error?:string}
      */
     public function syncConversationSummary(Customer $customer, Conversation $conversation): array
     {
         try {
-            if (empty($conversation->summary)) {
-                Log::info('[CrmSync] syncConversationSummary skipped', [
-                    'customer_id' => $customer->id,
-                    'conversation_id' => $conversation->id,
-                    'reason' => 'no_summary',
-                ]);
-
+            if (trim((string) $conversation->summary) === '') {
                 return ['status' => 'skipped', 'reason' => 'no_summary'];
             }
 
-            $crmContact = CrmContact::where('customer_id', $customer->id)->first();
+            $crmContact = $this->ensureCrmContact($customer, seedIfMissing: false);
 
             if ($crmContact === null || empty($crmContact->external_contact_id)) {
-                Log::info('[CrmSync] syncConversationSummary skipped', [
-                    'customer_id' => $customer->id,
-                    'conversation_id' => $conversation->id,
-                    'reason' => 'no_crm_contact',
-                ]);
-
                 return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
             }
 
-            if (! method_exists($this->hubspot, 'appendNote')) {
-                Log::info('[CrmSync] syncConversationSummary skipped', [
-                    'customer_id' => $customer->id,
-                    'conversation_id' => $conversation->id,
-                    'reason' => 'append_note_not_supported',
-                ]);
-
-                return ['status' => 'skipped', 'reason' => 'append_note_not_supported'];
-            }
-
             $note = $this->buildSummaryNote($customer, $conversation);
-            $result = $this->hubspot->appendNote($crmContact->external_contact_id, $note);
+            $result = $this->hubspot->appendNote((string) $crmContact->external_contact_id, $note);
 
             if (in_array($result['status'] ?? null, ['success', 'skipped'], true)) {
-                if (($result['status'] ?? null) === 'success') {
-                    Log::info('[CrmSync] syncConversationSummary success', [
-                        'customer_id' => $customer->id,
-                        'conversation_id' => $conversation->id,
-                    ]);
-                } else {
-                    Log::info('[CrmSync] syncConversationSummary skipped', [
-                        'customer_id' => $customer->id,
-                        'conversation_id' => $conversation->id,
-                        'reason' => $result['reason'] ?? 'unknown',
-                    ]);
-                }
-
-                return ['status' => $result['status']];
+                return ['status' => (string) $result['status'], 'reason' => $result['reason'] ?? null];
             }
-
-            Log::warning('[CrmSync] syncConversationSummary note failed', [
-                'customer_id' => $customer->id,
-                'conversation_id' => $conversation->id,
-                'result' => $result,
-            ]);
 
             return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
         } catch (\Throwable $e) {
@@ -235,9 +150,8 @@ class CrmSyncService
     }
 
     /**
-     * Append decision snapshot AI sebagai note ke CRM contact.
-     *
-     * @return array{status: string, reason?: string, error?: string}
+     * @param  array<string, mixed>  $decisionTrace
+     * @return array{status:string, reason?:string, error?:string}
      */
     public function appendConversationDecisionNote(
         Customer $customer,
@@ -245,78 +159,31 @@ class CrmSyncService
         array $decisionTrace = [],
     ): array {
         try {
-            $note = trim($note);
-
-            if ($note === '') {
-                Log::info('[CrmSync] appendConversationDecisionNote result', [
-                    'customer_id' => $customer->id,
-                    'status' => 'skipped',
-                    'reason' => 'empty_note',
-                    'trace_id' => $decisionTrace['trace_id'] ?? null,
-                ]);
-
+            if (trim($note) === '') {
                 return ['status' => 'skipped', 'reason' => 'empty_note'];
             }
 
-            if (mb_strlen($note) > 60000) {
-                $note = mb_substr($note, 0, 60000)."\n\n[truncated]";
-            }
-
-            $crmContact = CrmContact::where('customer_id', $customer->id)->first();
+            $crmContact = $this->ensureCrmContact($customer, seedIfMissing: false);
 
             if ($crmContact === null || empty($crmContact->external_contact_id)) {
-                $seedResult = $this->syncCustomer($customer);
-                $crmContact = CrmContact::where('customer_id', $customer->id)->first();
-
-                if ($crmContact === null || empty($crmContact->external_contact_id)) {
-                    RetryDecisionNoteToCrmJob::dispatch($customer->id, $note)->delay(now()->addMinutes(5));
-
-                    Log::info('[CrmSync] appendConversationDecisionNote result', [
-                        'customer_id' => $customer->id,
-                        'status' => 'queued_retry',
-                        'reason' => 'no_crm_contact',
-                        'seed_status' => $seedResult['status'] ?? null,
-                        'trace_id' => $decisionTrace['trace_id'] ?? null,
-                    ]);
-
-                    return ['status' => 'queued_retry', 'reason' => 'no_crm_contact'];
-                }
+                return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
             }
 
-            if (! method_exists($this->hubspot, 'appendNote')) {
-                Log::info('[CrmSync] appendConversationDecisionNote result', [
-                    'customer_id' => $customer->id,
-                    'status' => 'skipped',
-                    'reason' => 'append_note_not_supported',
-                    'trace_id' => $decisionTrace['trace_id'] ?? null,
-                ]);
-
-                return ['status' => 'skipped', 'reason' => 'append_note_not_supported'];
-            }
-
-            $result = $this->hubspot->appendNote($crmContact->external_contact_id, $note);
+            $result = $this->hubspot->appendNote((string) $crmContact->external_contact_id, $note);
 
             Log::info('[CrmSync] appendConversationDecisionNote result', [
                 'customer_id' => $customer->id,
                 'status' => $result['status'] ?? null,
                 'trace_id' => $decisionTrace['trace_id'] ?? null,
                 'final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
-                'used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
             ]);
 
             if (in_array($result['status'] ?? null, ['success', 'skipped'], true)) {
-                return ['status' => $result['status']];
+                return ['status' => (string) $result['status'], 'reason' => $result['reason'] ?? null];
             }
 
-            RetryDecisionNoteToCrmJob::dispatch($customer->id, $note)->delay(now()->addMinutes(5));
-
-            return [
-                'status' => 'queued_retry',
-                'error' => $result['error'] ?? 'unknown',
-            ];
+            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
         } catch (\Throwable $e) {
-            RetryDecisionNoteToCrmJob::dispatch($customer->id, trim($note))->delay(now()->addMinutes(5));
-
             Log::error('[CrmSync] appendConversationDecisionNote exception', [
                 'customer_id' => $customer->id,
                 'trace_id' => $decisionTrace['trace_id'] ?? null,
@@ -327,19 +194,13 @@ class CrmSyncService
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
-
     /**
-     * Build the HubSpot property map for a customer contact.
-     *
      * @param  array<string, mixed>  $context
      * @return array<string, mixed>
      */
     private function buildContactPayload(Customer $customer, array $context = []): array
     {
-        $payload = array_filter([
+        return array_filter([
             'firstname' => $customer->name ?: null,
             'phone' => $customer->phone_e164 ?: null,
             'email' => $customer->email ?: null,
@@ -350,58 +211,114 @@ class CrmSyncService
             'needs_human_followup' => $this->normalizeBooleanString($context['needs_human_followup'] ?? null),
             'admin_takeover_active' => $this->normalizeBooleanString($context['admin_takeover_active'] ?? null),
             'last_whatsapp_interaction_at' => $this->normalizeCrmValue($context['last_whatsapp_interaction_at'] ?? null),
-        ], static fn ($value) => $value !== null && $value !== '');
-
-        return $this->filterSupportedHubspotProperties($payload);
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
     }
 
     private function buildSummaryNote(Customer $customer, Conversation $conversation): string
     {
+        $lastMessageAt = $conversation->last_message_at?->format('d M Y H:i').' WIB';
+
         return implode("\n", array_filter([
             '=== Ringkasan Percakapan ===',
-            'Pelanggan : ' . ($customer->name ?? 'Tidak diketahui'),
-            'Nomor     : ' . $customer->phone_e164,
-            'Percakapan: #' . $conversation->id,
-            'Waktu     : ' . ($conversation->last_message_at?->format('d M Y H:i') . ' WIB'),
+            'Pelanggan : '.($customer->name ?? 'Tidak diketahui'),
+            'Nomor     : '.($customer->phone_e164 ?? '-'),
+            'Percakapan: #'.$conversation->id,
+            'Waktu     : '.($lastMessageAt ?: '-'),
             '',
-            $conversation->summary,
-        ]));
+            trim((string) $conversation->summary),
+        ], static fn (mixed $value): bool => $value !== null && $value !== ''));
+    }
+
+    private function ensureCrmContact(Customer $customer, bool $seedIfMissing = true): ?CrmContact
+    {
+        $crmContact = CrmContact::where('customer_id', $customer->id)->first();
+
+        if ($crmContact !== null && filled($crmContact->external_contact_id)) {
+            return $crmContact;
+        }
+
+        if (! $seedIfMissing) {
+            return $crmContact;
+        }
+
+        $seedResult = $this->syncCustomer($customer);
+
+        Log::info('[CrmSync] ensureCrmContact seed result', [
+            'customer_id' => $customer->id,
+            'status' => $seedResult['status'] ?? null,
+        ]);
+
+        return CrmContact::where('customer_id', $customer->id)->first();
     }
 
     /**
-     * Hindari kegagalan total saat custom property HubSpot belum tersedia.
-     *
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $fallbackPayload
+     * @return array{status:string, external_id?:string, error?:string, reason?:string}
      */
-    private function filterSupportedHubspotProperties(array $payload): array
-    {
-        $supported = array_filter(array_map(
-            static fn ($value) => is_string($value) ? trim($value) : null,
-            (array) config('chatbot.crm.hubspot.allowed_contact_properties', [
-                'firstname',
-                'phone',
-                'email',
-                'last_ai_intent',
-                'last_ai_summary',
-                'customer_interest_topic',
-                'ai_sentiment',
-                'needs_human_followup',
-                'admin_takeover_active',
-                'last_whatsapp_interaction_at',
-            ]),
-        ));
+    private function handleContactSyncResult(
+        Customer $customer,
+        CrmContact $crmContact,
+        array $result,
+        array $fallbackPayload = [],
+    ): array {
+        if (($result['status'] ?? null) === 'success') {
+            $crmContact->markSynced(
+                (string) ($result['contact_id'] ?? ''),
+                is_array($result['data'] ?? null) ? $result['data'] : $fallbackPayload,
+            );
 
-        $filtered = array_intersect_key($payload, array_flip($supported));
-        $dropped = array_values(array_diff(array_keys($payload), array_keys($filtered)));
-
-        if ($dropped !== []) {
-            Log::warning('[CrmSync] unsupported HubSpot contact properties dropped', [
-                'dropped_properties' => $dropped,
-            ]);
+            return [
+                'status' => 'synced',
+                'external_id' => (string) ($result['contact_id'] ?? ''),
+            ];
         }
 
-        return $filtered;
+        if (($result['status'] ?? null) === 'skipped') {
+            $crmContact->markLocalOnly();
+
+            return [
+                'status' => 'local_only',
+                'reason' => $result['reason'] ?? 'skipped',
+            ];
+        }
+
+        $crmContact->markFailed($result['error'] ?? 'unknown');
+
+        Log::warning('[CrmSync] contact sync failed', [
+            'customer_id' => $customer->id,
+            'status' => $result['status'] ?? null,
+            'error' => $result['error'] ?? null,
+        ]);
+
+        return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $resultData
+     * @param  array<string, mixed>  $appliedProperties
+     */
+    private function persistSuccessfulSnapshot(
+        CrmContact $crmContact,
+        array $resultData = [],
+        array $appliedProperties = [],
+    ): void {
+        $payload = is_array($crmContact->sync_payload ?? null) ? $crmContact->sync_payload : [];
+
+        $payload['properties'] = array_merge(
+            is_array($payload['properties'] ?? null) ? $payload['properties'] : [],
+            $appliedProperties,
+            is_array($resultData['properties'] ?? null) ? $resultData['properties'] : [],
+        );
+
+        if (($resultData['id'] ?? null) !== null) {
+            $payload['id'] = $resultData['id'];
+        }
+
+        $crmContact->markSynced(
+            (string) $crmContact->external_contact_id,
+            $payload,
+        );
     }
 
     private function normalizeCrmValue(mixed $value): string|bool|int|float|null

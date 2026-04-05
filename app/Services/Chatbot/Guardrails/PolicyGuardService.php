@@ -320,54 +320,75 @@ class PolicyGuardService
 
         $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
         $intent = (string) ($intentResult['intent'] ?? 'unknown');
+        $meta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
 
         $violations = [];
-        $isCompliant = true;
+        $decisionAction = 'allow';
+        $blockAutoReply = false;
 
-        if (($flags['admin_takeover_active'] ?? false) === true && str_contains(mb_strtolower($reply, 'UTF-8'), 'saya akan putuskan')) {
-            $violations[] = 'admin_takeover_policy_violation';
-            $isCompliant = false;
+        if (($flags['admin_takeover_active'] ?? false) === true) {
+            $decisionAction = 'handoff';
+            $blockAutoReply = true;
+            $violations[] = 'admin_takeover_active';
         }
 
-        if (($flags['bot_paused'] ?? false) === true && (($replyResult['should_escalate'] ?? false) !== true)) {
-            $violations[] = 'bot_paused_not_respected';
-            $isCompliant = false;
+        if (($flags['bot_paused'] ?? false) === true) {
+            $decisionAction = 'handoff';
+            $blockAutoReply = true;
+            $violations[] = 'bot_paused_active';
         }
 
-        if (($conversation['needs_human'] ?? false) === true && (($replyResult['should_escalate'] ?? false) !== true)) {
-            $violations[] = 'needs_human_not_escalated';
-            $isCompliant = false;
+        if (($conversation['needs_human'] ?? false) === true || ($flags['needs_human_followup'] ?? false) === true) {
+            $decisionAction = 'handoff';
+            $violations[] = 'needs_human_followup';
         }
 
-        if (($escalation['has_open_escalation'] ?? false) === true && (($replyResult['should_escalate'] ?? false) !== true)) {
-            $violations[] = 'open_escalation_not_respected';
-            $isCompliant = false;
+        if (($escalation['has_open_escalation'] ?? false) === true) {
+            $decisionAction = 'handoff';
+            $violations[] = 'open_escalation_active';
         }
 
-        if ($this->isSensitiveIntent(['intent' => $intent]) && (($replyResult['should_escalate'] ?? false) !== true)) {
-            $violations[] = 'sensitive_intent_without_handoff';
-            $isCompliant = false;
+        if ($this->isSensitiveIntent(['intent' => $intent])) {
+            $decisionAction = 'handoff';
+            $violations[] = 'sensitive_intent';
         }
 
         if (
             in_array(($leadPipeline['stage'] ?? null), ['complaint', 'refund', 'legal', 'high_risk'], true)
-            && (($replyResult['should_escalate'] ?? false) !== true)
         ) {
-            $violations[] = 'high_risk_pipeline_without_handoff';
-            $isCompliant = false;
+            $decisionAction = 'handoff';
+            $violations[] = 'crm_high_risk_pipeline_stage';
         }
 
         if (
             ($orchestrationSnapshot['reply_force_handoff'] ?? false) === true
-            && (($replyResult['meta']['force_handoff'] ?? false) !== true)
+            && (($replyResult['should_escalate'] ?? false) !== true)
         ) {
+            $decisionAction = 'handoff';
             $violations[] = 'orchestration_handoff_not_respected';
-            $isCompliant = false;
+        }
+
+        if ($reply === '') {
+            $violations[] = 'empty_reply_after_orchestration';
         }
 
         return [
-            'is_compliant' => $isCompliant,
+            'is_compliant' => $violations === [],
             'violations' => array_values(array_unique($violations)),
+            'decision_trace_policy' => [
+                'stage' => 'policy_guard',
+                'action' => $decisionAction,
+                'blocked' => $blockAutoReply,
+                'force_handoff' => $decisionAction === 'handoff',
+                'reasons' => array_values(array_unique($violations)),
+                'reply_source' => $meta['decision_source'] ?? $meta['source'] ?? null,
+                'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                    crmBusinessFlags: $flags,
+                    crmEscalation: $escalation,
+                    crmLeadPipeline: $leadPipeline,
+                ),
+                'evaluated_at' => now()->toIso8601String(),
+            ],
         ];
     }
 
@@ -719,11 +740,17 @@ class PolicyGuardService
         array $crmLeadPipeline,
         ?string $crmSource = null,
     ): array {
+        $normalizedReasons = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $reason): string => trim((string) $reason),
+            $reasons,
+        ))));
+
         return [
             'stage' => 'policy_guard',
             'action' => $action,
-            'blocked' => $action !== 'allow',
-            'reasons' => array_values(array_unique($reasons)),
+            'blocked' => str_starts_with($action, 'blocked_'),
+            'force_handoff' => in_array($action, ['handoff', 'clarify', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+            'reasons' => $normalizedReasons,
             'crm_policy_source' => $crmSource,
             'crm_policy_snapshot' => $this->crmPolicySnapshot(
                 crmBusinessFlags: $crmBusinessFlags,

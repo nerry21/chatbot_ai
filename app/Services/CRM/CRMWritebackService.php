@@ -6,11 +6,7 @@ use App\Enums\IntentType;
 use App\Jobs\EscalateConversationToAdminJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
-use App\Models\Customer;
-use App\Models\Escalation;
-use App\Services\CRM\CrmDecisionTraceBuilderService;
 use App\Support\WaLog;
-use Illuminate\Support\Facades\DB;
 
 class CRMWritebackService
 {
@@ -23,11 +19,6 @@ class CRMWritebackService
     ) {}
 
     /**
-     * Tulis balik hasil keputusan AI ke CRM dalam satu alur terpadu.
-     *
-     * Dengan ini, LLM tidak hanya "membaca CRM", tetapi juga
-     * mengembalikan hasil reasoning operasional ke CRM.
-     *
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $summaryResult
      * @param  array<string, mixed>  $finalReply
@@ -74,24 +65,27 @@ class CRMWritebackService
             ? $crmContext['escalation']
             : [];
 
-        $intent = is_string($intentResult['intent'] ?? null)
-            ? trim((string) $intentResult['intent'])
-            : 'unknown';
+        $builderContext = $contextSnapshot;
+        if (is_array($contextSnapshot['decision_trace'] ?? null)) {
+            $builderContext = array_merge($builderContext, (array) $contextSnapshot['decision_trace']);
+        }
 
-        $intentEnum = $intent !== '' ? IntentType::tryFrom($intent) : null;
-        $leadStageBefore = $crmLeadPipeline['stage'] ?? null;
-
-        $contactSync = $this->crmSyncService->syncCustomerSnapshot(
+        $decisionTrace = $this->decisionTraceBuilder->build(
             customer: $customer,
-            context: [
-                'last_ai_intent' => $intentResult['intent'] ?? null,
-                'last_ai_summary' => $summaryResult['summary'] ?? null,
-                'customer_interest_topic' => $this->deriveInterestTopic($intentResult, $summaryResult, $finalReply),
-                'ai_sentiment' => $summaryResult['sentiment'] ?? null,
-                'needs_human_followup' => false,
-                'admin_takeover_active' => (bool) ($crmContext['business_flags']['admin_takeover_active'] ?? false),
-                'last_whatsapp_interaction_at' => now()->toIso8601String(),
-            ],
+            conversation: $conversation,
+            intentResult: $intentResult,
+            summaryResult: $summaryResult,
+            finalReply: $finalReply,
+            contextSnapshot: $builderContext,
+        );
+
+        $needsEscalation = $this->needsEscalation(
+            conversation: $conversation,
+            intentResult: $intentResult,
+            summaryResult: $summaryResult,
+            finalReply: $finalReply,
+            crmConversation: $crmConversation,
+            crmEscalation: $crmEscalation,
         );
 
         $summarySync = ['status' => 'skipped', 'reason' => 'no_summary'];
@@ -102,16 +96,6 @@ class CRMWritebackService
             );
         }
 
-        $decisionTrace = $this->decisionTraceBuilder->build(
-            customer: $customer,
-            conversation: $conversation,
-            intentResult: $intentResult,
-            summaryResult: $summaryResult,
-            finalReply: $finalReply,
-            contextSnapshot: $contextSnapshot,
-        );
-
-        $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
         $decisionNote = $this->decisionNoteBuilder->build(
             customer: $customer,
             conversation: $conversation,
@@ -122,6 +106,7 @@ class CRMWritebackService
             decisionTrace: $decisionTrace,
         );
 
+        $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
         if (trim($decisionNote) !== '') {
             $decisionNoteSync = $this->crmSyncService->appendConversationDecisionNote(
                 customer: $customer,
@@ -130,14 +115,9 @@ class CRMWritebackService
             );
         }
 
-        $needsEscalation =
-            (bool) ($intentResult['handoff_recommended'] ?? false)
-            || (bool) ($intentResult['needs_human_review'] ?? false)
-            || (bool) ($crmEscalation['has_open_escalation'] ?? false)
-            || (bool) ($crmConversation['needs_human'] ?? false)
-            || ($intentEnum !== null && $intentEnum->requiresHuman())
-            || (($finalReply['meta']['force_handoff'] ?? false) === true)
-            || (($summaryResult['needs_human_followup'] ?? false) === true);
+        $intent = is_string($intentResult['intent'] ?? null)
+            ? trim((string) $intentResult['intent'])
+            : 'unknown';
 
         $tags = $this->applyDecisionTags(
             customer: $customer,
@@ -175,55 +155,25 @@ class CRMWritebackService
             ],
         );
 
-        if ($needsEscalation) {
-            $conversation->forceFill([
-                'needs_human' => true,
-            ])->save();
-
-            try {
-                EscalateConversationToAdminJob::dispatch(
-                    $conversation->id,
-                    (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
-                    'normal',
-                );
-            } catch (\Throwable $e) {
-                WaLog::error('[CRMWriteback] Escalation dispatch failed - applying inline fallback', [
-                    'conversation_id' => $conversation->id,
-                    'error' => $e->getMessage(),
-                ]);
-
-                $existingEscalation = Escalation::where('conversation_id', $conversation->id)
-                    ->where('status', 'open')
-                    ->first();
-
-                if ($existingEscalation === null) {
-                    Escalation::create([
-                        'conversation_id' => $conversation->id,
-                        'reason' => (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
-                        'priority' => 'normal',
-                        'status' => 'open',
-                        'summary' => $conversation->summary,
-                    ]);
-                }
-            }
+        if ($needsEscalation && (($crmEscalation['has_open_escalation'] ?? false) !== true)) {
+            EscalateConversationToAdminJob::dispatch(
+                $conversation->id,
+                (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
+                'normal',
+            );
         }
 
         WaLog::info('[CRMWriteback] CRM + LLM writeback complete', [
             'conversation_id' => $conversation->id,
             'customer_id' => $customer->id,
             'intent' => $intent,
-            'lead_stage_before' => $leadStageBefore,
+            'lead_stage_before' => $crmLeadPipeline['stage'] ?? null,
             'lead_stage_after' => $lead?->stage,
             'tags' => $tags,
             'contact_sync' => $contactSync['status'] ?? null,
             'summary_sync' => $summarySync['status'] ?? null,
             'decision_note_sync' => $decisionNoteSync['status'] ?? null,
             'needs_escalation' => $needsEscalation,
-            'crm_snapshot_present' => ! empty($crmContext),
-            'orchestration_present' => ! empty($contextSnapshot['orchestration']),
-            'final_reply_source' => $finalReply['meta']['source'] ?? null,
-            'final_reply_grounding_source' => $finalReply['meta']['grounding_source'] ?? null,
-            'final_reply_force_handoff' => $finalReply['meta']['force_handoff'] ?? false,
             'decision_trace_id' => $decisionTrace['trace_id'] ?? null,
             'decision_trace_final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
             'decision_trace_used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
@@ -254,9 +204,7 @@ class CRMWritebackService
      */
     private function shouldSyncSummary(array $summaryResult): bool
     {
-        $summary = trim((string) ($summaryResult['summary'] ?? ''));
-
-        return $summary !== '';
+        return trim((string) ($summaryResult['summary'] ?? '')) !== '';
     }
 
     /**
@@ -267,7 +215,7 @@ class CRMWritebackService
      * @return array<int, string>
      */
     private function applyDecisionTags(
-        Customer $customer,
+        $customer,
         ?BookingRequest $booking,
         string $intent,
         array $crmContext,
@@ -299,30 +247,27 @@ class CRMWritebackService
             $extraTags[] = 'admin_takeover_active';
         }
 
-        if (in_array($leadStage, ['complaint', 'refund', 'legal', 'high_risk'], true)) {
-            $extraTags[] = 'crm_high_risk_case';
+        if (($businessFlags['bot_paused'] ?? false) === true) {
+            $extraTags[] = 'bot_paused';
         }
 
-        if (($intentResult['handoff_recommended'] ?? false) === true || (($finalReply['meta']['force_handoff'] ?? false) === true)) {
-            $extraTags[] = 'human_handoff';
+        if (in_array($leadStage, ['complaint', 'high_risk', 'refund', 'legal'], true)) {
+            $extraTags[] = 'high_risk_case';
         }
 
-        $interestTopic = $this->deriveInterestTopic($intentResult, $summaryResult, $finalReply);
-        if ($interestTopic !== null) {
-            $extraTags[] = 'interest_'.str_replace([' ', ':'], '_', strtolower($interestTopic));
+        if (($intentResult['needs_clarification'] ?? false) === true) {
+            $extraTags[] = 'needs_clarification';
         }
 
-        foreach (array_values(array_unique(array_filter($extraTags))) as $tag) {
-            DB::table('customer_tags')->insertOrIgnore([
-                'customer_id' => $customer->id,
-                'tag' => $tag,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-            $tags[] = $tag;
+        if (($finalReply['is_fallback'] ?? false) === true) {
+            $extraTags[] = 'ai_fallback';
         }
 
-        return array_values(array_unique($tags));
+        if (trim((string) ($summaryResult['summary'] ?? '')) !== '') {
+            $extraTags[] = 'conversation_summarized';
+        }
+
+        return array_values(array_unique(array_merge($tags, $extraTags)));
     }
 
     /**
@@ -332,7 +277,7 @@ class CRMWritebackService
      * @param  array<string, mixed>  $finalReply
      */
     private function syncLeadFromDecision(
-        Customer $customer,
+        $customer,
         Conversation $conversation,
         ?BookingRequest $booking,
         string $intent,
@@ -353,16 +298,8 @@ class CRMWritebackService
             return null;
         }
 
-        $targetStage = $this->resolveLeadStageFromDecision(
-            currentStage: $lead->stage ?? ($crmLeadPipeline['stage'] ?? null),
-            intentResult: $intentResult,
-            summaryResult: $summaryResult,
-            finalReply: $finalReply,
-            needsEscalation: $needsEscalation,
-        );
-
-        if ($targetStage !== null && $targetStage !== $lead->stage) {
-            $lead = $this->leadPipelineService->moveToStage($lead, $targetStage);
+        if ($needsEscalation && ! in_array($lead->stage, ['complaint', 'cancelled', 'completed', 'paid'], true)) {
+            $lead = $this->leadPipelineService->moveToStage($lead, 'complaint');
         }
 
         return $lead;
@@ -372,31 +309,32 @@ class CRMWritebackService
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $summaryResult
      * @param  array<string, mixed>  $finalReply
+     * @param  array<string, mixed>  $crmConversation
+     * @param  array<string, mixed>  $crmEscalation
      */
-    private function resolveLeadStageFromDecision(
-        ?string $currentStage,
+    private function needsEscalation(
+        Conversation $conversation,
         array $intentResult,
         array $summaryResult,
         array $finalReply,
-        bool $needsEscalation,
-    ): ?string {
-        $intent = strtolower(trim((string) ($intentResult['intent'] ?? 'unknown')));
-        $summaryIntent = strtolower(trim((string) ($summaryResult['intent'] ?? '')));
-        $replyAction = strtolower(trim((string) ($finalReply['meta']['action'] ?? $finalReply['next_action'] ?? '')));
+        array $crmConversation = [],
+        array $crmEscalation = [],
+    ): bool {
+        $intent = is_string($intentResult['intent'] ?? null)
+            ? trim((string) $intentResult['intent'])
+            : '';
 
-        if (in_array($intent, ['complaint', 'refund_request', 'refund', 'legal_issue', 'legal', 'threat'], true)) {
-            return 'complaint';
-        }
+        $intentEnum = $intent !== '' ? IntentType::tryFrom($intent) : null;
 
-        if (in_array($summaryIntent, ['complaint', 'refund_request', 'refund', 'legal_issue', 'legal'], true)) {
-            return 'complaint';
-        }
-
-        if ($needsEscalation && in_array($replyAction, ['handoff_admin', 'handoff_sensitive_request'], true)) {
-            return 'complaint';
-        }
-
-        return $currentStage;
+        return
+            (bool) ($intentResult['handoff_recommended'] ?? false)
+            || (bool) ($intentResult['needs_human_review'] ?? false)
+            || (bool) ($crmEscalation['has_open_escalation'] ?? false)
+            || (bool) ($crmConversation['needs_human'] ?? false)
+            || ($intentEnum !== null && $intentEnum->requiresHuman())
+            || (($finalReply['meta']['force_handoff'] ?? false) === true)
+            || (bool) ($summaryResult['needs_human_followup'] ?? false)
+            || $conversation->isAdminTakeover();
     }
 
     /**
@@ -404,24 +342,22 @@ class CRMWritebackService
      * @param  array<string, mixed>  $summaryResult
      * @param  array<string, mixed>  $finalReply
      */
-    private function deriveInterestTopic(
-        array $intentResult,
-        array $summaryResult,
-        array $finalReply,
-    ): ?string {
+    private function deriveInterestTopic(array $intentResult, array $summaryResult, array $finalReply): ?string
+    {
         foreach ([
-            $summaryResult['interest_topic'] ?? null,
-            $summaryResult['intent'] ?? null,
+            $summaryResult['topic'] ?? null,
+            $summaryResult['customer_interest_topic'] ?? null,
+            $intentResult['sub_intent'] ?? null,
             $intentResult['intent'] ?? null,
-            $finalReply['next_action'] ?? null,
+            $finalReply['meta']['action'] ?? null,
         ] as $candidate) {
             if (! is_scalar($candidate)) {
                 continue;
             }
 
-            $value = trim((string) $candidate);
-            if ($value !== '') {
-                return $value;
+            $text = trim((string) $candidate);
+            if ($text !== '') {
+                return $text;
             }
         }
 

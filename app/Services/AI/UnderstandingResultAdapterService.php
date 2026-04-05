@@ -70,6 +70,15 @@ class UnderstandingResultAdapterService
                 'legacy_fallback_reason' => $usedLegacyIntentFallback || $usedLegacyEntityFallback
                     ? 'LLM understanding tidak cukup kuat sehingga legacy fallback dipakai sebagai backup.'
                     : null,
+                'crm_awareness' => [
+                    'used_crm_hints' => true,
+                    'uses_previous_context' => (bool) $understanding->usesPreviousContext,
+                    'handoff_recommended' => (bool) $understanding->handoffRecommended,
+                    'needs_clarification' => (bool) $understanding->needsClarification,
+                ],
+                'confidence_explanation' => $reasoning !== ''
+                    ? $reasoning
+                    : 'Confidence dibentuk dari hasil understanding utama dengan fallback legacy bila perlu.',
             ],
         ];
     }

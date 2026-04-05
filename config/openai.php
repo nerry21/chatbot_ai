@@ -11,6 +11,7 @@ return [
     'models' => [
         'intent' => env('OPENAI_MODEL_INTENT', 'gpt-5.4-mini'),
         'extraction' => env('OPENAI_MODEL_EXTRACTION', 'gpt-5.4-mini'),
+        'grounded_response' => env('OPENAI_MODEL_GROUNDED_RESPONSE', env('OPENAI_MODEL_REPLY', 'gpt-5.4')),
         'reply' => env('OPENAI_MODEL_REPLY', 'gpt-5.4'),
         'summary' => env('OPENAI_MODEL_SUMMARY', 'gpt-5.4-mini'),
     ],
@@ -18,6 +19,7 @@ return [
     'reasoning_effort' => [
         'intent' => env('OPENAI_REASONING_EFFORT_INTENT', 'low'),
         'extraction' => env('OPENAI_REASONING_EFFORT_EXTRACTION', 'low'),
+        'grounded_response' => env('OPENAI_REASONING_EFFORT_GROUNDED_RESPONSE', env('OPENAI_REASONING_EFFORT_REPLY', 'medium')),
         'reply' => env('OPENAI_REASONING_EFFORT_REPLY', 'medium'),
         'summary' => env('OPENAI_REASONING_EFFORT_SUMMARY', 'low'),
     ],
@@ -25,6 +27,7 @@ return [
     'max_output_tokens' => [
         'intent' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_INTENT', 300),
         'extraction' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_EXTRACTION', 500),
+        'grounded_response' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_GROUNDED_RESPONSE', env('OPENAI_MAX_OUTPUT_TOKENS_REPLY', 700)),
         'reply' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_REPLY', 700),
         'summary' => (int) env('OPENAI_MAX_OUTPUT_TOKENS_SUMMARY', 250),
     ],

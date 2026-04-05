@@ -429,6 +429,21 @@ return [
             'include_in_reply_tasks' => (bool) env('CRM_AI_CONTEXT_INCLUDE_IN_REPLY', true),
         ],
 
+        'decision_trace' => [
+            'enabled' => (bool) env('CRM_DECISION_TRACE_ENABLED', true),
+            'include_understanding_meta' => (bool) env('CRM_DECISION_TRACE_INCLUDE_UNDERSTANDING_META', true),
+            'include_grounding_meta' => (bool) env('CRM_DECISION_TRACE_INCLUDE_GROUNDING_META', true),
+            'include_policy_meta' => (bool) env('CRM_DECISION_TRACE_INCLUDE_POLICY_META', true),
+            'include_hallucination_meta' => (bool) env('CRM_DECISION_TRACE_INCLUDE_HALLUCINATION_META', true),
+        ],
+
+        'writeback' => [
+            'append_summary_note' => (bool) env('CRM_WRITEBACK_APPEND_SUMMARY_NOTE', true),
+            'append_decision_note' => (bool) env('CRM_WRITEBACK_APPEND_DECISION_NOTE', true),
+            'sync_contact_snapshot' => (bool) env('CRM_WRITEBACK_SYNC_CONTACT_SNAPSHOT', true),
+            'sync_lead_pipeline' => (bool) env('CRM_WRITEBACK_SYNC_LEAD_PIPELINE', true),
+        ],
+
     ],
 
     /*

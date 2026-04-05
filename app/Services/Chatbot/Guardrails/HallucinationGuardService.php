@@ -206,50 +206,18 @@ class HallucinationGuardService
         $faqResult = is_array($context['faq_result'] ?? null) ? $context['faq_result'] : [];
         $knowledgeHits = is_array($context['knowledge_hits'] ?? null) ? $context['knowledge_hits'] : [];
 
-        $crmContext = is_array($context['crm_context'] ?? null)
-            ? $context['crm_context']
-            : [];
-
-        $crmBooking = is_array($crmContext['booking'] ?? null)
-            ? $crmContext['booking']
-            : [];
-
-        $crmLeadPipeline = is_array($crmContext['lead_pipeline'] ?? null)
-            ? $crmContext['lead_pipeline']
-            : [];
-
-        $crmConversation = is_array($crmContext['conversation'] ?? null)
-            ? $crmContext['conversation']
-            : [];
-
-        $crmHubspot = is_array($crmContext['hubspot'] ?? null)
-            ? $crmContext['hubspot']
-            : [];
-
-        $crmEscalation = is_array($crmContext['escalation'] ?? null)
-            ? $crmContext['escalation']
-            : [];
+        $crmContext = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $crmBooking = is_array($crmContext['booking'] ?? null) ? $crmContext['booking'] : [];
+        $crmLeadPipeline = is_array($crmContext['lead_pipeline'] ?? null) ? $crmContext['lead_pipeline'] : [];
+        $crmConversation = is_array($crmContext['conversation'] ?? null) ? $crmContext['conversation'] : [];
+        $crmHubspot = is_array($crmContext['hubspot'] ?? null) ? $crmContext['hubspot'] : [];
+        $crmEscalation = is_array($crmContext['escalation'] ?? null) ? $crmContext['escalation'] : [];
 
         $hasOperationalFacts = ! empty($crmBooking)
             || ! empty($crmLeadPipeline)
             || ! empty($crmConversation)
             || ! empty($crmHubspot)
             || ! empty($crmEscalation);
-
-        $hasGroundedKnowledge = ($faqResult['matched'] ?? false) === true
-            || ! empty($knowledgeHits)
-            || $hasOperationalFacts;
-
-        $hasSubstantialCrmFacts =
-            ! empty($crmBooking['decision'] ?? null)
-            || ! empty($crmBooking['status'] ?? null)
-            || ! empty($crmLeadPipeline['stage'] ?? null)
-            || ! empty($crmConversation['status'] ?? null)
-            || (($crmConversation['admin_takeover'] ?? false) === true)
-            || (($crmConversation['needs_human'] ?? false) === true)
-            || (($crmEscalation['has_open_escalation'] ?? false) === true)
-            || ! empty($crmHubspot['contact_id'] ?? null)
-            || ! empty($crmHubspot['lifecycle_stage'] ?? null);
 
         $crmGroundingSections = array_keys(array_filter([
             'booking' => $crmBooking,
@@ -259,9 +227,21 @@ class HallucinationGuardService
             'escalation' => $crmEscalation,
         ], static fn ($value) => ! empty($value)));
 
+        $hasSubstantialCrmFacts =
+            ! empty($crmBooking['decision'] ?? null)
+            || ! empty($crmBooking['status'] ?? null)
+            || ! empty($crmLeadPipeline['stage'] ?? null)
+            || ! empty($crmConversation['status'] ?? null)
+            || (($crmConversation['admin_takeover'] ?? false) === true)
+            || (($crmConversation['needs_human'] ?? false) === true)
+            || (($crmEscalation['has_open_escalation'] ?? false) === true)
+            || ! empty($crmHubspot['contact_id'] ?? null);
+
         $groundingSource = $hasSubstantialCrmFacts
             ? 'crm_snapshot'
-            : (($faqResult['matched'] ?? false) === true ? 'faq' : (! empty($knowledgeHits) ? 'knowledge_hits' : 'unknown'));
+            : (($faqResult['matched'] ?? false) === true
+                ? 'faq'
+                : (! empty($knowledgeHits) ? 'knowledge_hits' : 'unknown'));
 
         $groundingMeta = [
             'grounding_source' => $groundingSource,
@@ -273,32 +253,13 @@ class HallucinationGuardService
             ))),
         ];
 
-        $replyText = (string) ($reply['text'] ?? $reply['reply'] ?? '');
-        $isOperationalTransitionReply =
-            (($crmEscalation['has_open_escalation'] ?? false) === true)
-            || (($crmConversation['admin_takeover'] ?? false) === true)
-            || (($crmConversation['needs_human'] ?? false) === true)
-            || $conversation->isAdminTakeover()
-            || (($context['admin_takeover'] ?? false) === true);
-
-        WaLog::debug('[HallucinationGuard] guardReply grounding', [
-            'crm_grounding_present' => $hasSubstantialCrmFacts,
-            'crm_grounding_sections' => $crmGroundingSections,
-            'faq_grounding' => ($faqResult['matched'] ?? false) === true,
-            'knowledge_hits_count' => count($knowledgeHits),
-        ]);
-
+        $replyText = trim((string) ($reply['text'] ?? $reply['reply'] ?? ''));
         $source = (string) ($reply['meta']['source'] ?? '');
-        if ($source !== 'ai_reply') {
-            return $this->allow($reply, $intentResult, $groundingMeta);
-        }
 
-        if ($isOperationalTransitionReply && $this->looksLikeSafeHandoffReply($replyText)) {
+        if ($source !== 'ai_reply') {
             return $this->allow($reply, $intentResult, [
-                'action' => 'allow_operational_transition',
-                'grounding_source' => 'crm_operational_state',
-                'crm_grounding_present' => true,
-                'crm_grounding_sections' => $crmGroundingSections,
+                ...$groundingMeta,
+                'action' => 'allow_non_ai_reply',
             ]);
         }
 
@@ -309,9 +270,9 @@ class HallucinationGuardService
                 reason: 'Admin takeover aktif; AI reply diblokir.',
                 text: 'Izin Bapak/Ibu, percakapan ini sedang ditangani admin ya.',
                 meta: [
-                    'grounding_source' => 'crm_operational_state',
-                    'crm_grounding_present' => true,
-                    'crm_grounding_sections' => $crmGroundingSections,
+                    ...$groundingMeta,
+                    'action' => 'handoff_admin_takeover',
+                    'risk_level' => 'high',
                 ],
             );
         }
@@ -322,7 +283,11 @@ class HallucinationGuardService
                 intentResult: $intentResult,
                 reason: 'Understanding meminta handoff; AI reply diblokir.',
                 text: 'Izin Bapak/Ibu, pertanyaan ini kami bantu teruskan ke admin ya.',
-                meta: $groundingMeta,
+                meta: [
+                    ...$groundingMeta,
+                    'action' => 'handoff_understanding_request',
+                    'risk_level' => 'high',
+                ],
             );
         }
 
@@ -330,57 +295,49 @@ class HallucinationGuardService
             return $this->clarify(
                 reply: $reply,
                 intentResult: $intentResult,
-                reason: 'Understanding masih ambigu; AI reply bebas diblokir.',
+                reason: 'Understanding masih ambigu; AI reply diblokir.',
                 text: (string) ($intentResult['clarification_question'] ?? 'Izin Bapak/Ibu, boleh dijelaskan lagi kebutuhan perjalanannya ya?'),
-                meta: $groundingMeta,
+                meta: [
+                    ...$groundingMeta,
+                    'action' => 'clarify_ambiguous_understanding',
+                    'risk_level' => 'medium',
+                ],
             );
         }
 
-        $intent = IntentType::tryFrom((string) ($intentResult['intent'] ?? ''));
-
-        if ($intent !== null && $this->isSensitiveOperationalIntent($intent) && ! $hasGroundedKnowledge) {
+        if ($replyText === '') {
             return $this->clarify(
                 reply: $reply,
                 intentResult: $intentResult,
-                reason: 'Reply AI mencoba menjawab intent operasional tanpa grounding yang aman.',
-                text: $this->clarificationTextForIntent($intent),
+                reason: 'Reply AI kosong setelah orchestration.',
+                text: 'Baik, saya bantu dulu ya. Boleh dijelaskan lagi kebutuhan Bapak/Ibu secara singkat?',
                 meta: [
-                    'grounding_source' => $hasSubstantialCrmFacts ? 'crm_snapshot' : 'none',
-                    'crm_grounding_present' => $hasSubstantialCrmFacts,
-                    'crm_grounding_sections' => $crmGroundingSections,
+                    ...$groundingMeta,
+                    'action' => 'clarify_empty_reply',
+                    'risk_level' => 'medium',
                 ],
             );
         }
 
-        if ($this->containsSensitiveBusinessClaim($replyText) && ! $hasGroundedKnowledge) {
-            return $this->handoff(
+        if (! $hasOperationalFacts && ($faqResult['matched'] ?? false) !== true && empty($knowledgeHits) && $this->looksFactualReply($replyText)) {
+            return $this->clarify(
                 reply: $reply,
                 intentResult: $intentResult,
-                reason: 'Reply AI mengandung klaim bisnis sensitif tanpa grounding yang aman.',
-                text: 'Izin Bapak/Ibu, untuk detail promo, kebijakan, atau ketersediaan spesifik ini kami bantu cek dulu ke admin ya.',
+                reason: 'Reply faktual tidak punya grounding yang cukup.',
+                text: 'Baik, agar saya tidak keliru, boleh dijelaskan lagi detail kebutuhan atau pertanyaannya ya?',
                 meta: [
-                    'grounding_source' => $hasSubstantialCrmFacts ? 'crm_snapshot' : 'none',
-                    'crm_grounding_present' => $hasSubstantialCrmFacts,
-                    'crm_grounding_sections' => $crmGroundingSections,
+                    ...$groundingMeta,
+                    'action' => 'clarify_ungrounded_factual_reply',
+                    'risk_level' => 'high',
                 ],
             );
         }
 
-        if (! $hasGroundedKnowledge && ! $hasSubstantialCrmFacts && $this->looksFactualReply($replyText)) {
-            return $this->handoff(
-                reply: $reply,
-                intentResult: $intentResult,
-                reason: 'Reply AI tampak faktual tetapi belum memiliki grounding yang aman.',
-                text: 'Izin Bapak/Ibu, agar informasinya tetap akurat kami bantu cek dulu ke admin ya.',
-                meta: [
-                    'grounding_source' => 'none',
-                    'crm_grounding_present' => false,
-                    'crm_grounding_sections' => $crmGroundingSections,
-                ],
-            );
-        }
-
-        return $this->allow($reply, $intentResult, $groundingMeta);
+        return $this->allow($reply, $intentResult, [
+            ...$groundingMeta,
+            'action' => 'allow_grounded_reply',
+            'risk_level' => $hasSubstantialCrmFacts ? 'low' : 'medium',
+        ]);
     }
 
     private function isSensitiveOperationalIntent(IntentType $intent): bool
@@ -792,6 +749,7 @@ class HallucinationGuardService
             'action' => $action,
             'blocked' => $blocked,
             'reason' => $reason,
+            'risk_level' => (string) ($meta['risk_level'] ?? 'unknown'),
             'grounding_source' => $meta['grounding_source'] ?? null,
             'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
             'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)

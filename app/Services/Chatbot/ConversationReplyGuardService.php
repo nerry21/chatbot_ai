@@ -124,14 +124,22 @@ class ConversationReplyGuardService
 
         $replyResult['reply'] = $reply;
         $replyResult['text'] = $reply;
-        $replyResult['message_type'] = $replyResult['message_type'] ?? 'text';
-        $replyResult['outbound_payload'] = is_array($replyResult['outbound_payload'] ?? null)
-            ? $replyResult['outbound_payload']
-            : [];
-        $replyResult['data_requests'] = array_values(array_unique(array_filter(
-            is_array($replyResult['data_requests'] ?? null) ? $replyResult['data_requests'] : [],
-        )));
         $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
+
+        $existingMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        $replyResult['meta'] = array_merge($existingMeta, [
+            'conversation_guard_applied' => true,
+            'decision_trace' => array_values(array_filter([
+                ...(is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : []),
+                [
+                    'stage' => 'conversation_reply_guard',
+                    'action' => ($replyResult['should_escalate'] ?? false) ? 'handoff_or_safe_reply' : 'allow',
+                    'blocked' => false,
+                    'notes' => array_values(array_unique(array_filter($notes))),
+                    'evaluated_at' => now()->toIso8601String(),
+                ],
+            ])),
+        ]);
 
         return $replyResult;
     }

@@ -9,7 +9,6 @@ use App\Models\AdminNotification;
 use App\Models\AiLog;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
-use App\Models\Escalation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\AI\ConversationSummaryService;
@@ -32,7 +31,6 @@ use App\Services\Chatbot\Guardrails\AdminTakeoverGuardService;
 use App\Services\Chatbot\Guardrails\PolicyGuardService;
 use App\Services\Chatbot\ReplyOrchestratorService;
 use App\Services\CRM\CrmOrchestrationSnapshotService;
-use App\Services\CRM\CrmSyncService;
 use App\Services\CRM\CRMWritebackService;
 use App\Services\Knowledge\FaqResolverService;
 use App\Services\Knowledge\KnowledgeBaseService;
@@ -82,7 +80,6 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ConversationReplyGuardService $replyGuard,
         ReplyOrchestratorService $replyOrchestrator,
         ConversationOutboundRouterService $outboundRouter,
-        CrmSyncService $crmSyncService,
         CRMWritebackService $crmWriteback,
         CrmOrchestrationSnapshotService $crmSnapshotService,
         AuditLogService $audit,
@@ -124,24 +121,6 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         }
 
         $customer = $conversation->customer;
-
-        try {
-            $seedCrmResult = $crmSyncService->syncCustomer($customer);
-
-            WaLog::info('[Job:ProcessIncoming] CRM seed contact result', [
-                'conversation_id' => $conversation->id,
-                'customer_id' => $customer->id,
-                'status' => $seedCrmResult['status'] ?? null,
-                'external_id' => $seedCrmResult['external_id'] ?? null,
-            ]);
-        } catch (\Throwable $e) {
-            WaLog::warning('[Job:ProcessIncoming] CRM seed contact failed (non-fatal)', [
-                'conversation_id' => $conversation->id,
-                'customer_id' => $customer->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
         $contextPayload = null;
         $aiContext = [];
         $knowledgeHits = [];
@@ -653,18 +632,20 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 faqResult: $faqResult ?? null,
                 finalReply: $finalReply,
             );
-            $hallucinationGuardResult['meta'] = [
-                'guard_group' => 'hallucination',
-                'action' => 'delegated_to_reply_orchestrator',
-                'blocked' => (($finalReply['meta']['hallucination_risk_level'] ?? 'low') === 'high'),
-                'reason' => null,
-                'risk_level' => $finalReply['meta']['hallucination_risk_level'] ?? null,
-                'risk_flags' => is_array($finalReply['meta']['hallucination_risk_flags'] ?? null)
-                    ? $finalReply['meta']['hallucination_risk_flags']
-                    : [],
-            ];
+            $hallucinationGuardResult['meta'] = $this->buildHallucinationGuardMeta(
+                finalReply: $finalReply,
+                crmSnapshot: $crmSnapshot,
+                orchestrationSnapshot: $orchestrationSnapshot,
+            );
             $aiContext['hallucination_guard'] = $hallucinationGuardResult['meta'];
             $aiContext['reply_orchestration'] = $orchestrationSnapshot;
+            $aiContext['decision_trace'] = $this->buildDecisionTraceSeed(
+                policyGuardMeta: is_array($policyGuardResult['meta'] ?? null) ? $policyGuardResult['meta'] : [],
+                hallucinationGuardMeta: $hallucinationGuardResult['meta'],
+                orchestrationSnapshot: $orchestrationSnapshot,
+                finalReply: $finalReply,
+                crmSnapshot: $crmSnapshot,
+            );
 
             $outboundMessage = $this->persistResults(
                 conversation        : $conversation,
@@ -1048,6 +1029,128 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         return $snapshot;
     }
 
+
+    /**
+     * @param  array<string, mixed>  $finalReply
+     * @param  array<string, mixed>  $crmSnapshot
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @return array<string, mixed>
+     */
+    private function buildHallucinationGuardMeta(
+        array $finalReply,
+        array $crmSnapshot = [],
+        array $orchestrationSnapshot = [],
+    ): array {
+        $replyMeta = is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [];
+
+        $crmSections = array_keys(array_filter([
+            'customer' => $crmSnapshot['customer'] ?? null,
+            'hubspot' => $crmSnapshot['hubspot'] ?? null,
+            'lead_pipeline' => $crmSnapshot['lead_pipeline'] ?? null,
+            'conversation' => $crmSnapshot['conversation'] ?? null,
+            'booking' => $crmSnapshot['booking'] ?? null,
+            'escalation' => $crmSnapshot['escalation'] ?? null,
+            'business_flags' => $crmSnapshot['business_flags'] ?? null,
+        ], static fn (mixed $value): bool => is_array($value) ? $value !== [] : ! empty($value)));
+
+        $usedCrmFacts = [];
+        foreach ((array) ($replyMeta['used_crm_facts'] ?? []) as $fact) {
+            if (is_scalar($fact)) {
+                $text = trim((string) $fact);
+                if ($text !== '') {
+                    $usedCrmFacts[] = $text;
+                }
+            }
+        }
+
+        foreach ($crmSections as $section) {
+            $usedCrmFacts[] = 'crm.'.$section;
+        }
+
+        $usedCrmFacts = array_values(array_unique($usedCrmFacts));
+
+        $riskLevel = $replyMeta['hallucination_risk_level'] ?? null;
+        $blocked = (bool) ($replyMeta['hallucination_blocked'] ?? false);
+
+        if (! $blocked && $riskLevel === 'high') {
+            $blocked = true;
+        }
+
+        return [
+            'guard_group' => 'hallucination',
+            'action' => (string) (
+                $replyMeta['hallucination_action']
+                ?? ($blocked ? 'blocked_high_risk' : 'allow')
+            ),
+            'blocked' => $blocked,
+            'reason' => $replyMeta['hallucination_reason'] ?? null,
+            'risk_level' => $riskLevel,
+            'risk_flags' => is_array($replyMeta['hallucination_risk_flags'] ?? null)
+                ? array_values($replyMeta['hallucination_risk_flags'])
+                : [],
+            'grounding_source' => $replyMeta['grounding_source'] ?? null,
+            'crm_grounding_present' => $crmSections !== [],
+            'crm_grounding_sections' => $crmSections,
+            'used_crm_facts' => $usedCrmFacts,
+            'decision_trace_hallucination' => is_array($replyMeta['decision_trace_hallucination'] ?? null)
+                ? $replyMeta['decision_trace_hallucination']
+                : [
+                    'action' => (string) (
+                        $replyMeta['hallucination_action']
+                        ?? ($blocked ? 'blocked_high_risk' : 'allow')
+                    ),
+                    'blocked' => $blocked,
+                    'reason' => $replyMeta['hallucination_reason'] ?? null,
+                    'risk_level' => $riskLevel,
+                    'risk_flags' => is_array($replyMeta['hallucination_risk_flags'] ?? null)
+                        ? array_values($replyMeta['hallucination_risk_flags'])
+                        : [],
+                    'grounding_source' => $replyMeta['grounding_source'] ?? null,
+                    'crm_grounding_present' => $crmSections !== [],
+                    'crm_grounding_sections' => $crmSections,
+                    'used_crm_facts' => $usedCrmFacts,
+                    'orchestration_reply_force_handoff' => (bool) ($orchestrationSnapshot['reply_force_handoff'] ?? false),
+                    'orchestration_used_faq' => (bool) ($orchestrationSnapshot['used_faq'] ?? false),
+                    'orchestration_used_knowledge' => (bool) ($orchestrationSnapshot['used_knowledge'] ?? false),
+                ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $policyGuardMeta
+     * @param  array<string, mixed>  $hallucinationGuardMeta
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @param  array<string, mixed>  $finalReply
+     * @param  array<string, mixed>  $crmSnapshot
+     * @return array<string, mixed>
+     */
+    private function buildDecisionTraceSeed(
+        array $policyGuardMeta = [],
+        array $hallucinationGuardMeta = [],
+        array $orchestrationSnapshot = [],
+        array $finalReply = [],
+        array $crmSnapshot = [],
+    ): array {
+        $replyMeta = is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [];
+
+        return [
+            'policy_guard' => $policyGuardMeta,
+            'hallucination_guard' => $hallucinationGuardMeta,
+            'orchestration' => $orchestrationSnapshot,
+            'final_reply' => [
+                'source' => $replyMeta['source'] ?? null,
+                'action' => $replyMeta['action'] ?? null,
+                'force_handoff' => (bool) ($replyMeta['force_handoff'] ?? false),
+                'is_fallback' => (bool) ($finalReply['is_fallback'] ?? false),
+                'grounding_source' => $replyMeta['grounding_source'] ?? null,
+                'used_crm_facts' => is_array($replyMeta['used_crm_facts'] ?? null)
+                    ? array_values($replyMeta['used_crm_facts'])
+                    : [],
+            ],
+            'crm_context_sections' => array_keys(array_filter($crmSnapshot, static fn (mixed $value): bool => is_array($value) ? $value !== [] : ! empty($value))),
+        ];
+    }
+
     public function failed(\Throwable $exception): void
     {
         WaLog::critical('[Job:ProcessIncoming] permanently failed after retries', [
@@ -1057,56 +1160,6 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             'file' => $exception->getFile().':'.$exception->getLine(),
             'trace' => $exception->getTraceAsString(),
         ]);
-
-        try {
-            $conversation = Conversation::with('customer')->find($this->conversationId);
-
-            if ($conversation === null) {
-                return;
-            }
-
-            $conversation->forceFill([
-                'needs_human' => true,
-            ])->save();
-
-            $existingEscalation = Escalation::where('conversation_id', $conversation->id)
-                ->where('status', 'open')
-                ->first();
-
-            if ($existingEscalation === null) {
-                Escalation::create([
-                    'conversation_id' => $conversation->id,
-                    'reason' => 'Pipeline crash before CRM writeback: '.$exception->getMessage(),
-                    'priority' => 'high',
-                    'status' => 'open',
-                    'summary' => $conversation->summary,
-                ]);
-            }
-
-            AdminNotification::create([
-                'type' => 'system_failure_escalation',
-                'title' => 'Pipeline crash sebelum writeback CRM',
-                'body' => implode("\n", [
-                    'Percakapan gagal diproses penuh dan dialihkan ke human.',
-                    'Conversation ID : #'.$conversation->id,
-                    'Customer        : '.($conversation->customer?->name ?? $conversation->customer?->phone_e164 ?? '-'),
-                    'Error           : '.$exception->getMessage(),
-                ]),
-                'payload' => [
-                    'conversation_id' => $conversation->id,
-                    'customer_id' => $conversation->customer?->id,
-                    'message_id' => $this->messageId,
-                    'error' => $exception->getMessage(),
-                ],
-                'is_read' => false,
-            ]);
-        } catch (\Throwable $inner) {
-            WaLog::error('[Job:ProcessIncoming] failed() recovery also failed', [
-                'conversation_id' => $this->conversationId,
-                'message_id' => $this->messageId,
-                'error' => $inner->getMessage(),
-            ]);
-        }
     }
 
     // -------------------------------------------------------------------------
