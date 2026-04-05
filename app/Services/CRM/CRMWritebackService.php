@@ -7,6 +7,7 @@ use App\Jobs\EscalateConversationToAdminJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\Customer;
+use App\Services\CRM\CrmDecisionTraceBuilderService;
 use App\Support\WaLog;
 use Illuminate\Support\Facades\DB;
 
@@ -17,6 +18,7 @@ class CRMWritebackService
         private readonly LeadPipelineService $leadPipelineService,
         private readonly CrmSyncService $crmSyncService,
         private readonly CrmDecisionNoteBuilderService $decisionNoteBuilder,
+        private readonly CrmDecisionTraceBuilderService $decisionTraceBuilder,
     ) {}
 
     /**
@@ -86,8 +88,7 @@ class CRMWritebackService
             );
         }
 
-        $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
-        $decisionNote = $this->decisionNoteBuilder->build(
+        $decisionTrace = $this->decisionTraceBuilder->build(
             customer: $customer,
             conversation: $conversation,
             intentResult: $intentResult,
@@ -96,10 +97,22 @@ class CRMWritebackService
             contextSnapshot: $contextSnapshot,
         );
 
+        $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
+        $decisionNote = $this->decisionNoteBuilder->build(
+            customer: $customer,
+            conversation: $conversation,
+            intentResult: $intentResult,
+            summaryResult: $summaryResult,
+            finalReply: $finalReply,
+            contextSnapshot: $contextSnapshot,
+            decisionTrace: $decisionTrace,
+        );
+
         if (trim($decisionNote) !== '') {
             $decisionNoteSync = $this->crmSyncService->appendConversationDecisionNote(
                 customer: $customer,
                 note: $decisionNote,
+                decisionTrace: $decisionTrace,
             );
         }
 
@@ -172,6 +185,9 @@ class CRMWritebackService
             'final_reply_source' => $finalReply['meta']['source'] ?? null,
             'final_reply_grounding_source' => $finalReply['meta']['grounding_source'] ?? null,
             'final_reply_force_handoff' => $finalReply['meta']['force_handoff'] ?? false,
+            'decision_trace_id' => $decisionTrace['trace_id'] ?? null,
+            'decision_trace_final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
+            'decision_trace_used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
         ]);
 
         return [
@@ -184,6 +200,7 @@ class CRMWritebackService
             'decision_note_sync' => $decisionNoteSync,
             'lead' => $lead,
             'needs_escalation' => $needsEscalation,
+            'decision_trace' => $decisionTrace,
             'context_snapshot' => [
                 'crm_context_present' => ! empty($crmContext),
                 'orchestration_present' => ! empty($contextSnapshot['orchestration']),

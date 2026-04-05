@@ -267,6 +267,10 @@ class HallucinationGuardService
             'grounding_source' => $groundingSource,
             'crm_grounding_present' => $hasSubstantialCrmFacts,
             'crm_grounding_sections' => $crmGroundingSections,
+            'used_crm_facts' => array_values(array_unique(array_map(
+                static fn (string $section): string => 'crm.'.$section,
+                $crmGroundingSections,
+            ))),
         ];
 
         $replyText = (string) ($reply['text'] ?? $reply['reply'] ?? '');
@@ -521,6 +525,14 @@ class HallucinationGuardService
                     'action' => 'clarify_sensitive_request',
                     'original_source' => $reply['meta']['source'] ?? null,
                     'original_action' => $reply['meta']['action'] ?? null,
+                    'grounding_source' => $meta['grounding_source'] ?? null,
+                    'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
+                    'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
+                        ? array_values($meta['crm_grounding_sections'])
+                        : [],
+                    'used_crm_facts' => is_array($meta['used_crm_facts'] ?? null)
+                        ? array_values($meta['used_crm_facts'])
+                        : [],
                 ],
             ],
             'intent_result' => $intentResult,
@@ -529,7 +541,15 @@ class HallucinationGuardService
                 'action' => 'clarify',
                 'blocked' => true,
                 'reason' => $reason,
-            ], $meta),
+            ], $meta, [
+                'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                    action: 'clarify',
+                    blocked: true,
+                    reason: $reason,
+                    meta: $meta,
+                    reply: $reply,
+                ),
+            ]),
         ];
     }
 
@@ -563,6 +583,15 @@ class HallucinationGuardService
                     'action' => 'handoff_sensitive_request',
                     'original_source' => $reply['meta']['source'] ?? null,
                     'original_action' => $reply['meta']['action'] ?? null,
+                    'force_handoff' => true,
+                    'grounding_source' => $meta['grounding_source'] ?? null,
+                    'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
+                    'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
+                        ? array_values($meta['crm_grounding_sections'])
+                        : [],
+                    'used_crm_facts' => is_array($meta['used_crm_facts'] ?? null)
+                        ? array_values($meta['used_crm_facts'])
+                        : [],
                 ],
             ],
             'intent_result' => $intentResult,
@@ -571,7 +600,15 @@ class HallucinationGuardService
                 'action' => 'handoff',
                 'blocked' => true,
                 'reason' => $reason,
-            ], $meta),
+            ], $meta, [
+                'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                    action: 'handoff',
+                    blocked: true,
+                    reason: $reason,
+                    meta: $meta,
+                    reply: $reply,
+                ),
+            ]),
         ];
     }
 
@@ -595,7 +632,15 @@ class HallucinationGuardService
                 'action' => 'allow',
                 'blocked' => false,
                 'reason' => null,
-            ], $meta),
+            ], $meta, [
+                'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                    action: 'allow',
+                    blocked: false,
+                    reason: null,
+                    meta: $meta,
+                    reply: $reply,
+                ),
+            ]),
         ];
     }
 
@@ -708,5 +753,52 @@ class HallucinationGuardService
         return ($priority[$candidateLevel] ?? 0) > ($priority[$currentLevel] ?? 0)
             ? $candidateLevel
             : $currentLevel;
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     * @param  array<string, mixed>  $reply
+     * @return array<string, mixed>
+     */
+    private function decisionTraceHallucination(
+        string $action,
+        bool $blocked,
+        ?string $reason,
+        array $meta = [],
+        array $reply = [],
+    ): array {
+        $usedCrmFacts = [];
+
+        foreach ([$meta['used_crm_facts'] ?? [], $reply['used_crm_facts'] ?? []] as $source) {
+            if (! is_array($source)) {
+                continue;
+            }
+
+            foreach ($source as $fact) {
+                if (! is_scalar($fact)) {
+                    continue;
+                }
+
+                $text = trim((string) $fact);
+
+                if ($text !== '') {
+                    $usedCrmFacts[] = $text;
+                }
+            }
+        }
+
+        return [
+            'stage' => 'hallucination_guard',
+            'action' => $action,
+            'blocked' => $blocked,
+            'reason' => $reason,
+            'grounding_source' => $meta['grounding_source'] ?? null,
+            'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
+            'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
+                ? array_values($meta['crm_grounding_sections'])
+                : [],
+            'used_crm_facts' => array_values(array_unique($usedCrmFacts)),
+            'evaluated_at' => now()->toIso8601String(),
+        ];
     }
 }

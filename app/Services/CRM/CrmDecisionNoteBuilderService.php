@@ -12,6 +12,7 @@ class CrmDecisionNoteBuilderService
      * @param  array<string, mixed>  $summaryResult
      * @param  array<string, mixed>  $finalReply
      * @param  array<string, mixed>  $contextSnapshot
+     * @param  array<string, mixed>  $decisionTrace
      */
     public function build(
         Customer $customer,
@@ -20,48 +21,74 @@ class CrmDecisionNoteBuilderService
         array $summaryResult,
         array $finalReply,
         array $contextSnapshot = [],
+        array $decisionTrace = [],
     ): string {
-        $intent = (string) ($intentResult['intent'] ?? 'unknown');
-        $confidence = isset($intentResult['confidence'])
-            ? number_format((float) $intentResult['confidence'], 2, '.', '')
-            : null;
-
-        $reasoning = $this->normalizeText($intentResult['reasoning_short'] ?? null);
-        $summary = $this->normalizeText($summaryResult['summary'] ?? null);
         $replyText = $this->normalizeText($finalReply['text'] ?? null);
-        $replyMeta = is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [];
+        $summary = $this->normalizeText($summaryResult['summary'] ?? null);
 
-        $crmContext = is_array($contextSnapshot['crm_context'] ?? null)
-            ? $contextSnapshot['crm_context']
-            : [];
-
-        $leadStage = $crmContext['lead_pipeline']['stage'] ?? null;
-        $hubspotLifecycle = $crmContext['hubspot']['lifecycle_stage'] ?? null;
-        $conversationStatus = $crmContext['conversation']['status'] ?? null;
-        $needsHuman = $crmContext['conversation']['needs_human'] ?? null;
-        $botPaused = $crmContext['business_flags']['bot_paused'] ?? null;
-        $openEscalation = $crmContext['escalation']['has_open_escalation'] ?? null;
+        $llm = is_array($decisionTrace['llm'] ?? null) ? $decisionTrace['llm'] : [];
+        $policy = is_array($decisionTrace['policy_guard'] ?? null) ? $decisionTrace['policy_guard'] : [];
+        $hallucination = is_array($decisionTrace['hallucination_guard'] ?? null) ? $decisionTrace['hallucination_guard'] : [];
+        $finalReplyTrace = is_array($decisionTrace['final_reply'] ?? null) ? $decisionTrace['final_reply'] : [];
+        $crmBefore = is_array($decisionTrace['crm_state_before_writeback'] ?? null) ? $decisionTrace['crm_state_before_writeback'] : [];
+        $outcome = is_array($decisionTrace['outcome'] ?? null) ? $decisionTrace['outcome'] : [];
 
         $lines = array_filter([
-            '=== AI Decision Snapshot ===',
-            'Pelanggan   : ' . ($customer->name ?? 'Tidak diketahui'),
-            'Nomor       : ' . ($customer->phone_e164 ?? '-'),
-            'Percakapan  : #' . $conversation->id,
-            'Waktu       : ' . now()->format('d M Y H:i') . ' WIB',
+            '=== AI Decision Trace / CRM Audit Snapshot ===',
+            'Trace ID        : '.($decisionTrace['trace_id'] ?? '-'),
+            'Generated At    : '.($decisionTrace['generated_at'] ?? now()->toIso8601String()),
+            'Pelanggan       : '.($customer->name ?? 'Tidak diketahui'),
+            'Nomor           : '.($customer->phone_e164 ?? '-'),
+            'Percakapan      : #'.$conversation->id,
             '',
-            'Intent      : ' . $intent,
-            'Confidence  : ' . ($confidence ?? '-'),
-            'Reasoning   : ' . ($reasoning ?? '-'),
-            'ReplySource : ' . ($replyMeta['source'] ?? '-'),
-            'ReplyAction : ' . ($replyMeta['action'] ?? '-'),
+
+            '--- LLM Understanding ---',
+            'Intent          : '.($llm['intent'] ?? ($intentResult['intent'] ?? 'unknown')),
+            'Confidence      : '.(isset($llm['confidence']) ? number_format((float) $llm['confidence'], 2, '.', '') : '-'),
+            'Reasoning       : '.($llm['reasoning_short'] ?? ($intentResult['reasoning_short'] ?? '-')),
+            'Clarify         : '.$this->boolToText($llm['needs_clarification'] ?? ($intentResult['needs_clarification'] ?? null)),
+            'Handoff Rec     : '.$this->boolToText($llm['handoff_recommended'] ?? ($intentResult['handoff_recommended'] ?? null)),
             '',
-            'Lead Stage  : ' . ($leadStage ?: '-'),
-            'Lifecycle   : ' . ($hubspotLifecycle ?: '-'),
-            'Conv Status : ' . ($conversationStatus ?: '-'),
-            'NeedsHuman  : ' . $this->boolToText($needsHuman),
-            'BotPaused   : ' . $this->boolToText($botPaused),
-            'Escalation  : ' . $this->boolToText($openEscalation),
+
+            '--- Policy Guard ---',
+            'Action          : '.($policy['action'] ?? '-'),
+            'Blocked         : '.$this->boolToText($policy['blocked'] ?? null),
+            'Reasons         : '.$this->joinList($policy['reasons'] ?? []),
+            'CRM Source      : '.($policy['crm_policy_source'] ?? '-'),
             '',
+
+            '--- Hallucination Guard ---',
+            'Action          : '.($hallucination['action'] ?? '-'),
+            'Blocked         : '.$this->boolToText($hallucination['blocked'] ?? null),
+            'Reason          : '.($hallucination['reason'] ?? '-'),
+            'Grounding Src   : '.($hallucination['grounding_source'] ?? '-'),
+            'CRM Present     : '.$this->boolToText($hallucination['crm_grounding_present'] ?? null),
+            'CRM Sections    : '.$this->joinList($hallucination['crm_grounding_sections'] ?? []),
+            '',
+
+            '--- Final Reply ---',
+            'Reply Source    : '.($finalReplyTrace['source'] ?? ($finalReply['meta']['source'] ?? '-')),
+            'Reply Action    : '.($finalReplyTrace['action'] ?? ($finalReply['meta']['action'] ?? '-')),
+            'Force Handoff   : '.$this->boolToText($finalReplyTrace['force_handoff'] ?? ($finalReply['meta']['force_handoff'] ?? null)),
+            'Is Fallback     : '.$this->boolToText($finalReplyTrace['is_fallback'] ?? ($finalReply['is_fallback'] ?? null)),
+            'Used CRM Facts  : '.$this->joinList($outcome['used_crm_facts'] ?? []),
+            '',
+
+            '--- CRM State Before Writeback ---',
+            'Lead Stage      : '.($crmBefore['lead_stage'] ?? '-'),
+            'Conv Status     : '.($crmBefore['conversation_status'] ?? '-'),
+            'Needs Human     : '.$this->boolToText($crmBefore['needs_human'] ?? null),
+            'Admin Takeover  : '.$this->boolToText($crmBefore['admin_takeover'] ?? null),
+            'Bot Paused      : '.$this->boolToText($crmBefore['bot_paused'] ?? null),
+            'Open Escalation : '.$this->boolToText($crmBefore['open_escalation'] ?? null),
+            '',
+
+            '--- Outcome ---',
+            'Final Decision  : '.($outcome['final_decision'] ?? '-'),
+            'Needs Escalate  : '.$this->boolToText($outcome['needs_escalation'] ?? null),
+            'Closed Loop     : '.$this->boolToText($outcome['closed_loop_ready'] ?? null),
+            '',
+
             'Ringkasan AI:',
             $summary ?: '-',
             '',
@@ -83,6 +110,9 @@ class CrmDecisionNoteBuilderService
         return $text !== '' ? $text : null;
     }
 
+    /**
+     * @param  mixed  $value
+     */
     private function boolToText(mixed $value): string
     {
         if ($value === null) {
@@ -90,5 +120,31 @@ class CrmDecisionNoteBuilderService
         }
 
         return (bool) $value ? 'ya' : 'tidak';
+    }
+
+    /**
+     * @param  mixed  $items
+     */
+    private function joinList(mixed $items): string
+    {
+        if (! is_array($items) || $items === []) {
+            return '-';
+        }
+
+        $out = [];
+
+        foreach ($items as $item) {
+            if (! is_scalar($item)) {
+                continue;
+            }
+
+            $text = trim((string) $item);
+
+            if ($text !== '') {
+                $out[] = $text;
+            }
+        }
+
+        return $out !== [] ? implode(', ', array_values(array_unique($out))) : '-';
     }
 }

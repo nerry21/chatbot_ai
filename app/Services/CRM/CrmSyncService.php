@@ -238,14 +238,18 @@ class CrmSyncService
      *
      * @return array{status: string, reason?: string, error?: string}
      */
-    public function appendConversationDecisionNote(Customer $customer, string $note): array
-    {
+    public function appendConversationDecisionNote(
+        Customer $customer,
+        string $note,
+        array $decisionTrace = [],
+    ): array {
         try {
             if (trim($note) === '') {
                 Log::info('[CrmSync] appendConversationDecisionNote result', [
                     'customer_id' => $customer->id,
                     'status' => 'skipped',
                     'reason' => 'empty_note',
+                    'trace_id' => $decisionTrace['trace_id'] ?? null,
                 ]);
 
                 return ['status' => 'skipped', 'reason' => 'empty_note'];
@@ -258,6 +262,7 @@ class CrmSyncService
                     'customer_id' => $customer->id,
                     'status' => 'skipped',
                     'reason' => 'no_crm_contact',
+                    'trace_id' => $decisionTrace['trace_id'] ?? null,
                 ]);
 
                 return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
@@ -268,6 +273,7 @@ class CrmSyncService
                     'customer_id' => $customer->id,
                     'status' => 'skipped',
                     'reason' => 'append_note_not_supported',
+                    'trace_id' => $decisionTrace['trace_id'] ?? null,
                 ]);
 
                 return ['status' => 'skipped', 'reason' => 'append_note_not_supported'];
@@ -278,6 +284,9 @@ class CrmSyncService
             Log::info('[CrmSync] appendConversationDecisionNote result', [
                 'customer_id' => $customer->id,
                 'status' => $result['status'] ?? null,
+                'trace_id' => $decisionTrace['trace_id'] ?? null,
+                'final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
+                'used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
             ]);
 
             if (in_array($result['status'] ?? null, ['success', 'skipped'], true)) {
@@ -288,6 +297,7 @@ class CrmSyncService
         } catch (\Throwable $e) {
             Log::error('[CrmSync] appendConversationDecisionNote exception', [
                 'customer_id' => $customer->id,
+                'trace_id' => $decisionTrace['trace_id'] ?? null,
                 'error' => $e->getMessage(),
             ]);
 

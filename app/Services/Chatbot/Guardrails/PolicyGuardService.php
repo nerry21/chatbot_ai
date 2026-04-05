@@ -88,6 +88,14 @@ class PolicyGuardService
                         crmEscalation: $crmEscalation,
                         crmLeadPipeline: $crmLeadPipeline,
                     ),
+                    'decision_trace_policy' => $this->decisionTracePolicy(
+                        action: 'blocked_bot_paused',
+                        reasons: $reasons,
+                        crmBusinessFlags: $crmBusinessFlags,
+                        crmEscalation: $crmEscalation,
+                        crmLeadPipeline: $crmLeadPipeline,
+                        crmSource: 'business_flags.bot_paused',
+                    ),
                 ],
             ];
         }
@@ -115,6 +123,14 @@ class PolicyGuardService
                         crmBusinessFlags: $crmBusinessFlags,
                         crmEscalation: $crmEscalation,
                         crmLeadPipeline: $crmLeadPipeline,
+                    ),
+                    'decision_trace_policy' => $this->decisionTracePolicy(
+                        action: 'blocked_admin_takeover',
+                        reasons: $reasons,
+                        crmBusinessFlags: $crmBusinessFlags,
+                        crmEscalation: $crmEscalation,
+                        crmLeadPipeline: $crmLeadPipeline,
+                        crmSource: 'business_flags.admin_takeover_active',
                     ),
                 ],
             ];
@@ -165,6 +181,14 @@ class PolicyGuardService
                         crmBusinessFlags: $crmBusinessFlags,
                         crmEscalation: $crmEscalation,
                         crmLeadPipeline: $crmLeadPipeline,
+                    ),
+                    'decision_trace_policy' => $this->decisionTracePolicy(
+                        action: 'blocked_takeover',
+                        reasons: $reasons,
+                        crmBusinessFlags: $crmBusinessFlags,
+                        crmEscalation: $crmEscalation,
+                        crmLeadPipeline: $crmLeadPipeline,
+                        crmSource: 'runtime.admin_takeover',
                     ),
                 ],
             ];
@@ -262,6 +286,14 @@ class PolicyGuardService
                     crmBusinessFlags: $crmBusinessFlags,
                     crmEscalation: $crmEscalation,
                     crmLeadPipeline: $crmLeadPipeline,
+                ),
+                'decision_trace_policy' => $this->decisionTracePolicy(
+                    action: $action,
+                    reasons: $reasons,
+                    crmBusinessFlags: $crmBusinessFlags,
+                    crmEscalation: $crmEscalation,
+                    crmLeadPipeline: $crmLeadPipeline,
+                    crmSource: $action !== 'allow' ? 'policy_guard' : null,
                 ),
             ],
         ];
@@ -670,5 +702,35 @@ class PolicyGuardService
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<int, string>  $reasons
+     * @param  array<string, mixed>  $crmBusinessFlags
+     * @param  array<string, mixed>  $crmEscalation
+     * @param  array<string, mixed>  $crmLeadPipeline
+     * @return array<string, mixed>
+     */
+    private function decisionTracePolicy(
+        string $action,
+        array $reasons,
+        array $crmBusinessFlags,
+        array $crmEscalation,
+        array $crmLeadPipeline,
+        ?string $crmSource = null,
+    ): array {
+        return [
+            'stage' => 'policy_guard',
+            'action' => $action,
+            'blocked' => $action !== 'allow',
+            'reasons' => array_values(array_unique($reasons)),
+            'crm_policy_source' => $crmSource,
+            'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                crmBusinessFlags: $crmBusinessFlags,
+                crmEscalation: $crmEscalation,
+                crmLeadPipeline: $crmLeadPipeline,
+            ),
+            'evaluated_at' => now()->toIso8601String(),
+        ];
     }
 }
