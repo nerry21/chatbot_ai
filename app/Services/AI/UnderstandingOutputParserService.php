@@ -35,8 +35,13 @@ class UnderstandingOutputParserService
     /**
      * @param  array<string, mixed>|string|null  $payload
      * @param  array<int, string>  $allowedIntents
+     * @param  array<string, mixed>  $metadata
      */
-    public function parse(array|string|null $payload, array $allowedIntents = []): LlmUnderstandingResult
+    public function parse(
+        array|string|null $payload,
+        array $allowedIntents = [],
+        array $metadata = [],
+    ): LlmUnderstandingResult
     {
         $normalizedAllowedIntents = $this->normalizeAllowedIntents($allowedIntents);
         $fallbackIntent = $this->fallbackIntent($normalizedAllowedIntents);
@@ -46,7 +51,10 @@ class UnderstandingOutputParserService
         if ($data === []) {
             return LlmUnderstandingResult::fallback(
                 intent: $fallbackIntent,
-                reasoningSummary: 'Fallback understanding digunakan karena payload model tidak dapat diparse.',
+                reasoningSummary: $this->buildFallbackReasoningSummary(
+                    base: 'Fallback understanding digunakan karena payload model tidak dapat diparse.',
+                    metadata: $metadata,
+                ),
             );
         }
 
@@ -62,6 +70,11 @@ class UnderstandingOutputParserService
             $data['reasoning_summary']
                 ?? $data['reasoning_short']
                 ?? null
+        );
+
+        $reasoningSummary = $this->enrichReasoningSummaryWithMetadata(
+            summary: $reasoningSummary,
+            metadata: $metadata,
         );
 
         if ($intent === $fallbackIntent && $confidence <= 0.30 && $clarificationQuestion === null) {
@@ -261,6 +274,49 @@ class UnderstandingOutputParserService
         }
 
         return Str::limit($summary, 180, '...');
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function buildFallbackReasoningSummary(string $base, array $metadata = []): string
+    {
+        $mode = $this->normalizeNullableString($metadata['understanding_mode'] ?? null);
+        $model = $this->normalizeNullableString($metadata['model'] ?? null);
+
+        $suffix = [];
+
+        if ($mode !== null) {
+            $suffix[] = 'mode='.$mode;
+        }
+
+        if ($model !== null) {
+            $suffix[] = 'model='.$model;
+        }
+
+        if ($suffix === []) {
+            return $base;
+        }
+
+        return Str::limit($base.' ['.implode(', ', $suffix).']', 180, '...');
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function enrichReasoningSummaryWithMetadata(string $summary, array $metadata = []): string
+    {
+        $mode = $this->normalizeNullableString($metadata['understanding_mode'] ?? null);
+
+        if ($mode === null) {
+            return $summary;
+        }
+
+        if (Str::contains($summary, 'mode=')) {
+            return $summary;
+        }
+
+        return Str::limit($summary.' [mode='.$mode.']', 180, '...');
     }
 
     private function normalizeClarificationQuestion(mixed $value, bool $needsClarification): ?string

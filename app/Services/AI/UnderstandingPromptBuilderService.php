@@ -26,6 +26,7 @@ class UnderstandingPromptBuilderService
         ?string $conversationSummary = null,
         array $crmHints = [],
         bool $adminTakeover = false,
+        ?string $traceId = null,
     ): array {
         $allowedIntentList = implode(', ', $allowedIntents);
 
@@ -38,13 +39,15 @@ PRINSIP UTAMA:
 1. Prioritaskan pemahaman dari pesan user terbaru.
 2. Gunakan riwayat percakapan yang relevan bila membantu interpretasi.
 3. Gunakan conversation state dan known entities untuk menjaga kesinambungan.
-4. Gunakan CRM hints HANYA sebagai petunjuk ringan, bukan sebagai pengarah utama intent.
+4. Gunakan CRM hints HANYA sebagai petunjuk ringan kontinuitas, bukan sebagai pengarah utama intent.
 5. Jangan memaksa intent hanya karena ada hint CRM bila pesan user terbaru mengarah ke hal lain.
 6. Jangan mengarang fakta bisnis, harga, jadwal, policy, status booking, atau status CRM.
 7. Jika konteks belum cukup, pilih intent paling aman dan set needs_clarification=true.
 8. reasoning_summary maksimal 1 kalimat singkat.
-9. Bila CRM hints dipakai, sebut secukupnya sebagai "hint kontinuitas", bukan sebagai sumber kebenaran utama.
+9. Bila CRM hints dipakai, perlakukan sebagai continuity hints, bukan sumber kebenaran utama.
 10. handoff_recommended=true hanya bila user jelas meminta admin/manusia, ada sinyal escalation kuat, atau konteks memang tidak aman untuk otomatis.
+11. Jangan menyalin mentah isi CRM hints ke reasoning_summary.
+12. Jika ada ketegangan antara pesan terbaru dan CRM hints, utamakan pesan terbaru.
 
 INTENT YANG DIIZINKAN:
 {$allowedIntentList}
@@ -59,6 +62,9 @@ ATURAN OUTPUT:
 7. passenger_count harus integer atau null.
 8. uses_previous_context=true hanya jika memang benar memakai history/state/hints untuk memahami pesan.
 9. Jangan menyebut field yang tidak ada pada format output.
+10. confidence harus angka 0 sampai 1.
+11. clarification_question wajib null bila needs_clarification=false.
+12. handoff_recommended jangan dijadikan true hanya karena CRM hints menyebut lead/escalation lama tanpa dukungan pesan terbaru.
 
 FORMAT OUTPUT:
 {
@@ -90,6 +96,7 @@ SYSTEM;
         );
 
         $user = implode("\n\n", array_filter([
+            $traceId !== null && trim($traceId) !== '' ? "=== TRACE CONTEXT ===\n".trim($traceId) : null,
             "=== PESAN USER TERBARU ===\n".$latestMessage,
             "=== RIWAYAT PERCAKAPAN RINGKAS ===\n".$this->jsonBlock($recentHistory),
             "=== CONVERSATION STATE ===\n".$this->jsonBlock($conversationState),

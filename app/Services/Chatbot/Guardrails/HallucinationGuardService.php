@@ -243,7 +243,10 @@ class HallucinationGuardService
                 ? 'faq'
                 : (! empty($knowledgeHits) ? 'knowledge_hits' : 'unknown'));
 
+        $traceId = $this->resolveTraceId($reply, $intentResult, $context);
+
         $groundingMeta = [
+            'trace_id' => $traceId,
             'grounding_source' => $groundingSource,
             'crm_grounding_present' => $hasSubstantialCrmFacts,
             'crm_grounding_sections' => $crmGroundingSections,
@@ -480,6 +483,7 @@ class HallucinationGuardService
                 'meta' => [
                     'source' => 'guard.hallucination',
                     'action' => 'clarify_sensitive_request',
+                    'trace_id' => $meta['trace_id'] ?? null,
                     'original_source' => $reply['meta']['source'] ?? null,
                     'original_action' => $reply['meta']['action'] ?? null,
                     'grounding_source' => $meta['grounding_source'] ?? null,
@@ -490,6 +494,14 @@ class HallucinationGuardService
                     'used_crm_facts' => is_array($meta['used_crm_facts'] ?? null)
                         ? array_values($meta['used_crm_facts'])
                         : [],
+                    'decision_trace' => $this->decisionTraceHallucination(
+                        traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
+                        action: 'clarify',
+                        blocked: true,
+                        reason: $reason,
+                        meta: $meta,
+                        reply: $reply,
+                    ),
                 ],
             ],
             'intent_result' => $intentResult,
@@ -500,6 +512,7 @@ class HallucinationGuardService
                 'reason' => $reason,
             ], $meta, [
                 'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                    traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
                     action: 'clarify',
                     blocked: true,
                     reason: $reason,
@@ -538,6 +551,7 @@ class HallucinationGuardService
                 'meta' => [
                     'source' => 'guard.hallucination',
                     'action' => 'handoff_sensitive_request',
+                    'trace_id' => $meta['trace_id'] ?? null,
                     'original_source' => $reply['meta']['source'] ?? null,
                     'original_action' => $reply['meta']['action'] ?? null,
                     'force_handoff' => true,
@@ -549,6 +563,14 @@ class HallucinationGuardService
                     'used_crm_facts' => is_array($meta['used_crm_facts'] ?? null)
                         ? array_values($meta['used_crm_facts'])
                         : [],
+                    'decision_trace' => $this->decisionTraceHallucination(
+                        traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
+                        action: 'handoff',
+                        blocked: true,
+                        reason: $reason,
+                        meta: $meta,
+                        reply: $reply,
+                    ),
                 ],
             ],
             'intent_result' => $intentResult,
@@ -559,6 +581,7 @@ class HallucinationGuardService
                 'reason' => $reason,
             ], $meta, [
                 'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                    traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
                     action: 'handoff',
                     blocked: true,
                     reason: $reason,
@@ -591,6 +614,7 @@ class HallucinationGuardService
                 'reason' => null,
             ], $meta, [
                 'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                    traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
                     action: 'allow',
                     blocked: false,
                     reason: null,
@@ -718,6 +742,7 @@ class HallucinationGuardService
      * @return array<string, mixed>
      */
     private function decisionTraceHallucination(
+        string $traceId,
         string $action,
         bool $blocked,
         ?string $reason,
@@ -745,18 +770,44 @@ class HallucinationGuardService
         }
 
         return [
-            'stage' => 'hallucination_guard',
-            'action' => $action,
-            'blocked' => $blocked,
-            'reason' => $reason,
-            'risk_level' => (string) ($meta['risk_level'] ?? 'unknown'),
-            'grounding_source' => $meta['grounding_source'] ?? null,
-            'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
-            'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
-                ? array_values($meta['crm_grounding_sections'])
-                : [],
-            'used_crm_facts' => array_values(array_unique($usedCrmFacts)),
-            'evaluated_at' => now()->toIso8601String(),
+            'trace_id' => $traceId,
+            'grounding' => [
+                'stage' => 'hallucination_guard',
+                'action' => $action,
+                'blocked' => $blocked,
+                'reason' => $reason,
+                'risk_level' => (string) ($meta['risk_level'] ?? 'unknown'),
+                'grounding_source' => $meta['grounding_source'] ?? null,
+                'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
+                'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
+                    ? array_values($meta['crm_grounding_sections'])
+                    : [],
+                'used_crm_facts' => array_values(array_unique($usedCrmFacts)),
+                'evaluated_at' => now()->toIso8601String(),
+            ],
+            'outcome' => [
+                'handoff' => $action === 'handoff',
+                'reply_action' => $action === 'clarify' ? 'ask_clarification' : ($action === 'handoff' ? 'handoff_admin' : 'allow'),
+                'is_fallback' => (bool) ($reply['is_fallback'] ?? false),
+            ],
         ];
+    }
+
+    private function resolveTraceId(array ...$sources): string
+    {
+        foreach ($sources as $source) {
+            foreach ([
+                $source['trace_id'] ?? null,
+                $source['meta']['trace_id'] ?? null,
+                $source['decision_trace']['trace_id'] ?? null,
+                $source['job_trace_id'] ?? null,
+            ] as $candidate) {
+                if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                    return trim((string) $candidate);
+                }
+            }
+        }
+
+        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
     }
 }

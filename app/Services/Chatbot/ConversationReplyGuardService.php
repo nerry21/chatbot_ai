@@ -127,21 +127,80 @@ class ConversationReplyGuardService
         $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
 
         $existingMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        $traceId = $this->resolveTraceId($replyResult, $context, $orchestrationSnapshot, $existingMeta);
+
         $replyResult['meta'] = array_merge($existingMeta, [
+            'trace_id' => $traceId,
             'conversation_guard_applied' => true,
-            'decision_trace' => array_values(array_filter([
-                ...(is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : []),
+            'decision_trace' => $this->mergeDecisionTrace(
+                is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : [],
                 [
-                    'stage' => 'conversation_reply_guard',
-                    'action' => ($replyResult['should_escalate'] ?? false) ? 'handoff_or_safe_reply' : 'allow',
-                    'blocked' => false,
-                    'notes' => array_values(array_unique(array_filter($notes))),
-                    'evaluated_at' => now()->toIso8601String(),
+                    'trace_id' => $traceId,
+                    'outcome' => [
+                        'final_decision' => ($replyResult['should_escalate'] ?? false) ? 'conversation_guard_handoff_or_safe_reply' : 'conversation_guard_allow',
+                        'reply_action' => $replyResult['next_action'] ?? null,
+                        'handoff' => (bool) ($replyResult['should_escalate'] ?? false),
+                        'handoff_reason' => $replyResult['handoff_reason'] ?? null,
+                        'is_fallback' => (bool) ($replyResult['is_fallback'] ?? false),
+                    ],
+                    'conversation_guard' => [
+                        'stage' => 'conversation_reply_guard',
+                        'action' => ($replyResult['should_escalate'] ?? false) ? 'handoff_or_safe_reply' : 'allow',
+                        'blocked' => false,
+                        'notes' => array_values(array_unique(array_filter($notes))),
+                        'evaluated_at' => now()->toIso8601String(),
+                    ],
                 ],
-            ])),
+            ),
         ]);
 
         return $replyResult;
+    }
+
+    private function resolveTraceId(array ...$sources): string
+    {
+        foreach ($sources as $source) {
+            foreach ([
+                $source['trace_id'] ?? null,
+                $source['meta']['trace_id'] ?? null,
+                $source['decision_trace']['trace_id'] ?? null,
+                $source['job_trace_id'] ?? null,
+            ] as $candidate) {
+                if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                    return trim((string) $candidate);
+                }
+            }
+        }
+
+        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+    }
+
+    /**
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
+     */
+    private function mergeDecisionTrace(array $base, array $extra): array
+    {
+        if (array_is_list($base)) {
+            $normalized = [];
+
+            foreach ($base as $part) {
+                if (is_array($part)) {
+                    $normalized = array_replace_recursive($normalized, $part);
+                }
+            }
+
+            $base = $normalized;
+        }
+
+        $merged = array_replace_recursive($base, $extra);
+
+        if (! isset($merged['trace_id']) || ! is_scalar($merged['trace_id']) || trim((string) $merged['trace_id']) === '') {
+            $merged['trace_id'] = $this->resolveTraceId($base, $extra);
+        }
+
+        return $merged;
     }
 
     /**

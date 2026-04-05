@@ -11,6 +11,7 @@ final readonly class ConversationContextPayload
      * @param  array<string, mixed>  $resolvedContext
      * @param  array<string, mixed>  $customerMemory
      * @param  array<string, mixed>  $crmContext
+     * @param  array<string, mixed>  $crmHints
      */
     public function __construct(
         public int $conversationId,
@@ -24,6 +25,8 @@ final readonly class ConversationContextPayload
         public array $customerMemory,
         public array $crmContext,
         public bool $adminTakeover,
+        public array $crmHints = [],
+        public ?string $jobTraceId = null,
     ) {}
 
     /**
@@ -32,22 +35,30 @@ final readonly class ConversationContextPayload
      * Hanya pesan, history, state, known entities, summary, dan admin flag.
      *
      * @return array{
+     *     conversation_id: int,
+     *     message_id: int,
+     *     trace_id: string|null,
      *     latest_message: string,
      *     recent_history: array<int, array{role: string, text: string, sent_at: string|null}>,
      *     conversation_state: array<string, mixed>,
      *     known_entities: array<string, mixed>,
      *     conversation_summary: string|null,
+     *     crm_hints: array<string, mixed>,
      *     admin_takeover: bool
      * }
      */
     public function toUnderstandingInput(): array
     {
         return [
+            'conversation_id' => $this->conversationId,
+            'message_id' => $this->messageId,
+            'trace_id' => $this->jobTraceId,
             'latest_message' => $this->latestMessageText,
             'recent_history' => $this->recentHistoryForUnderstanding(),
             'conversation_state' => $this->conversationStateForUnderstanding(),
             'known_entities' => $this->knownEntitiesForUnderstanding(),
             'conversation_summary' => $this->conversationSummary,
+            'crm_hints' => $this->crmHintsForUnderstanding(),
             'admin_takeover' => $this->adminTakeover,
         ];
     }
@@ -62,9 +73,12 @@ final readonly class ConversationContextPayload
         return [
             'conversation_id' => $this->conversationId,
             'message_id' => $this->messageId,
+            'job_trace_id' => $this->jobTraceId,
+            'trace_id' => $this->jobTraceId,
             'message_text' => $this->latestMessageText,
             'customer_memory' => $this->customerMemory,
             'crm_context' => $this->crmContext,
+            'crm_hints' => $this->crmHints,
             'active_states' => $this->conversationState,
             'recent_messages' => $this->recentMessagesForLegacyAiContext(),
             'context_messages' => $this->recentHistoryForUnderstanding(),
@@ -83,6 +97,8 @@ final readonly class ConversationContextPayload
         return [
             'conversation_id' => $this->conversationId,
             'message_id' => $this->messageId,
+            'job_trace_id' => $this->jobTraceId,
+            'trace_id' => $this->jobTraceId,
             'latest_message_text' => $this->latestMessageText,
             'recent_messages' => array_map(
                 static fn (ConversationContextMessage $message): array => $message->toArray(),
@@ -94,6 +110,7 @@ final readonly class ConversationContextPayload
             'conversation_summary' => $this->conversationSummary,
             'customer_memory' => $this->customerMemory,
             'crm_context' => $this->crmContext,
+            'crm_hints' => $this->crmHints,
             'admin_takeover' => $this->adminTakeover,
         ];
     }
@@ -115,6 +132,23 @@ final readonly class ConversationContextPayload
             customerMemory: $this->customerMemory,
             crmContext: $crmContext,
             adminTakeover: $this->adminTakeover,
+            crmHints: $this->crmHints,
+            jobTraceId: $this->jobTraceId,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function crmHintsForUnderstanding(): array
+    {
+        return array_filter(
+            $this->crmHints,
+            static fn (mixed $value): bool => match (true) {
+                is_bool($value) => $value === true,
+                is_string($value) => $value !== '',
+                default => $value !== null,
+            },
         );
     }
 

@@ -132,8 +132,14 @@ class ReplyOrchestratorService
         ?array $bookingDecision = null,
     ): array {
         $replyMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        $decisionTrace = $this->normalizeDecisionTrace(
+            is_array($replyMeta['decision_trace'] ?? null) ? $replyMeta['decision_trace'] : [],
+            $intentResult,
+            $replyResult,
+        );
 
         return [
+            'trace_id' => $decisionTrace['trace_id'] ?? null,
             'intent' => $intentResult['intent'] ?? null,
             'intent_confidence' => $intentResult['confidence'] ?? null,
             'intent_reasoning' => $intentResult['reasoning_short'] ?? null,
@@ -150,9 +156,7 @@ class ReplyOrchestratorService
             'used_crm_facts' => is_array($replyResult['used_crm_facts'] ?? null)
                 ? array_values(array_unique($replyResult['used_crm_facts']))
                 : [],
-            'decision_trace' => is_array($replyMeta['decision_trace'] ?? null)
-                ? $replyMeta['decision_trace']
-                : [],
+            'decision_trace' => $decisionTrace,
         ];
     }
 
@@ -230,21 +234,35 @@ class ReplyOrchestratorService
         )));
 
         $existingMeta = is_array($final['meta'] ?? null) ? $final['meta'] : [];
-        $decisionTrace = [];
 
-        foreach ([
+        $decisionTrace = $this->mergeDecisionTraceParts(
             $existingMeta['decision_trace'] ?? [],
             $afterHallucination['meta']['decision_trace'] ?? [],
             $policyReport['decision_trace_policy'] ?? [],
-        ] as $tracePart) {
-            if (is_array($tracePart) && $tracePart !== []) {
-                $decisionTrace[] = $tracePart;
-            }
-        }
+            [
+                'outcome' => [
+                    'reply_action' => $final['next_action'] ?? null,
+                    'final_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
+                    'handoff' => (bool) ($final['should_escalate'] ?? false),
+                    'handoff_reason' => $final['handoff_reason'] ?? null,
+                    'is_fallback' => (bool) ($final['is_fallback'] ?? false),
+                ],
+                'policy' => [
+                    'violations' => $policyReport['violations'] ?? [],
+                ],
+                'grounding' => [
+                    'source' => $existingMeta['grounding_source'] ?? null,
+                    'used_crm_facts' => is_array($final['used_crm_facts'] ?? null)
+                        ? array_values(array_unique($final['used_crm_facts']))
+                        : [],
+                ],
+            ],
+        );
 
         $final['meta'] = array_merge(
             $existingMeta,
             [
+                'trace_id' => $decisionTrace['trace_id'] ?? null,
                 'hardening_applied' => true,
                 'decision_source' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
                 'policy_violations' => $policyReport['violations'] ?? [],
@@ -274,7 +292,7 @@ class ReplyOrchestratorService
         array $knowledgeHits = [],
         ?array $faqResult = null,
     ): array {
-        return $this->hardenFinalReply(
+        $final = $this->hardenFinalReply(
             replyDraft: $replyDraft,
             context: $context,
             intentResult: $intentResult,
@@ -282,6 +300,112 @@ class ReplyOrchestratorService
             knowledgeHits: $knowledgeHits,
             faqResult: $faqResult,
         );
+
+        $finalMeta = is_array($final['meta'] ?? null) ? $final['meta'] : [];
+        $trace = $this->normalizeDecisionTrace(
+            is_array($finalMeta['decision_trace'] ?? null) ? $finalMeta['decision_trace'] : [],
+            $intentResult,
+            $final,
+        );
+
+        $final['meta'] = array_merge($finalMeta, [
+            'trace_id' => $trace['trace_id'] ?? null,
+            'decision_trace' => $trace,
+        ]);
+
+        return $final;
+    }
+
+    /**
+     * @param  mixed  ...$parts
+     * @return array<string, mixed>
+     */
+    private function mergeDecisionTraceParts(...$parts): array
+    {
+        $merged = [];
+
+        foreach ($parts as $part) {
+            if (! is_array($part) || $part === []) {
+                continue;
+            }
+
+            $normalized = $this->normalizeDecisionTrace($part);
+
+            foreach ($normalized as $key => $value) {
+                if (! array_key_exists($key, $merged)) {
+                    $merged[$key] = $value;
+                    continue;
+                }
+
+                if (is_array($merged[$key]) && is_array($value)) {
+                    $merged[$key] = array_replace_recursive($merged[$key], $value);
+                    continue;
+                }
+
+                if ($value !== null && $value !== '') {
+                    $merged[$key] = $value;
+                }
+            }
+        }
+
+        if (! isset($merged['trace_id']) || ! is_scalar($merged['trace_id']) || trim((string) $merged['trace_id']) === '') {
+            $merged['trace_id'] = 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+        }
+
+        return $merged;
+    }
+
+    /**
+     * @param  array<string, mixed>  $trace
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $replyResult
+     * @return array<string, mixed>
+     */
+    private function normalizeDecisionTrace(
+        array $trace,
+        array $intentResult = [],
+        array $replyResult = [],
+    ): array {
+        if (array_is_list($trace)) {
+            $merged = [];
+
+            foreach ($trace as $part) {
+                if (is_array($part)) {
+                    $merged = array_replace_recursive($merged, $part);
+                }
+            }
+
+            $trace = $merged;
+        }
+
+        $outcome = is_array($trace['outcome'] ?? null) ? $trace['outcome'] : [];
+        $policy = is_array($trace['policy'] ?? null) ? $trace['policy'] : [];
+        $grounding = is_array($trace['grounding'] ?? null) ? $trace['grounding'] : [];
+        $understanding = is_array($trace['understanding'] ?? null) ? $trace['understanding'] : [];
+
+        $traceId = $trace['trace_id'] ?? $replyResult['trace_id'] ?? $replyResult['meta']['trace_id'] ?? null;
+
+        if (! is_scalar($traceId) || trim((string) $traceId) === '') {
+            $traceId = 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+        }
+
+        return [
+            'trace_id' => trim((string) $traceId),
+            'understanding' => array_filter([
+                'intent' => $intentResult['intent'] ?? $understanding['intent'] ?? null,
+                'confidence' => $intentResult['confidence'] ?? $understanding['confidence'] ?? null,
+                'reasoning_short' => $intentResult['reasoning_short'] ?? $understanding['reasoning_short'] ?? null,
+            ], fn ($v) => $v !== null && $v !== ''),
+            'outcome' => array_filter([
+                'final_decision' => $outcome['final_decision'] ?? ($replyResult['meta']['decision_source'] ?? $replyResult['meta']['source'] ?? null),
+                'reply_action' => $outcome['reply_action'] ?? ($replyResult['next_action'] ?? null),
+                'handoff' => $outcome['handoff'] ?? ($replyResult['should_escalate'] ?? null),
+                'handoff_reason' => $outcome['handoff_reason'] ?? ($replyResult['handoff_reason'] ?? null),
+                'is_fallback' => $outcome['is_fallback'] ?? ($replyResult['is_fallback'] ?? null),
+            ], fn ($v) => $v !== null && $v !== ''),
+            'policy' => array_filter($policy, fn ($v) => $v !== null && $v !== ''),
+            'grounding' => array_filter($grounding, fn ($v) => $v !== null && $v !== ''),
+        ];
     }
 
     /**

@@ -43,9 +43,22 @@ class CrmOrchestrationSnapshotService
         $decisionTrace = is_array($contextPayload['decision_trace'] ?? null) ? $contextPayload['decision_trace'] : [];
         $understandingMeta = is_array($contextPayload['understanding_meta'] ?? null) ? $contextPayload['understanding_meta'] : [];
 
+        $traceId = $this->resolveTraceId(
+            $decisionTrace,
+            $understandingMeta,
+            $contextPayload,
+        );
+
+        $traceSummary = $this->buildTraceSummary(
+            $decisionTrace,
+            $intentResult,
+            $understandingMeta,
+        );
+
         $snapshot = [
-            'snapshot_version' => 2,
+            'snapshot_version' => 3,
             'generated_at' => now()->toIso8601String(),
+            'trace_id' => $traceId,
 
             'customer' => $this->clean($crmContext['customer'] ?? []),
             'hubspot' => $this->clean($crmContext['hubspot'] ?? []),
@@ -85,9 +98,13 @@ class CrmOrchestrationSnapshotService
                 'latest_summary' => $contextPayload['conversation_summary'] ?? null,
                 'latest_message_text' => $contextPayload['latest_message_text'] ?? ($contextPayload['message_text'] ?? null),
                 'admin_takeover' => (bool) ($contextPayload['admin_takeover'] ?? false),
+                'message_id' => $contextPayload['message_id'] ?? null,
+                'conversation_id' => $conversation->id,
+                'job_trace_id' => $contextPayload['job_trace_id'] ?? null,
             ]),
 
             'ai_decision' => $this->clean([
+                'trace_id' => $traceId,
                 'intent' => $intentResult['intent'] ?? null,
                 'confidence' => isset($intentResult['confidence']) ? (float) $intentResult['confidence'] : null,
                 'reasoning_short' => $intentResult['reasoning_short'] ?? null,
@@ -96,11 +113,65 @@ class CrmOrchestrationSnapshotService
                 'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
                 'entity_result' => $entityResult,
                 'understanding_meta' => $understandingMeta,
+                'trace_summary' => $traceSummary,
                 'decision_trace' => $decisionTrace,
             ]),
         ];
 
         return $this->clean($snapshot);
+    }
+
+    /**
+     * @param  array<string, mixed>  $decisionTrace
+     * @param  array<string, mixed>  $understandingMeta
+     * @param  array<string, mixed>  $contextPayload
+     */
+    private function resolveTraceId(
+        array $decisionTrace,
+        array $understandingMeta,
+        array $contextPayload = [],
+    ): string {
+        foreach ([
+            $decisionTrace['trace_id'] ?? null,
+            $understandingMeta['trace_id'] ?? null,
+            $contextPayload['trace_id'] ?? null,
+            $contextPayload['job_trace_id'] ?? null,
+        ] as $candidate) {
+            if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                return trim((string) $candidate);
+            }
+        }
+
+        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+    }
+
+    /**
+     * @param  array<string, mixed>  $decisionTrace
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $understandingMeta
+     * @return array<string, mixed>
+     */
+    private function buildTraceSummary(
+        array $decisionTrace,
+        array $intentResult,
+        array $understandingMeta = [],
+    ): array {
+        $outcome = is_array($decisionTrace['outcome'] ?? null) ? $decisionTrace['outcome'] : [];
+        $policy = is_array($decisionTrace['policy'] ?? null) ? $decisionTrace['policy'] : [];
+        $grounding = is_array($decisionTrace['grounding'] ?? null) ? $decisionTrace['grounding'] : [];
+
+        return $this->clean([
+            'trace_id' => $decisionTrace['trace_id'] ?? $understandingMeta['trace_id'] ?? null,
+            'intent' => $intentResult['intent'] ?? null,
+            'final_decision' => $outcome['final_decision'] ?? null,
+            'reply_action' => $outcome['reply_action'] ?? null,
+            'handoff' => $outcome['handoff'] ?? null,
+            'grounded' => $grounding['grounded'] ?? null,
+            'policy_status' => $policy['status'] ?? null,
+            'policy_reason_code' => $policy['reason_code'] ?? null,
+            'understanding_model' => $understandingMeta['model'] ?? null,
+            'understanding_mode' => $understandingMeta['mode'] ?? null,
+        ]);
     }
 
     /**

@@ -30,6 +30,7 @@ class UnderstandingResultAdapterService
     ): array {
         $usedLegacyIntentFallback = $this->needsLegacyFallback($understanding) && $legacyIntentResult !== [];
         $usedLegacyEntityFallback = $legacyEntityResult !== [];
+        $traceId = $this->resolveTraceId($legacyIntentResult, $legacyEntityResult);
 
         $intent = $this->resolveIntent($understanding, $legacyIntentResult, $usedLegacyIntentFallback);
         $confidence = $usedLegacyIntentFallback
@@ -40,6 +41,7 @@ class UnderstandingResultAdapterService
             : $understanding->reasoningSummary;
 
         $intentResult = [
+            'trace_id' => $traceId,
             'intent' => $intent,
             'confidence' => min(1.0, max(0.0, $confidence)),
             'reasoning_short' => $reasoning !== '' ? $reasoning : 'Understanding LLM-first dengan CRM hints aktif.',
@@ -58,10 +60,13 @@ class UnderstandingResultAdapterService
             $legacyEntityResult,
         );
 
+        $usedCrmFacts = $this->buildUsedCrmFacts($understanding);
+
         return [
             'intent_result' => $intentResult,
             'entity_result' => $entityResult,
             'meta' => [
+                'trace_id' => $traceId,
                 'llm_primary' => true,
                 'understanding_source' => 'llm_first_understanding_with_crm_hints',
                 'crm_hints_used' => true,
@@ -75,10 +80,37 @@ class UnderstandingResultAdapterService
                     'uses_previous_context' => (bool) $understanding->usesPreviousContext,
                     'handoff_recommended' => (bool) $understanding->handoffRecommended,
                     'needs_clarification' => (bool) $understanding->needsClarification,
+                    'used_crm_facts' => $usedCrmFacts,
                 ],
                 'confidence_explanation' => $reasoning !== ''
                     ? $reasoning
                     : 'Confidence dibentuk dari hasil understanding utama dengan fallback legacy bila perlu.',
+                'decision_trace' => [
+                    'trace_id' => $traceId,
+                    'understanding' => [
+                        'stage' => 'understanding_result_adapter',
+                        'intent' => $intent,
+                        'confidence' => min(1.0, max(0.0, $confidence)),
+                        'reasoning_short' => $reasoning !== '' ? $reasoning : null,
+                        'sub_intent' => $understanding->subIntent,
+                        'needs_clarification' => (bool) $understanding->needsClarification,
+                        'clarification_question' => $understanding->clarificationQuestion,
+                        'handoff_recommended' => (bool) $understanding->handoffRecommended,
+                        'uses_previous_context' => (bool) $understanding->usesPreviousContext,
+                        'used_legacy_intent_fallback' => $usedLegacyIntentFallback,
+                        'used_legacy_entity_fallback' => $usedLegacyEntityFallback,
+                        'understanding_source' => 'llm_first_understanding_with_crm_hints',
+                        'crm_hints_used' => true,
+                    ],
+                    'grounding' => [
+                        'used_crm_facts' => $usedCrmFacts,
+                    ],
+                    'outcome' => [
+                        'final_decision' => 'understanding_prepared',
+                        'reply_action' => $understanding->needsClarification ? 'ask_clarification' : null,
+                        'handoff' => (bool) $understanding->handoffRecommended,
+                    ],
+                ],
             ],
         ];
     }
@@ -248,6 +280,46 @@ class UnderstandingResultAdapterService
         }
 
         return false;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function buildUsedCrmFacts(LlmUnderstandingResult $understanding): array
+    {
+        $facts = [];
+
+        if ($understanding->usesPreviousContext) {
+            $facts[] = 'crm.previous_context';
+        }
+
+        if ($understanding->handoffRecommended) {
+            $facts[] = 'crm.handoff_signal';
+        }
+
+        if ($understanding->needsClarification) {
+            $facts[] = 'crm.clarification_signal';
+        }
+
+        return array_values(array_unique($facts));
+    }
+
+    private function resolveTraceId(array ...$sources): string
+    {
+        foreach ($sources as $source) {
+            foreach ([
+                $source['trace_id'] ?? null,
+                $source['meta']['trace_id'] ?? null,
+                $source['decision_trace']['trace_id'] ?? null,
+                $source['job_trace_id'] ?? null,
+            ] as $candidate) {
+                if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                    return trim((string) $candidate);
+                }
+            }
+        }
+
+        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
     }
 
     private function normalizeText(mixed $value): ?string

@@ -85,6 +85,7 @@ class GroundedResponseComposerService
     ): array {
         $reply = trim((string) ($replyDraft['reply'] ?? $replyDraft['text'] ?? ''));
         $usedFacts = is_array($replyDraft['used_crm_facts'] ?? null) ? $replyDraft['used_crm_facts'] : [];
+        $traceId = $this->resolveTraceId($replyDraft, $context, $intentResult, $orchestrationSnapshot);
 
         $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
         $customer = is_array($crm['customer'] ?? null) ? $crm['customer'] : [];
@@ -152,12 +153,40 @@ class GroundedResponseComposerService
         $replyDraft['message_type'] = $replyDraft['message_type'] ?? 'text';
         $replyDraft['outbound_payload'] = is_array($replyDraft['outbound_payload'] ?? null) ? $replyDraft['outbound_payload'] : [];
 
+        $existingMeta = is_array($replyDraft['meta'] ?? null) ? $replyDraft['meta'] : [];
+        $groundingSource = $this->detectGroundingSource($faqResult, $knowledgeHits, $crm);
+
         $replyDraft['meta'] = array_merge(
-            is_array($replyDraft['meta'] ?? null) ? $replyDraft['meta'] : [],
+            $existingMeta,
             [
+                'trace_id' => $traceId,
                 'grounded' => true,
-                'grounding_source' => $this->detectGroundingSource($faqResult, $knowledgeHits, $crm),
+                'grounding_source' => $groundingSource,
                 'crm_grounding_sections' => $crmGroundingSections,
+                'decision_trace' => $this->mergeDecisionTrace(
+                    is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : [],
+                    [
+                        'trace_id' => $traceId,
+                        'grounding' => [
+                            'stage' => 'grounded_response_composer',
+                            'grounded' => true,
+                            'grounding_source' => $groundingSource,
+                            'crm_grounding_sections' => $crmGroundingSections,
+                            'used_crm_facts' => array_values(array_unique(array_filter($replyDraft['used_crm_facts'] ?? []))),
+                            'knowledge_hit_count' => count($knowledgeHits),
+                            'faq_matched' => (bool) (($faqResult['matched'] ?? false) === true),
+                            'notes' => array_values(array_unique(array_filter($replyDraft['grounding_notes'] ?? []))),
+                            'evaluated_at' => now()->toIso8601String(),
+                        ],
+                        'outcome' => [
+                            'final_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'grounded_response',
+                            'reply_action' => $replyDraft['next_action'] ?? null,
+                            'handoff' => (bool) ($replyDraft['should_escalate'] ?? false),
+                            'handoff_reason' => $replyDraft['handoff_reason'] ?? null,
+                            'is_fallback' => (bool) ($replyDraft['is_fallback'] ?? false),
+                        ],
+                    ],
+                ),
             ],
         );
 
@@ -189,8 +218,12 @@ class GroundedResponseComposerService
      */
     private function detectGroundingSource(?array $faqResult, array $knowledgeHits, array $crm): string
     {
-        if ($faqResult !== null && ! empty($faqResult['matched']) && $knowledgeHits !== []) {
+        if ($faqResult !== null && ! empty($faqResult['matched']) && $knowledgeHits !== [] && $crm !== []) {
             return 'faq+knowledge+crm';
+        }
+
+        if ($faqResult !== null && ! empty($faqResult['matched']) && $knowledgeHits !== []) {
+            return 'faq+knowledge';
         }
 
         if ($faqResult !== null && ! empty($faqResult['matched'])) {
@@ -294,5 +327,51 @@ class GroundedResponseComposerService
         }
 
         return str_replace(':', '.', trim($time));
+    }
+
+    private function resolveTraceId(array ...$sources): string
+    {
+        foreach ($sources as $source) {
+            foreach ([
+                $source['trace_id'] ?? null,
+                $source['meta']['trace_id'] ?? null,
+                $source['decision_trace']['trace_id'] ?? null,
+                $source['job_trace_id'] ?? null,
+            ] as $candidate) {
+                if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                    return trim((string) $candidate);
+                }
+            }
+        }
+
+        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+    }
+
+    /**
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
+     */
+    private function mergeDecisionTrace(array $base, array $extra): array
+    {
+        if (array_is_list($base)) {
+            $normalized = [];
+
+            foreach ($base as $part) {
+                if (is_array($part)) {
+                    $normalized = array_replace_recursive($normalized, $part);
+                }
+            }
+
+            $base = $normalized;
+        }
+
+        $merged = array_replace_recursive($base, $extra);
+
+        if (! isset($merged['trace_id']) || ! is_scalar($merged['trace_id']) || trim((string) $merged['trace_id']) === '') {
+            $merged['trace_id'] = $this->resolveTraceId($base, $extra);
+        }
+
+        return $merged;
     }
 }

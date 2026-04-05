@@ -28,6 +28,8 @@ class ConversationContextLoaderService
     {
         $conversation->loadMissing('customer');
 
+        $jobTraceId = $this->buildJobTraceId($conversation, $message);
+
         $historyWindow = $this->historyWindow();
         $historyMessages = $this->loadHistoryMessages($conversation, $message->id);
         $recentMessages = array_values(array_slice($historyMessages, -$historyWindow));
@@ -67,6 +69,8 @@ class ConversationContextLoaderService
             adminTakeover: $conversation->isAdminTakeover(),
         );
 
+        $crmHints = $this->buildCrmHints($crmContext);
+
         return new ConversationContextPayload(
             conversationId: $conversation->id,
             messageId: $message->id,
@@ -81,6 +85,8 @@ class ConversationContextLoaderService
                 : [],
             crmContext: $crmContext,
             adminTakeover: $conversation->isAdminTakeover(),
+            crmHints: $crmHints,
+            jobTraceId: $jobTraceId,
         );
     }
 
@@ -201,6 +207,55 @@ class ConversationContextLoaderService
     private function historyWindow(): int
     {
         return min(10, max(5, (int) config('chatbot.memory.max_recent_messages', 10)));
+    }
+
+    /**
+     * @param  array<string, mixed>  $crmContext
+     * @return array<string, mixed>
+     */
+    private function buildCrmHints(array $crmContext): array
+    {
+        $businessFlags = is_array($crmContext['business_flags'] ?? null)
+            ? $crmContext['business_flags']
+            : [];
+        $leadPipeline = is_array($crmContext['lead_pipeline'] ?? null)
+            ? $crmContext['lead_pipeline']
+            : [];
+        $escalation = is_array($crmContext['escalation'] ?? null)
+            ? $crmContext['escalation']
+            : [];
+        $conversation = is_array($crmContext['conversation'] ?? null)
+            ? $crmContext['conversation']
+            : [];
+        $booking = is_array($crmContext['booking'] ?? null)
+            ? $crmContext['booking']
+            : [];
+
+        return array_filter([
+            'bot_paused' => (bool) ($businessFlags['bot_paused'] ?? false),
+            'admin_takeover_active' => (bool) ($businessFlags['admin_takeover_active'] ?? false),
+            'has_open_escalation' => (bool) ($escalation['has_open_escalation'] ?? false),
+            'current_stage' => $this->normalizeText($leadPipeline['current_stage'] ?? null),
+            'last_intent' => $this->normalizeText($conversation['last_ai_intent'] ?? null),
+            'last_summary' => $this->normalizeText($conversation['last_ai_summary'] ?? null),
+            'booking_status' => $this->normalizeText($booking['status'] ?? null),
+            'needs_human_followup' => (bool) ($conversation['needs_human_followup'] ?? false),
+        ], static fn (mixed $value): bool => match (true) {
+            is_bool($value) => $value === true,
+            is_string($value) => $value !== '',
+            default => $value !== null,
+        });
+    }
+
+    private function buildJobTraceId(Conversation $conversation, ConversationMessage $message): string
+    {
+        return implode('-', array_filter([
+            'trace',
+            'c'.$conversation->id,
+            'm'.$message->id,
+            now()->format('YmdHis'),
+            substr(md5((string) microtime(true)), 0, 8),
+        ]));
     }
 
     private function roleFromSender(?SenderType $senderType): string

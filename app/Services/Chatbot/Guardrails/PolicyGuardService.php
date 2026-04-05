@@ -51,6 +51,12 @@ class PolicyGuardService
         $reasons = [];
         $action = 'allow';
 
+        $traceId = $this->resolveTraceId(
+            $understandingResult,
+            $resolvedContext,
+            $crmContext,
+        );
+
         $crmBusinessFlags = is_array($crmContext['business_flags'] ?? null)
             ? $crmContext['business_flags']
             : [];
@@ -89,6 +95,7 @@ class PolicyGuardService
                         crmLeadPipeline: $crmLeadPipeline,
                     ),
                     'decision_trace_policy' => $this->decisionTracePolicy(
+                        traceId: $traceId,
                         action: 'blocked_bot_paused',
                         reasons: $reasons,
                         crmBusinessFlags: $crmBusinessFlags,
@@ -125,6 +132,7 @@ class PolicyGuardService
                         crmLeadPipeline: $crmLeadPipeline,
                     ),
                     'decision_trace_policy' => $this->decisionTracePolicy(
+                        traceId: $traceId,
                         action: 'blocked_admin_takeover',
                         reasons: $reasons,
                         crmBusinessFlags: $crmBusinessFlags,
@@ -183,6 +191,7 @@ class PolicyGuardService
                         crmLeadPipeline: $crmLeadPipeline,
                     ),
                     'decision_trace_policy' => $this->decisionTracePolicy(
+                        traceId: $traceId,
                         action: 'blocked_takeover',
                         reasons: $reasons,
                         crmBusinessFlags: $crmBusinessFlags,
@@ -288,6 +297,7 @@ class PolicyGuardService
                     crmLeadPipeline: $crmLeadPipeline,
                 ),
                 'decision_trace_policy' => $this->decisionTracePolicy(
+                    traceId: $traceId,
                     action: $action,
                     reasons: $reasons,
                     crmBusinessFlags: $crmBusinessFlags,
@@ -376,18 +386,29 @@ class PolicyGuardService
             'is_compliant' => $violations === [],
             'violations' => array_values(array_unique($violations)),
             'decision_trace_policy' => [
-                'stage' => 'policy_guard',
-                'action' => $decisionAction,
-                'blocked' => $blockAutoReply,
-                'force_handoff' => $decisionAction === 'handoff',
-                'reasons' => array_values(array_unique($violations)),
-                'reply_source' => $meta['decision_source'] ?? $meta['source'] ?? null,
-                'crm_policy_snapshot' => $this->crmPolicySnapshot(
-                    crmBusinessFlags: $flags,
-                    crmEscalation: $escalation,
-                    crmLeadPipeline: $leadPipeline,
+                'trace_id' => $this->resolveTraceId(
+                    $meta,
+                    $context,
+                    ['business_flags' => $flags, 'escalation' => $escalation, 'lead_pipeline' => $leadPipeline],
                 ),
-                'evaluated_at' => now()->toIso8601String(),
+                'policy' => [
+                    'stage' => 'policy_guard',
+                    'action' => $decisionAction,
+                    'blocked' => $blockAutoReply,
+                    'force_handoff' => $decisionAction === 'handoff',
+                    'reasons' => array_values(array_unique($violations)),
+                    'reply_source' => $meta['decision_source'] ?? $meta['source'] ?? null,
+                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                        crmBusinessFlags: $flags,
+                        crmEscalation: $escalation,
+                        crmLeadPipeline: $leadPipeline,
+                    ),
+                    'evaluated_at' => now()->toIso8601String(),
+                ],
+                'outcome' => [
+                    'reply_action' => $replyResult['next_action'] ?? null,
+                    'handoff' => $decisionAction === 'handoff',
+                ],
             ],
         ];
     }
@@ -423,6 +444,24 @@ class PolicyGuardService
             'meta' => [
                 'force_handoff' => true,
                 'source' => 'policy_guard_fallback',
+                'decision_trace' => [
+                    'trace_id' => $this->resolveTraceId($policyReport, $context),
+                    'policy' => [
+                        'stage' => 'policy_guard',
+                        'action' => 'handoff',
+                        'blocked' => true,
+                        'force_handoff' => true,
+                        'reasons' => array_values($policyReport['violations'] ?? []),
+                        'evaluated_at' => now()->toIso8601String(),
+                    ],
+                    'outcome' => [
+                        'final_decision' => 'policy_guard_fallback',
+                        'reply_action' => 'handoff_admin',
+                        'handoff' => true,
+                        'handoff_reason' => 'Policy guard fallback',
+                        'is_fallback' => true,
+                    ],
+                ],
             ],
         ];
     }
@@ -733,6 +772,7 @@ class PolicyGuardService
      * @return array<string, mixed>
      */
     private function decisionTracePolicy(
+        string $traceId,
         string $action,
         array $reasons,
         array $crmBusinessFlags,
@@ -746,18 +786,44 @@ class PolicyGuardService
         ))));
 
         return [
-            'stage' => 'policy_guard',
-            'action' => $action,
-            'blocked' => str_starts_with($action, 'blocked_'),
-            'force_handoff' => in_array($action, ['handoff', 'clarify', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
-            'reasons' => $normalizedReasons,
-            'crm_policy_source' => $crmSource,
-            'crm_policy_snapshot' => $this->crmPolicySnapshot(
-                crmBusinessFlags: $crmBusinessFlags,
-                crmEscalation: $crmEscalation,
-                crmLeadPipeline: $crmLeadPipeline,
-            ),
-            'evaluated_at' => now()->toIso8601String(),
+            'trace_id' => $traceId,
+            'policy' => [
+                'stage' => 'policy_guard',
+                'action' => $action,
+                'blocked' => str_starts_with($action, 'blocked_'),
+                'force_handoff' => in_array($action, ['handoff', 'clarify', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+                'reasons' => $normalizedReasons,
+                'reason_code' => $normalizedReasons[0] ?? null,
+                'crm_policy_source' => $crmSource,
+                'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                    crmBusinessFlags: $crmBusinessFlags,
+                    crmEscalation: $crmEscalation,
+                    crmLeadPipeline: $crmLeadPipeline,
+                ),
+                'evaluated_at' => now()->toIso8601String(),
+            ],
+            'outcome' => [
+                'handoff' => in_array($action, ['handoff', 'clarify', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+                'reply_action' => $action === 'clarify' ? 'ask_clarification' : ($action === 'allow' ? 'allow' : 'handoff_admin'),
+            ],
         ];
+    }
+
+    private function resolveTraceId(array ...$sources): string
+    {
+        foreach ($sources as $source) {
+            foreach ([
+                $source['trace_id'] ?? null,
+                $source['decision_trace']['trace_id'] ?? null,
+                $source['meta']['trace_id'] ?? null,
+                $source['job_trace_id'] ?? null,
+            ] as $candidate) {
+                if (is_scalar($candidate) && trim((string) $candidate) !== '') {
+                    return trim((string) $candidate);
+                }
+            }
+        }
+
+        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
     }
 }

@@ -45,6 +45,11 @@ class LlmUnderstandingEngine
             );
         }
 
+        $traceId = $this->buildTraceId(
+            conversationId: $conversationId,
+            messageId: $messageId,
+        );
+
         $prompts = $this->promptBuilder->build(
             latestMessage: $message,
             recentHistory: $recentHistory,
@@ -54,6 +59,7 @@ class LlmUnderstandingEngine
             conversationSummary: $conversationSummary,
             crmHints: $crmHints,
             adminTakeover: $adminTakeover,
+            traceId: $traceId,
         );
 
         $raw = $this->llmClient->understandMessage([
@@ -73,7 +79,17 @@ class LlmUnderstandingEngine
             'model' => config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent')),
         ]);
 
-        return $this->parser->parse($raw, $normalizedAllowedIntents);
+        return $this->parser->parse(
+            payload: $raw,
+            allowedIntents: $normalizedAllowedIntents,
+            metadata: [
+                'trace_id' => $traceId,
+                'conversation_id' => $conversationId,
+                'message_id' => $messageId,
+                'understanding_mode' => 'llm_first_with_crm_hints_only',
+                'model' => config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent')),
+            ],
+        );
     }
 
     /**
@@ -145,5 +161,18 @@ class LlmUnderstandingEngine
         }
 
         return $allowedIntents[0];
+    }
+
+    private function buildTraceId(?int $conversationId = null, ?int $messageId = null): string
+    {
+        $parts = array_filter([
+            'trace',
+            $conversationId !== null ? 'c'.$conversationId : null,
+            $messageId !== null ? 'm'.$messageId : null,
+            now()->format('YmdHis'),
+            substr(md5((string) microtime(true)), 0, 8),
+        ]);
+
+        return implode('-', $parts);
     }
 }
