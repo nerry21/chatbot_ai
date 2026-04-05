@@ -27,10 +27,12 @@ class UnderstandingResultAdapterService
         LlmUnderstandingResult $understanding,
         array $legacyIntentResult = [],
         array $legacyEntityResult = [],
+        array $llmRuntimeMeta = [],
     ): array {
         $usedLegacyIntentFallback = $this->needsLegacyFallback($understanding) && $legacyIntentResult !== [];
         $usedLegacyEntityFallback = $legacyEntityResult !== [];
-        $traceId = $this->resolveTraceId($legacyIntentResult, $legacyEntityResult);
+        $runtimeMeta = $this->normalizeRuntimeMeta($llmRuntimeMeta);
+        $traceId = $this->resolveTraceId($runtimeMeta, $legacyIntentResult, $legacyEntityResult);
 
         $intent = $this->resolveIntent($understanding, $legacyIntentResult, $usedLegacyIntentFallback);
         $confidence = $usedLegacyIntentFallback
@@ -53,6 +55,14 @@ class UnderstandingResultAdapterService
             'llm_primary' => true,
             'understanding_source' => 'llm_first_understanding_with_crm_hints',
             'crm_hints_used' => true,
+            'model_used' => $runtimeMeta['model'],
+            'provider' => $runtimeMeta['provider'],
+            'runtime_status' => $runtimeMeta['status'],
+            'degraded_mode' => $runtimeMeta['degraded_mode'],
+            'used_fallback_model' => $runtimeMeta['used_fallback_model'],
+            'schema_valid' => $runtimeMeta['schema_valid'],
+            'cache_hit' => $runtimeMeta['cache_hit'],
+            'runtime_health' => $this->resolveRuntimeHealth($runtimeMeta),
         ];
 
         $entityResult = $this->mergeLegacyEntities(
@@ -75,6 +85,11 @@ class UnderstandingResultAdapterService
                 'legacy_fallback_reason' => $usedLegacyIntentFallback || $usedLegacyEntityFallback
                     ? 'LLM understanding tidak cukup kuat sehingga legacy fallback dipakai sebagai backup.'
                     : null,
+                'llm_runtime' => $runtimeMeta,
+                'runtime_health' => $this->resolveRuntimeHealth($runtimeMeta),
+                'degraded_mode' => (bool) ($runtimeMeta['degraded_mode'] ?? false),
+                'schema_valid' => (bool) ($runtimeMeta['schema_valid'] ?? true),
+                'used_fallback_model' => (bool) ($runtimeMeta['used_fallback_model'] ?? false),
                 'crm_awareness' => [
                     'used_crm_hints' => true,
                     'uses_previous_context' => (bool) $understanding->usesPreviousContext,
@@ -101,6 +116,18 @@ class UnderstandingResultAdapterService
                         'used_legacy_entity_fallback' => $usedLegacyEntityFallback,
                         'understanding_source' => 'llm_first_understanding_with_crm_hints',
                         'crm_hints_used' => true,
+                        'provider' => $runtimeMeta['provider'],
+                        'model_used' => $runtimeMeta['model'],
+                        'runtime_status' => $runtimeMeta['status'],
+                        'degraded_mode' => (bool) ($runtimeMeta['degraded_mode'] ?? false),
+                        'used_fallback_model' => (bool) ($runtimeMeta['used_fallback_model'] ?? false),
+                        'schema_valid' => (bool) ($runtimeMeta['schema_valid'] ?? true),
+                        'cache_hit' => (bool) ($runtimeMeta['cache_hit'] ?? false),
+                        'latency_ms' => $runtimeMeta['latency_ms'],
+                        'http_status' => $runtimeMeta['http_status'],
+                        'attempt' => $runtimeMeta['attempt'],
+                        'max_attempts' => $runtimeMeta['max_attempts'],
+                        'runtime_health' => $this->resolveRuntimeHealth($runtimeMeta),
                     ],
                     'grounding' => [
                         'used_crm_facts' => $usedCrmFacts,
@@ -309,6 +336,7 @@ class UnderstandingResultAdapterService
         foreach ($sources as $source) {
             foreach ([
                 $source['trace_id'] ?? null,
+                $source['_llm']['trace_id'] ?? null,
                 $source['meta']['trace_id'] ?? null,
                 $source['decision_trace']['trace_id'] ?? null,
                 $source['job_trace_id'] ?? null,
@@ -348,5 +376,74 @@ class UnderstandingResultAdapterService
         }
 
         return false;
+    }
+
+    /**
+     * @param  mixed  $value
+     * @return array<string, mixed>
+     */
+    private function normalizeRuntimeMeta(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [
+                'provider' => null,
+                'model' => null,
+                'status' => null,
+                'degraded_mode' => false,
+                'used_fallback_model' => false,
+                'schema_valid' => true,
+                'cache_hit' => false,
+                'latency_ms' => null,
+                'http_status' => null,
+                'attempt' => null,
+                'max_attempts' => null,
+                'fallback_reason' => null,
+                'error_message' => null,
+            ];
+        }
+
+        return [
+            'provider' => $this->normalizeText($value['provider'] ?? null),
+            'model' => $this->normalizeText($value['model'] ?? ($value['primary_model'] ?? null)),
+            'status' => $this->normalizeText($value['status'] ?? null),
+            'degraded_mode' => (bool) ($value['degraded_mode'] ?? false),
+            'used_fallback_model' => (bool) ($value['used_fallback_model'] ?? false),
+            'schema_valid' => array_key_exists('schema_valid', $value) ? (bool) $value['schema_valid'] : true,
+            'cache_hit' => (bool) ($value['cache_hit'] ?? false),
+            'latency_ms' => isset($value['latency_ms']) ? (int) $value['latency_ms'] : null,
+            'http_status' => isset($value['http_status']) ? (int) $value['http_status'] : null,
+            'attempt' => isset($value['attempt']) ? (int) $value['attempt'] : null,
+            'max_attempts' => isset($value['max_attempts']) ? (int) $value['max_attempts'] : null,
+            'fallback_reason' => $this->normalizeText($value['fallback_reason'] ?? null),
+            'error_message' => $this->normalizeText($value['error_message'] ?? null),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
+     */
+    private function resolveRuntimeHealth(array $runtimeMeta): string
+    {
+        if (($runtimeMeta['status'] ?? null) === 'fallback') {
+            return 'fallback';
+        }
+
+        if (($runtimeMeta['schema_valid'] ?? true) === false) {
+            return 'schema_invalid';
+        }
+
+        if (($runtimeMeta['degraded_mode'] ?? false) === true) {
+            return 'degraded';
+        }
+
+        if (($runtimeMeta['used_fallback_model'] ?? false) === true) {
+            return 'fallback_model';
+        }
+
+        if (($runtimeMeta['status'] ?? null) === 'success') {
+            return 'healthy';
+        }
+
+        return 'unknown';
     }
 }

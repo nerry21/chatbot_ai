@@ -190,6 +190,7 @@ class CrmSyncService
                 'trace_id' => $traceId,
                 'final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
                 'retryable' => $result['retryable'] ?? null,
+                'runtime_health' => $decisionTrace['llm_runtime']['overall']['health'] ?? $decisionTrace['runtime_health'] ?? null,
             ]);
 
             return $this->normalizeNoteWriteResult(
@@ -199,6 +200,9 @@ class CrmSyncService
                     'trace_id' => $traceId,
                     'final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
                     'write_type' => 'decision_note',
+                    'runtime_health' => $decisionTrace['runtime_health']
+                        ?? $decisionTrace['llm_runtime']['overall']['health']
+                        ?? null,
                 ],
             );
         } catch (\Throwable $e) {
@@ -249,6 +253,7 @@ class CrmSyncService
                 'reason' => $result['reason'] ?? null,
                 'note_id' => $result['note_id'] ?? null,
                 'retryable' => (bool) ($result['retryable'] ?? false),
+                'runtime_health' => $context['runtime_health'] ?? null,
             ];
         }
 
@@ -269,6 +274,7 @@ class CrmSyncService
             'reason_code' => $result['reason_code'] ?? null,
             'http_status' => $result['http_status'] ?? null,
             'retryable' => (bool) ($result['retryable'] ?? false),
+            'runtime_health' => $context['runtime_health'] ?? null,
         ];
     }
 
@@ -289,6 +295,16 @@ class CrmSyncService
             'needs_human_followup' => $this->normalizeBooleanString($context['needs_human_followup'] ?? null),
             'admin_takeover_active' => $this->normalizeBooleanString($context['admin_takeover_active'] ?? null),
             'last_whatsapp_interaction_at' => $this->normalizeCrmValue($context['last_whatsapp_interaction_at'] ?? null),
+
+            // LLM runtime quality fields
+            'ai_runtime_health' => $this->normalizeCrmValue($context['ai_runtime_health'] ?? null),
+            'ai_runtime_overall' => $this->normalizeCrmValue($context['ai_runtime_overall'] ?? null),
+            'ai_runtime_understanding_health' => $this->normalizeCrmValue($context['ai_runtime_understanding_health'] ?? null),
+            'ai_runtime_reply_draft_health' => $this->normalizeCrmValue($context['ai_runtime_reply_draft_health'] ?? null),
+            'ai_runtime_grounded_health' => $this->normalizeCrmValue($context['ai_runtime_grounded_health'] ?? null),
+            'ai_runtime_understanding_model' => $this->normalizeCrmValue($context['ai_runtime_understanding_model'] ?? null),
+            'ai_runtime_reply_draft_model' => $this->normalizeCrmValue($context['ai_runtime_reply_draft_model'] ?? null),
+            'ai_runtime_grounded_model' => $this->normalizeCrmValue($context['ai_runtime_grounded_model'] ?? null),
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
     }
 

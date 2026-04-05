@@ -57,6 +57,13 @@ class PolicyGuardService
             $crmContext,
         );
 
+        $llmRuntime = $this->resolveLlmRuntime(
+            understandingResult: $understandingResult,
+            resolvedContext: $resolvedContext,
+        );
+
+        $runtimeHealth = $this->resolveRuntimeHealth($llmRuntime);
+
         $crmBusinessFlags = is_array($crmContext['business_flags'] ?? null)
             ? $crmContext['business_flags']
             : [];
@@ -230,6 +237,38 @@ class PolicyGuardService
             );
         }
 
+        if (in_array($runtimeHealth, ['fallback', 'schema_invalid'], true)) {
+            $action = 'handoff';
+            $reasons[] = 'llm_runtime_unhealthy';
+
+            $intentResult = $this->handoffIntent(
+                intentResult: $intentResult,
+                reasoning: 'Runtime understanding LLM tidak cukup sehat untuk melanjutkan auto reply secara aman.',
+            );
+
+            $intentResult['runtime_health'] = $runtimeHealth;
+            $intentResult['degraded_mode'] = (bool) ($llmRuntime['degraded_mode'] ?? false);
+            $intentResult['used_fallback_model'] = (bool) ($llmRuntime['used_fallback_model'] ?? false);
+            $intentResult['schema_valid'] = (bool) ($llmRuntime['schema_valid'] ?? true);
+        } elseif ($runtimeHealth === 'degraded') {
+            $reasons[] = 'llm_runtime_degraded';
+
+            if ($action === 'allow') {
+                $action = 'clarify';
+            }
+
+            $intentResult['needs_clarification'] = true;
+            $intentResult['clarification_question'] = $intentResult['clarification_question']
+                ?? 'Izin Bapak/Ibu, boleh dijelaskan sedikit lebih rinci agar saya pastikan informasinya tepat?';
+
+            $intentResult['runtime_health'] = $runtimeHealth;
+            $intentResult['degraded_mode'] = true;
+        } elseif ($runtimeHealth === 'fallback_model') {
+            $reasons[] = 'llm_runtime_fallback_model';
+            $intentResult['runtime_health'] = $runtimeHealth;
+            $intentResult['used_fallback_model'] = true;
+        }
+
         $hasBookingContext = $this->hasBookingContext($entityResult, $resolvedContext, $conversationState);
         $intent = IntentType::tryFrom((string) ($intentResult['intent'] ?? ''));
 
@@ -291,6 +330,8 @@ class PolicyGuardService
                 'block_auto_reply' => $action !== 'allow',
                 'reasons' => array_values(array_unique($reasons)),
                 'hydrated_context_fields' => $hydratedContextFields,
+                'llm_runtime' => $llmRuntime,
+                'runtime_health' => $runtimeHealth,
                 'crm_policy_snapshot' => $this->crmPolicySnapshot(
                     crmBusinessFlags: $crmBusinessFlags,
                     crmEscalation: $crmEscalation,
@@ -304,6 +345,8 @@ class PolicyGuardService
                     crmEscalation: $crmEscalation,
                     crmLeadPipeline: $crmLeadPipeline,
                     crmSource: $action !== 'allow' ? 'policy_guard' : null,
+                    llmRuntime: $llmRuntime,
+                    runtimeHealth: $runtimeHealth,
                 ),
             ],
         ];
@@ -331,6 +374,11 @@ class PolicyGuardService
         $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
         $intent = (string) ($intentResult['intent'] ?? 'unknown');
         $meta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        $llmRuntime = $this->resolveLlmRuntime(
+            understandingResult: $intentResult,
+            resolvedContext: $context,
+        );
+        $runtimeHealth = $this->resolveRuntimeHealth($llmRuntime);
 
         $violations = [];
         $decisionAction = 'allow';
@@ -382,6 +430,13 @@ class PolicyGuardService
             $violations[] = 'empty_reply_after_orchestration';
         }
 
+        if (in_array($runtimeHealth, ['fallback', 'schema_invalid'], true)) {
+            $decisionAction = 'handoff';
+            $violations[] = 'llm_runtime_unhealthy';
+        } elseif ($runtimeHealth === 'degraded') {
+            $violations[] = 'llm_runtime_degraded';
+        }
+
         return [
             'is_compliant' => $violations === [],
             'violations' => array_values(array_unique($violations)),
@@ -403,6 +458,8 @@ class PolicyGuardService
                         crmEscalation: $escalation,
                         crmLeadPipeline: $leadPipeline,
                     ),
+                    'llm_runtime' => $llmRuntime,
+                    'runtime_health' => $runtimeHealth,
                     'evaluated_at' => now()->toIso8601String(),
                 ],
                 'outcome' => [
@@ -444,6 +501,10 @@ class PolicyGuardService
             'meta' => [
                 'force_handoff' => true,
                 'source' => 'policy_guard_fallback',
+                'llm_runtime' => $this->resolveLlmRuntime(
+                    understandingResult: $context['intent_result'] ?? [],
+                    resolvedContext: $context,
+                ),
                 'decision_trace' => [
                     'trace_id' => $this->resolveTraceId($policyReport, $context),
                     'policy' => [
@@ -452,6 +513,12 @@ class PolicyGuardService
                         'blocked' => true,
                         'force_handoff' => true,
                         'reasons' => array_values($policyReport['violations'] ?? []),
+                        'runtime_health' => $this->resolveRuntimeHealth(
+                            $this->resolveLlmRuntime(
+                                understandingResult: $context['intent_result'] ?? [],
+                                resolvedContext: $context,
+                            )
+                        ),
                         'evaluated_at' => now()->toIso8601String(),
                     ],
                     'outcome' => [
@@ -779,6 +846,8 @@ class PolicyGuardService
         array $crmEscalation,
         array $crmLeadPipeline,
         ?string $crmSource = null,
+        array $llmRuntime = [],
+        ?string $runtimeHealth = null,
     ): array {
         $normalizedReasons = array_values(array_unique(array_filter(array_map(
             static fn (mixed $reason): string => trim((string) $reason),
@@ -800,6 +869,8 @@ class PolicyGuardService
                     crmEscalation: $crmEscalation,
                     crmLeadPipeline: $crmLeadPipeline,
                 ),
+                'llm_runtime' => $llmRuntime,
+                'runtime_health' => $runtimeHealth,
                 'evaluated_at' => now()->toIso8601String(),
             ],
             'outcome' => [
@@ -825,5 +896,75 @@ class PolicyGuardService
         }
 
         return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+    }
+
+    /**
+     * @param  array<string, mixed>  $understandingResult
+     * @param  array<string, mixed>  $resolvedContext
+     * @return array<string, mixed>
+     */
+    private function resolveLlmRuntime(array $understandingResult = [], array $resolvedContext = []): array
+    {
+        $candidates = [
+            $understandingResult['llm_runtime'] ?? null,
+            $understandingResult['_llm'] ?? null,
+            $understandingResult['meta']['llm_runtime'] ?? null,
+            $resolvedContext['understanding_runtime'] ?? null,
+            $resolvedContext['llm_runtime']['understanding'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_array($candidate) && $candidate !== []) {
+                return [
+                    'provider' => $this->normalizeText($candidate['provider'] ?? null),
+                    'model' => $this->normalizeText($candidate['model'] ?? ($candidate['primary_model'] ?? null)),
+                    'status' => $this->normalizeText($candidate['status'] ?? null),
+                    'degraded_mode' => (bool) ($candidate['degraded_mode'] ?? false),
+                    'used_fallback_model' => (bool) ($candidate['used_fallback_model'] ?? false),
+                    'schema_valid' => array_key_exists('schema_valid', $candidate) ? (bool) $candidate['schema_valid'] : true,
+                    'cache_hit' => (bool) ($candidate['cache_hit'] ?? false),
+                    'latency_ms' => isset($candidate['latency_ms']) ? (int) $candidate['latency_ms'] : null,
+                    'http_status' => isset($candidate['http_status']) ? (int) $candidate['http_status'] : null,
+                    'attempt' => isset($candidate['attempt']) ? (int) $candidate['attempt'] : null,
+                    'max_attempts' => isset($candidate['max_attempts']) ? (int) $candidate['max_attempts'] : null,
+                    'fallback_reason' => $this->normalizeText($candidate['fallback_reason'] ?? null),
+                    'error_message' => $this->normalizeText($candidate['error_message'] ?? null),
+                ];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $llmRuntime
+     */
+    private function resolveRuntimeHealth(array $llmRuntime): string
+    {
+        if ($llmRuntime === []) {
+            return 'unknown';
+        }
+
+        if (($llmRuntime['status'] ?? null) === 'fallback') {
+            return 'fallback';
+        }
+
+        if (($llmRuntime['schema_valid'] ?? true) === false) {
+            return 'schema_invalid';
+        }
+
+        if (($llmRuntime['degraded_mode'] ?? false) === true) {
+            return 'degraded';
+        }
+
+        if (($llmRuntime['used_fallback_model'] ?? false) === true) {
+            return 'fallback_model';
+        }
+
+        if (($llmRuntime['status'] ?? null) === 'success') {
+            return 'healthy';
+        }
+
+        return 'unknown';
     }
 }

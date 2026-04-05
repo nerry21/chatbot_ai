@@ -104,8 +104,27 @@ class ChatbotBenchmarkService
         );
 
         $conversation = $this->makeConversation($case['conversation'] ?? []);
-        $understanding = $this->understandingParser->parse($case['llm_output'] ?? null, $allowedIntents);
-        $adapted = $this->understandingAdapter->adapt($understanding);
+        $llmRuntimeMeta = is_array($case['llm_runtime'] ?? null) ? $case['llm_runtime'] : [];
+
+        $understanding = $this->understandingParser->parse(
+            payload: $case['llm_output'] ?? null,
+            allowedIntents: $allowedIntents,
+            metadata: [
+                'trace_id' => $case['trace_id'] ?? 'benchmark-'.$case['id'],
+                'conversation_id' => $case['conversation']['id'] ?? null,
+                'message_id' => $case['message']['id'] ?? null,
+                'understanding_mode' => 'benchmark',
+                'model' => $llmRuntimeMeta['model'] ?? null,
+                'llm_runtime' => $llmRuntimeMeta,
+            ],
+        );
+
+        $adapted = $this->understandingAdapter->adapt(
+            understanding: $understanding,
+            legacyIntentResult: is_array($case['legacy_intent_result'] ?? null) ? $case['legacy_intent_result'] : [],
+            legacyEntityResult: is_array($case['legacy_entity_result'] ?? null) ? $case['legacy_entity_result'] : [],
+            llmRuntimeMeta: $llmRuntimeMeta,
+        );
 
         $policyGuard = new PolicyGuardService(new AdminTakeoverGuardService());
         $policy = $policyGuard->guard(
@@ -125,6 +144,14 @@ class ChatbotBenchmarkService
             policyMeta: $policy['meta'],
         );
 
+        [$runtimePassed, $runtimeFailure] = $this->assertRuntimeExpectations($case, $adapted);
+
+        if ($passed && ! $runtimePassed) {
+            $passed = false;
+            $failureCategory = $runtimeFailure;
+            $details = trim($details.' Runtime expectation mismatch.', ' ');
+        }
+
         return [
             'id' => $case['id'],
             'description' => $case['description'],
@@ -133,7 +160,10 @@ class ChatbotBenchmarkService
             'passed' => $passed,
             'failure_category' => $failureCategory,
             'details' => $details,
-            'fallback_used' => false,
+            'fallback_used' => (($adapted['meta']['used_fallback_model'] ?? false) === true)
+                || (($adapted['meta']['runtime_health'] ?? null) === 'fallback'),
+            'runtime_health' => $adapted['meta']['runtime_health'] ?? null,
+            'llm_runtime' => $adapted['meta']['llm_runtime'] ?? $llmRuntimeMeta,
         ];
     }
 
@@ -410,6 +440,42 @@ class ChatbotBenchmarkService
             adminTakeover: (bool) ($facts['admin_takeover'] ?? false),
             officialFacts: is_array($facts['official_facts'] ?? null) ? $facts['official_facts'] : [],
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $case
+     * @param  array<string, mixed>  $adapted
+     * @return array{0: bool, 1: string|null}
+     */
+    private function assertRuntimeExpectations(array $case, array $adapted): array
+    {
+        $expected = is_array($case['expect_runtime'] ?? null) ? $case['expect_runtime'] : [];
+        $actualHealth = $adapted['meta']['runtime_health'] ?? null;
+        $actualRuntime = is_array($adapted['meta']['llm_runtime'] ?? null) ? $adapted['meta']['llm_runtime'] : [];
+
+        if (isset($expected['runtime_health']) && $expected['runtime_health'] !== $actualHealth) {
+            return [false, 'runtime_health_mismatch'];
+        }
+
+        if (array_key_exists('degraded_mode', $expected)) {
+            if ((bool) $expected['degraded_mode'] !== (bool) ($actualRuntime['degraded_mode'] ?? false)) {
+                return [false, 'runtime_degraded_mismatch'];
+            }
+        }
+
+        if (array_key_exists('schema_valid', $expected)) {
+            if ((bool) $expected['schema_valid'] !== (bool) ($actualRuntime['schema_valid'] ?? true)) {
+                return [false, 'runtime_schema_mismatch'];
+            }
+        }
+
+        if (array_key_exists('used_fallback_model', $expected)) {
+            if ((bool) $expected['used_fallback_model'] !== (bool) ($actualRuntime['used_fallback_model'] ?? false)) {
+                return [false, 'runtime_fallback_model_mismatch'];
+            }
+        }
+
+        return [true, null];
     }
 
     /**

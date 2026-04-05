@@ -89,6 +89,9 @@ class ConversationReplyGuardService
         $nextAction = (string) ($replyResult['next_action'] ?? 'answer_question');
         $notes = is_array($replyResult['safety_notes'] ?? null) ? $replyResult['safety_notes'] : [];
 
+        $llmRuntimeBundle = $this->resolveLlmRuntimeBundle($replyResult, $context);
+        $runtimeHealth = $this->resolveRuntimeHealthFromBundle($llmRuntimeBundle);
+
         if ($reply === '') {
             $reply = 'Baik, saya bantu dulu ya. Mohon jelaskan sedikit lebih detail agar saya bisa menindaklanjuti dengan tepat.';
             $notes[] = 'Conversation guard filled empty reply';
@@ -97,6 +100,24 @@ class ConversationReplyGuardService
         if (mb_strlen($reply, 'UTF-8') > 1200) {
             $reply = mb_substr($reply, 0, 1200, 'UTF-8');
             $notes[] = 'Conversation guard trimmed long reply';
+        }
+
+        if (in_array($runtimeHealth, ['fallback', 'schema_invalid'], true)) {
+            $reply = 'Izin Bapak/Ibu, agar informasinya tetap akurat, percakapan ini saya teruskan ke admin kami terlebih dahulu ya.';
+            $replyResult['should_escalate'] = true;
+            $replyResult['handoff_reason'] = $replyResult['handoff_reason'] ?? 'LLM runtime unhealthy at final guard';
+            $replyResult['next_action'] = 'handoff_admin';
+            $replyResult['meta']['force_handoff'] = true;
+            $notes[] = 'Conversation guard enforced handoff due to unhealthy LLM runtime';
+        } elseif ($runtimeHealth === 'degraded') {
+            if (($replyResult['should_escalate'] ?? false) !== true && $nextAction === 'answer_question') {
+                $replyResult['next_action'] = 'ask_missing_data';
+                $notes[] = 'Conversation guard downgraded answer to clarification due to degraded LLM runtime';
+            }
+
+            if (! str_contains(mb_strtolower($reply, 'UTF-8'), 'izin')) {
+                $reply = 'Izin Bapak/Ibu, agar saya pastikan jawabannya tepat, boleh dibantu jelaskan sedikit lebih rinci ya.';
+            }
         }
 
         if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
@@ -121,6 +142,9 @@ class ConversationReplyGuardService
             $replyResult['meta']['force_handoff'] = true;
             $notes[] = 'Conversation guard respected orchestration handoff';
         }
+
+        $replyResult['meta']['llm_runtime'] = $llmRuntimeBundle;
+        $replyResult['meta']['runtime_health'] = $runtimeHealth;
 
         $replyResult['reply'] = $reply;
         $replyResult['text'] = $reply;
@@ -148,6 +172,8 @@ class ConversationReplyGuardService
                         'action' => ($replyResult['should_escalate'] ?? false) ? 'handoff_or_safe_reply' : 'allow',
                         'blocked' => false,
                         'notes' => array_values(array_unique(array_filter($notes))),
+                        'runtime_health' => $runtimeHealth,
+                        'llm_runtime' => $llmRuntimeBundle,
                         'evaluated_at' => now()->toIso8601String(),
                     ],
                 ],
@@ -162,6 +188,7 @@ class ConversationReplyGuardService
         foreach ($sources as $source) {
             foreach ([
                 $source['trace_id'] ?? null,
+                $source['_llm']['trace_id'] ?? null,
                 $source['meta']['trace_id'] ?? null,
                 $source['decision_trace']['trace_id'] ?? null,
                 $source['job_trace_id'] ?? null,
@@ -305,6 +332,78 @@ class ConversationReplyGuardService
     public function hasRelevantBookingUpdate(array $entityResult): bool
     {
         return $this->unavailableGuard->hasRelevantBookingUpdate($entityResult);
+    }
+
+    /**
+     * @param  array<string, mixed>  $replyResult
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function resolveLlmRuntimeBundle(array $replyResult = [], array $context = []): array
+    {
+        $replyMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        $contextRuntime = is_array($context['llm_runtime'] ?? null) ? $context['llm_runtime'] : [];
+        $replyRuntime = is_array($replyMeta['llm_runtime'] ?? null) ? $replyMeta['llm_runtime'] : [];
+
+        return [
+            'understanding' => is_array($contextRuntime['understanding'] ?? null)
+                ? $contextRuntime['understanding']
+                : (is_array($context['understanding_runtime'] ?? null) ? $context['understanding_runtime'] : []),
+            'reply_draft' => is_array($replyRuntime['reply_draft'] ?? null)
+                ? $replyRuntime['reply_draft']
+                : (is_array($contextRuntime['reply_draft'] ?? null) ? $contextRuntime['reply_draft'] : []),
+            'grounded_response' => is_array($replyRuntime['grounded_response'] ?? null)
+                ? $replyRuntime['grounded_response']
+                : (is_array($contextRuntime['grounded_response'] ?? null) ? $contextRuntime['grounded_response'] : []),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     */
+    private function resolveRuntimeHealthFromBundle(array $bundle): string
+    {
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+
+            if (($runtime['status'] ?? null) === 'fallback') {
+                return 'fallback';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+
+            if (array_key_exists('schema_valid', $runtime) && ($runtime['schema_valid'] ?? true) === false) {
+                return 'schema_invalid';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+
+            if (($runtime['degraded_mode'] ?? false) === true) {
+                return 'degraded';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+
+            if (($runtime['used_fallback_model'] ?? false) === true) {
+                return 'fallback_model';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+
+            if (($runtime['status'] ?? null) === 'success') {
+                return 'healthy';
+            }
+        }
+
+        return 'unknown';
     }
 
     /**

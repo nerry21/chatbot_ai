@@ -8,12 +8,25 @@ use App\Enums\IntentType;
 
 class LlmUnderstandingEngine
 {
+    /**
+     * @var array<string, mixed>
+     */
+    private array $lastRuntimeMeta = [];
+
     public function __construct(
         private readonly LlmClientService $llmClient,
         private readonly UnderstandingPromptBuilderService $promptBuilder,
         private readonly UnderstandingOutputParserService $parser,
         private readonly UnderstandingCrmHintReducerService $crmHintReducer,
     ) {
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function lastRuntimeMeta(): array
+    {
+        return $this->lastRuntimeMeta;
     }
 
     /**
@@ -37,8 +50,20 @@ class LlmUnderstandingEngine
     ): LlmUnderstandingResult {
         $message = trim($latestMessage);
         $normalizedAllowedIntents = $this->normalizeAllowedIntents($allowedIntents);
+        $this->lastRuntimeMeta = [];
 
         if ($message === '') {
+            $this->lastRuntimeMeta = [
+                'provider' => 'openai',
+                'task_key' => 'understanding',
+                'task_type' => 'message_understanding',
+                'status' => 'fallback',
+                'degraded_mode' => true,
+                'fallback_reason' => 'empty_message',
+                'schema_valid' => false,
+                'cache_hit' => false,
+            ];
+
             return LlmUnderstandingResult::fallback(
                 intent: $this->fallbackIntent($normalizedAllowedIntents),
                 reasoningSummary: 'Pesan kosong sehingga understanding memakai fallback aman.',
@@ -62,6 +87,11 @@ class LlmUnderstandingEngine
             traceId: $traceId,
         );
 
+        $understandingModel = config(
+            'openai.tasks.understanding.model',
+            config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent'))
+        );
+
         $raw = $this->llmClient->understandMessage([
             'conversation_id' => $conversationId,
             'message_id' => $messageId,
@@ -76,8 +106,12 @@ class LlmUnderstandingEngine
             'understanding_mode' => 'llm_first_with_crm_hints_only',
             'system' => $prompts['system'],
             'user' => $prompts['user'],
-            'model' => config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent')),
+            'model' => $understandingModel,
+            'expect_json' => true,
         ]);
+
+        $llmRuntimeMeta = is_array($raw['_llm'] ?? null) ? $raw['_llm'] : [];
+        $this->lastRuntimeMeta = $llmRuntimeMeta;
 
         return $this->parser->parse(
             payload: $raw,
@@ -87,7 +121,10 @@ class LlmUnderstandingEngine
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
                 'understanding_mode' => 'llm_first_with_crm_hints_only',
-                'model' => config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent')),
+                'model' => $understandingModel,
+                'task_key' => 'understanding',
+                'task_type' => 'message_understanding',
+                'llm_runtime' => $llmRuntimeMeta,
             ],
         );
     }

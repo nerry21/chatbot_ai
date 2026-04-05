@@ -45,6 +45,7 @@ class UnderstandingOutputParserService
     {
         $normalizedAllowedIntents = $this->normalizeAllowedIntents($allowedIntents);
         $fallbackIntent = $this->fallbackIntent($normalizedAllowedIntents);
+        $runtimeMeta = $this->normalizeLlmRuntimeMeta($metadata['llm_runtime'] ?? []);
 
         $data = $this->decodePayload($payload);
 
@@ -52,8 +53,10 @@ class UnderstandingOutputParserService
             return LlmUnderstandingResult::fallback(
                 intent: $fallbackIntent,
                 reasoningSummary: $this->buildFallbackReasoningSummary(
-                    base: 'Fallback understanding digunakan karena payload model tidak dapat diparse.',
-                    metadata: $metadata,
+                    base: $this->buildRuntimeAwareFallbackBase($runtimeMeta),
+                    metadata: array_merge($metadata, [
+                        'model' => $runtimeMeta['model'] ?? ($metadata['model'] ?? null),
+                    ]),
                 ),
             );
         }
@@ -72,9 +75,23 @@ class UnderstandingOutputParserService
                 ?? null
         );
 
+        [$confidence, $needsClarification, $clarificationQuestion] = $this->applyRuntimeSafetyAdjustments(
+            confidence: $confidence,
+            needsClarification: $needsClarification,
+            clarificationQuestion: $clarificationQuestion,
+            runtimeMeta: $runtimeMeta,
+        );
+
+        $reasoningSummary = $this->appendRuntimeNotesToReasoningSummary(
+            summary: $reasoningSummary,
+            runtimeMeta: $runtimeMeta,
+        );
+
         $reasoningSummary = $this->enrichReasoningSummaryWithMetadata(
             summary: $reasoningSummary,
-            metadata: $metadata,
+            metadata: array_merge($metadata, [
+                'model' => $runtimeMeta['model'] ?? ($metadata['model'] ?? null),
+            ]),
         );
 
         if ($intent === $fallbackIntent && $confidence <= 0.30 && $clarificationQuestion === null) {
@@ -515,5 +532,129 @@ class UnderstandingOutputParserService
         }
 
         return $result;
+    }
+
+    /**
+     * @param  mixed  $value
+     * @return array<string, mixed>
+     */
+    private function normalizeLlmRuntimeMeta(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return [
+            'provider' => $this->normalizeNullableString($value['provider'] ?? null),
+            'task_key' => $this->normalizeNullableString($value['task_key'] ?? null),
+            'task_type' => $this->normalizeNullableString($value['task_type'] ?? null),
+            'model' => $this->normalizeNullableString($value['model'] ?? null),
+            'primary_model' => $this->normalizeNullableString($value['primary_model'] ?? null),
+            'fallback_model' => $this->normalizeNullableString($value['fallback_model'] ?? null),
+            'used_fallback_model' => $this->normalizeBoolean($value['used_fallback_model'] ?? null),
+            'status' => $this->normalizeNullableString($value['status'] ?? null),
+            'degraded_mode' => $this->normalizeBoolean($value['degraded_mode'] ?? null),
+            'cache_hit' => $this->normalizeBoolean($value['cache_hit'] ?? null),
+            'schema_valid' => array_key_exists('schema_valid', $value)
+                ? $this->normalizeBoolean($value['schema_valid'])
+                : true,
+            'latency_ms' => $this->normalizeInteger($value['latency_ms'] ?? null),
+            'http_status' => $this->normalizeInteger($value['http_status'] ?? null),
+            'attempt' => $this->normalizeInteger($value['attempt'] ?? null),
+            'max_attempts' => $this->normalizeInteger($value['max_attempts'] ?? null),
+            'fallback_reason' => $this->normalizeNullableString($value['fallback_reason'] ?? null),
+            'error_message' => $this->normalizeNullableString($value['error_message'] ?? null),
+            'reasoning_effort' => $this->normalizeNullableString($value['reasoning_effort'] ?? null),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
+     */
+    private function buildRuntimeAwareFallbackBase(array $runtimeMeta): string
+    {
+        $status = $this->normalizeNullableString($runtimeMeta['status'] ?? null);
+        $reason = $this->normalizeNullableString(
+            $runtimeMeta['fallback_reason'] ?? $runtimeMeta['error_message'] ?? null
+        );
+
+        $base = 'Fallback understanding digunakan karena payload model tidak dapat diparse.';
+
+        if ($status === 'fallback') {
+            $base = 'Fallback understanding digunakan karena runtime LLM masuk mode fallback.';
+        }
+
+        if ($reason !== null) {
+            return Str::limit($base.' reason='.$reason, 180, '...');
+        }
+
+        return $base;
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
+     * @return array{0: float, 1: bool, 2: string|null}
+     */
+    private function applyRuntimeSafetyAdjustments(
+        float $confidence,
+        bool $needsClarification,
+        ?string $clarificationQuestion,
+        array $runtimeMeta,
+    ): array {
+        $degradedMode = (bool) ($runtimeMeta['degraded_mode'] ?? false);
+        $schemaValid = ! array_key_exists('schema_valid', $runtimeMeta) || (bool) $runtimeMeta['schema_valid'];
+        $status = $this->normalizeNullableString($runtimeMeta['status'] ?? null);
+
+        if ($degradedMode) {
+            $confidence = min($confidence, 0.55);
+        }
+
+        if (! $schemaValid) {
+            $confidence = min($confidence, 0.35);
+            $needsClarification = true;
+        }
+
+        if ($status === 'fallback') {
+            $confidence = min($confidence, 0.25);
+            $needsClarification = true;
+        }
+
+        if ($needsClarification && $clarificationQuestion === null) {
+            $clarificationQuestion = self::GENERIC_CLARIFICATION_QUESTION;
+        }
+
+        return [$confidence, $needsClarification, $clarificationQuestion];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
+     */
+    private function appendRuntimeNotesToReasoningSummary(
+        string $summary,
+        array $runtimeMeta,
+    ): string {
+        $notes = [];
+
+        if (($runtimeMeta['used_fallback_model'] ?? false) === true) {
+            $notes[] = 'fallback_model';
+        }
+
+        if (($runtimeMeta['degraded_mode'] ?? false) === true) {
+            $notes[] = 'degraded_mode';
+        }
+
+        if (($runtimeMeta['schema_valid'] ?? true) === false) {
+            $notes[] = 'schema_invalid';
+        }
+
+        if (($runtimeMeta['cache_hit'] ?? false) === true) {
+            $notes[] = 'cache_hit';
+        }
+
+        if ($notes === []) {
+            return $summary;
+        }
+
+        return Str::limit($summary.' ['.implode(', ', $notes).']', 180, '...');
     }
 }

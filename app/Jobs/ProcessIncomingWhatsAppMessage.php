@@ -149,6 +149,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             'reasoning_short' => 'Learning signal default state.',
         ];
         $entityResult = [];
+        $understandingRuntimeMeta = [];
         $booking = null;
         $bookingDecision = null;
         $outboundMessage = null;
@@ -278,7 +279,10 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 contextPayload: $contextPayload,
                 allowedIntents: IntentType::cases(),
             );
+            $understandingRuntimeMeta = $understandingEngine->lastRuntimeMeta();
             $aiContext['understanding_result'] = $understandingResult->toArray();
+            $aiContext['understanding_runtime'] = $understandingRuntimeMeta;
+
             WaLog::info('[Job:ProcessIncoming] AI:understanding END', [
                 'conversation_id' => $conversation->id,
                 'intent' => $understandingResult->intent,
@@ -286,6 +290,11 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'needs_clarification' => $understandingResult->needsClarification,
                 'handoff_recommended' => $understandingResult->handoffRecommended,
                 'understanding_mode' => 'llm_first_with_crm_hints_only',
+                'llm_model' => $understandingRuntimeMeta['model'] ?? null,
+                'llm_status' => $understandingRuntimeMeta['status'] ?? null,
+                'llm_degraded_mode' => $understandingRuntimeMeta['degraded_mode'] ?? null,
+                'llm_schema_valid' => $understandingRuntimeMeta['schema_valid'] ?? null,
+                'llm_used_fallback_model' => $understandingRuntimeMeta['used_fallback_model'] ?? null,
                 'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 
@@ -325,6 +334,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 understanding: $understandingResult,
                 legacyIntentResult: $legacyIntentResult,
                 legacyEntityResult: $legacyEntityResult,
+                llmRuntimeMeta: $understandingRuntimeMeta,
             );
 
             $intentResult = $adaptedUnderstanding['intent_result'];
@@ -332,6 +342,20 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['intent_result'] = $intentResult;
             $aiContext['entity_result'] = $entityResult;
             $aiContext['understanding_meta'] = $adaptedUnderstanding['meta'];
+            $aiContext['understanding_runtime'] = $adaptedUnderstanding['meta']['llm_runtime'] ?? $understandingRuntimeMeta;
+
+            WaLog::debug('[Job:ProcessIncoming] AI:understanding ADAPTED', [
+                'conversation_id' => $conversation->id,
+                'intent' => $intentResult['intent'] ?? null,
+                'confidence' => $intentResult['confidence'] ?? null,
+                'runtime_health' => $intentResult['runtime_health'] ?? null,
+                'llm_model' => $intentResult['model_used'] ?? null,
+                'llm_provider' => $intentResult['provider'] ?? null,
+                'llm_status' => $intentResult['runtime_status'] ?? null,
+                'llm_degraded_mode' => $intentResult['degraded_mode'] ?? null,
+                'llm_schema_valid' => $intentResult['schema_valid'] ?? null,
+                'llm_used_fallback_model' => $intentResult['used_fallback_model'] ?? null,
+            ]);
 
             $crmSnapshot = $crmSnapshotService->build(
                 customer: $customer,
@@ -346,6 +370,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
             $faqResult = $faqResolver->resolve($messageText, $knowledgeHits);
             $aiContext['faq_result'] = $faqResult;
+            $aiContext['understanding_runtime'] = $adaptedUnderstanding['meta']['llm_runtime'] ?? $understandingRuntimeMeta;
+
             $policyGuardResult = $policyGuard->guard(
                 conversation: $conversation,
                 intentResult: $intentResult,
@@ -704,6 +730,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                         [
                             'crm_context' => $crmSnapshot,
                             'orchestration' => $orchestrationSnapshot,
+                            'understanding_runtime' => $aiContext['understanding_runtime'] ?? [],
                         ],
                     ),
                     understandingResult: is_array($aiContext['understanding_result'] ?? null)
@@ -729,6 +756,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                         'final_orchestration' => $orchestrationSnapshot,
                         'entity_result' => $entityResult,
                         'reply_result' => $replyResult,
+                        'understanding_runtime' => $aiContext['understanding_runtime'] ?? [],
                     ],
                 ),
             );

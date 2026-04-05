@@ -7,9 +7,15 @@ use App\Data\AI\GroundedResponseResult;
 use App\Enums\GroundedResponseMode;
 use App\Services\Support\JsonSchemaValidatorService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class GroundedResponseComposerService
 {
+    /**
+     * @var array<string, mixed>
+     */
+    private array $lastRuntimeMeta = [];
+
     public function __construct(
         private readonly LlmClientService $llmClient,
         private readonly GroundedResponsePromptBuilderService $promptBuilder,
@@ -17,10 +23,24 @@ class GroundedResponseComposerService
     ) {
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function lastRuntimeMeta(): array
+    {
+        return $this->lastRuntimeMeta;
+    }
+
     public function compose(GroundedResponseFacts $facts): GroundedResponseResult
     {
+        $this->lastRuntimeMeta = [];
+
         try {
             $prompts = $this->promptBuilder->build($facts);
+            $groundedModel = config(
+                'openai.tasks.grounded_response.model',
+                config('chatbot.llm.models.grounded_response', config('chatbot.llm.models.reply'))
+            );
 
             $raw = $this->llmClient->composeGroundedResponse([
                 'conversation_id' => $facts->conversationId,
@@ -29,8 +49,12 @@ class GroundedResponseComposerService
                 'grounded_response_facts' => $facts->toArray(),
                 'system' => $prompts['system'],
                 'user' => $prompts['user'],
-                'model' => config('chatbot.llm.models.grounded_response', config('chatbot.llm.models.reply')),
+                'model' => $groundedModel,
+                'expect_json' => true,
             ]);
+
+            $llmRuntimeMeta = is_array($raw['_llm'] ?? null) ? $raw['_llm'] : [];
+            $this->lastRuntimeMeta = $llmRuntimeMeta;
 
             $validated = $this->validator->validateAndFill(
                 is_array($raw) ? $raw : [],
@@ -39,6 +63,13 @@ class GroundedResponseComposerService
             );
 
             if ($validated === null) {
+                $this->lastRuntimeMeta = array_merge($llmRuntimeMeta, [
+                    'status' => $llmRuntimeMeta['status'] ?? 'fallback',
+                    'degraded_mode' => true,
+                    'schema_valid' => false,
+                    'fallback_reason' => $llmRuntimeMeta['fallback_reason'] ?? 'grounded_response_validation_failed',
+                ]);
+
                 return $this->fallback($facts);
             }
 
@@ -47,6 +78,12 @@ class GroundedResponseComposerService
                 ?? $facts->mode;
 
             if ($text === '') {
+                $this->lastRuntimeMeta = array_merge($llmRuntimeMeta, [
+                    'status' => $llmRuntimeMeta['status'] ?? 'fallback',
+                    'degraded_mode' => true,
+                    'fallback_reason' => $llmRuntimeMeta['fallback_reason'] ?? 'grounded_response_empty_text',
+                ]);
+
                 return $this->fallback($facts);
             }
 
@@ -60,6 +97,13 @@ class GroundedResponseComposerService
                 'error' => $e->getMessage(),
                 'conversation_id' => $facts->conversationId,
                 'message_id' => $facts->messageId,
+            ]);
+
+            $this->lastRuntimeMeta = array_merge($this->lastRuntimeMeta, [
+                'status' => 'fallback',
+                'degraded_mode' => true,
+                'fallback_reason' => 'grounded_response_exception',
+                'error_message' => $e->getMessage(),
             ]);
 
             return $this->fallback($facts);
@@ -86,6 +130,9 @@ class GroundedResponseComposerService
         $reply = trim((string) ($replyDraft['reply'] ?? $replyDraft['text'] ?? ''));
         $usedFacts = is_array($replyDraft['used_crm_facts'] ?? null) ? $replyDraft['used_crm_facts'] : [];
         $traceId = $this->resolveTraceId($replyDraft, $context, $intentResult, $orchestrationSnapshot);
+        $llmRuntime = $this->normalizeRuntimeMeta(
+            $replyDraft['meta']['llm_runtime'] ?? $context['grounded_response_runtime'] ?? []
+        );
 
         $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
         $customer = is_array($crm['customer'] ?? null) ? $crm['customer'] : [];
@@ -138,6 +185,18 @@ class GroundedResponseComposerService
             $groundingNotes[] = 'Reply constrained by orchestration handoff flag';
         }
 
+        if (($llmRuntime['used_fallback_model'] ?? false) === true) {
+            $groundingNotes[] = 'Grounded response used fallback model';
+        }
+
+        if (($llmRuntime['degraded_mode'] ?? false) === true) {
+            $groundingNotes[] = 'Grounded response runtime degraded';
+        }
+
+        if (($llmRuntime['schema_valid'] ?? true) === false) {
+            $groundingNotes[] = 'Grounded response schema invalid';
+        }
+
         if ($reply === '') {
             $reply = 'Baik, saya bantu dulu ya. Mohon jelaskan sedikit lebih detail agar saya bisa menindaklanjuti dengan tepat.';
             $groundingNotes[] = 'Empty draft replaced with grounded fallback';
@@ -163,6 +222,8 @@ class GroundedResponseComposerService
                 'grounded' => true,
                 'grounding_source' => $groundingSource,
                 'crm_grounding_sections' => $crmGroundingSections,
+                'llm_runtime' => $llmRuntime,
+                'runtime_health' => $this->resolveRuntimeHealth($llmRuntime),
                 'decision_trace' => $this->mergeDecisionTrace(
                     is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : [],
                     [
@@ -177,6 +238,16 @@ class GroundedResponseComposerService
                             'faq_matched' => (bool) (($faqResult['matched'] ?? false) === true),
                             'notes' => array_values(array_unique(array_filter($replyDraft['grounding_notes'] ?? []))),
                             'evaluated_at' => now()->toIso8601String(),
+                            'runtime_health' => $this->resolveRuntimeHealth($llmRuntime),
+                            'model_used' => $llmRuntime['model'],
+                            'provider' => $llmRuntime['provider'],
+                            'runtime_status' => $llmRuntime['status'],
+                            'degraded_mode' => (bool) ($llmRuntime['degraded_mode'] ?? false),
+                            'used_fallback_model' => (bool) ($llmRuntime['used_fallback_model'] ?? false),
+                            'schema_valid' => (bool) ($llmRuntime['schema_valid'] ?? true),
+                            'cache_hit' => (bool) ($llmRuntime['cache_hit'] ?? false),
+                            'latency_ms' => $llmRuntime['latency_ms'],
+                            'http_status' => $llmRuntime['http_status'],
                         ],
                         'outcome' => [
                             'final_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'grounded_response',
@@ -345,6 +416,91 @@ class GroundedResponseComposerService
         }
 
         return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+    }
+
+    /**
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
+     */
+    /**
+     * @param  mixed  $value
+     * @return array<string, mixed>
+     */
+    private function normalizeRuntimeMeta(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [
+                'provider' => null,
+                'model' => null,
+                'status' => null,
+                'degraded_mode' => false,
+                'used_fallback_model' => false,
+                'schema_valid' => true,
+                'cache_hit' => false,
+                'latency_ms' => null,
+                'http_status' => null,
+                'attempt' => null,
+                'max_attempts' => null,
+                'fallback_reason' => null,
+                'error_message' => null,
+            ];
+        }
+
+        return [
+            'provider' => $this->normalizeNullableString($value['provider'] ?? null),
+            'model' => $this->normalizeNullableString($value['model'] ?? ($value['primary_model'] ?? null)),
+            'status' => $this->normalizeNullableString($value['status'] ?? null),
+            'degraded_mode' => (bool) ($value['degraded_mode'] ?? false),
+            'used_fallback_model' => (bool) ($value['used_fallback_model'] ?? false),
+            'schema_valid' => array_key_exists('schema_valid', $value) ? (bool) $value['schema_valid'] : true,
+            'cache_hit' => (bool) ($value['cache_hit'] ?? false),
+            'latency_ms' => isset($value['latency_ms']) ? (int) $value['latency_ms'] : null,
+            'http_status' => isset($value['http_status']) ? (int) $value['http_status'] : null,
+            'attempt' => isset($value['attempt']) ? (int) $value['attempt'] : null,
+            'max_attempts' => isset($value['max_attempts']) ? (int) $value['max_attempts'] : null,
+            'fallback_reason' => $this->normalizeNullableString($value['fallback_reason'] ?? null),
+            'error_message' => $this->normalizeNullableString($value['error_message'] ?? null),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
+     */
+    private function resolveRuntimeHealth(array $runtimeMeta): string
+    {
+        if (($runtimeMeta['status'] ?? null) === 'fallback') {
+            return 'fallback';
+        }
+
+        if (($runtimeMeta['schema_valid'] ?? true) === false) {
+            return 'schema_invalid';
+        }
+
+        if (($runtimeMeta['degraded_mode'] ?? false) === true) {
+            return 'degraded';
+        }
+
+        if (($runtimeMeta['used_fallback_model'] ?? false) === true) {
+            return 'fallback_model';
+        }
+
+        if (($runtimeMeta['status'] ?? null) === 'success') {
+            return 'healthy';
+        }
+
+        return 'unknown';
+    }
+
+    private function normalizeNullableString(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $text = trim((string) $value);
+
+        return $text !== '' ? $text : null;
     }
 
     /**

@@ -206,6 +206,11 @@ class HallucinationGuardService
         $faqResult = is_array($context['faq_result'] ?? null) ? $context['faq_result'] : [];
         $knowledgeHits = is_array($context['knowledge_hits'] ?? null) ? $context['knowledge_hits'] : [];
 
+        $llmRuntimeBundle = is_array($context['llm_runtime'] ?? null) ? $context['llm_runtime'] : [];
+        $understandingRuntime = is_array($llmRuntimeBundle['understanding'] ?? null) ? $llmRuntimeBundle['understanding'] : [];
+        $replyDraftRuntime = is_array($llmRuntimeBundle['reply_draft'] ?? null) ? $llmRuntimeBundle['reply_draft'] : [];
+        $groundedRuntime = is_array($llmRuntimeBundle['grounded_response'] ?? null) ? $llmRuntimeBundle['grounded_response'] : [];
+
         $crmContext = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
         $crmBooking = is_array($crmContext['booking'] ?? null) ? $crmContext['booking'] : [];
         $crmLeadPipeline = is_array($crmContext['lead_pipeline'] ?? null) ? $crmContext['lead_pipeline'] : [];
@@ -245,6 +250,12 @@ class HallucinationGuardService
 
         $traceId = $this->resolveTraceId($reply, $intentResult, $context);
 
+        $runtimeRisk = $this->assessRuntimeRisk(
+            understandingRuntime: $understandingRuntime,
+            replyDraftRuntime: $replyDraftRuntime,
+            groundedRuntime: $groundedRuntime,
+        );
+
         $groundingMeta = [
             'trace_id' => $traceId,
             'grounding_source' => $groundingSource,
@@ -254,10 +265,49 @@ class HallucinationGuardService
                 static fn (string $section): string => 'crm.'.$section,
                 $crmGroundingSections,
             ))),
+            'llm_runtime' => [
+                'understanding' => $understandingRuntime,
+                'reply_draft' => $replyDraftRuntime,
+                'grounded_response' => $groundedRuntime,
+            ],
+            'runtime_health' => $runtimeRisk['runtime_health'],
+            'runtime_flags' => $runtimeRisk['runtime_flags'],
         ];
 
         $replyText = trim((string) ($reply['text'] ?? $reply['reply'] ?? ''));
         $source = (string) ($reply['meta']['source'] ?? '');
+        $intent = IntentType::tryFrom((string) ($intentResult['intent'] ?? '')) ?? IntentType::Unknown;
+
+        if (
+            $this->looksFactualReply($replyText)
+            && in_array($runtimeRisk['runtime_health'], ['fallback', 'schema_invalid', 'degraded'], true)
+        ) {
+            if ($hasSubstantialCrmFacts) {
+                return $this->clarify(
+                    reply: $reply,
+                    intentResult: $intentResult,
+                    reason: 'Runtime LLM tidak cukup sehat untuk factual reply tanpa klarifikasi tambahan.',
+                    text: $this->clarificationTextForIntent($intent),
+                    meta: [
+                        ...$groundingMeta,
+                        'action' => 'clarify_unhealthy_llm_runtime',
+                        'risk_level' => 'high',
+                    ],
+                );
+            }
+
+            return $this->handoff(
+                reply: $reply,
+                intentResult: $intentResult,
+                reason: 'Runtime LLM tidak sehat untuk menjawab permintaan faktual secara aman.',
+                text: 'Izin Bapak/Ibu, agar informasi tetap akurat, percakapan ini kami teruskan ke admin terlebih dahulu ya.',
+                meta: [
+                    ...$groundingMeta,
+                    'action' => 'handoff_unhealthy_llm_runtime',
+                    'risk_level' => 'high',
+                ],
+            );
+        }
 
         if ($source !== 'ai_reply') {
             return $this->allow($reply, $intentResult, [
@@ -790,6 +840,79 @@ class HallucinationGuardService
                 'reply_action' => $action === 'clarify' ? 'ask_clarification' : ($action === 'handoff' ? 'handoff_admin' : 'allow'),
                 'is_fallback' => (bool) ($reply['is_fallback'] ?? false),
             ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $understandingRuntime
+     * @param  array<string, mixed>  $replyDraftRuntime
+     * @param  array<string, mixed>  $groundedRuntime
+     * @return array{runtime_health: string, runtime_flags: array<int, string>}
+     */
+    private function assessRuntimeRisk(
+        array $understandingRuntime = [],
+        array $replyDraftRuntime = [],
+        array $groundedRuntime = [],
+    ): array {
+        $flags = [];
+
+        foreach ([
+            'understanding' => $understandingRuntime,
+            'reply_draft' => $replyDraftRuntime,
+            'grounded_response' => $groundedRuntime,
+        ] as $stage => $runtime) {
+            if (! is_array($runtime) || $runtime === []) {
+                continue;
+            }
+
+            if (($runtime['status'] ?? null) === 'fallback') {
+                $flags[] = $stage.'_runtime_fallback';
+            }
+
+            if (($runtime['degraded_mode'] ?? false) === true) {
+                $flags[] = $stage.'_runtime_degraded';
+            }
+
+            if (array_key_exists('schema_valid', $runtime) && ($runtime['schema_valid'] ?? true) === false) {
+                $flags[] = $stage.'_schema_invalid';
+            }
+
+            if (($runtime['used_fallback_model'] ?? false) === true) {
+                $flags[] = $stage.'_fallback_model';
+            }
+        }
+
+        $health = 'healthy';
+
+        if (
+            in_array('understanding_runtime_fallback', $flags, true)
+            || in_array('reply_draft_runtime_fallback', $flags, true)
+            || in_array('grounded_response_runtime_fallback', $flags, true)
+        ) {
+            $health = 'fallback';
+        } elseif (
+            in_array('understanding_schema_invalid', $flags, true)
+            || in_array('reply_draft_schema_invalid', $flags, true)
+            || in_array('grounded_response_schema_invalid', $flags, true)
+        ) {
+            $health = 'schema_invalid';
+        } elseif (
+            in_array('understanding_runtime_degraded', $flags, true)
+            || in_array('reply_draft_runtime_degraded', $flags, true)
+            || in_array('grounded_response_runtime_degraded', $flags, true)
+        ) {
+            $health = 'degraded';
+        } elseif (
+            in_array('understanding_fallback_model', $flags, true)
+            || in_array('reply_draft_fallback_model', $flags, true)
+            || in_array('grounded_response_fallback_model', $flags, true)
+        ) {
+            $health = 'fallback_model';
+        }
+
+        return [
+            'runtime_health' => $health,
+            'runtime_flags' => array_values(array_unique($flags)),
         ];
     }
 

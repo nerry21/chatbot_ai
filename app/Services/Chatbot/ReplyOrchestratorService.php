@@ -180,6 +180,14 @@ class ReplyOrchestratorService
         array $knowledgeHits = [],
         ?array $faqResult = null,
     ): array {
+        $understandingRuntime = is_array($context['understanding_runtime'] ?? null)
+            ? $context['understanding_runtime']
+            : [];
+
+        $draftRuntime = is_array($replyDraft['meta']['llm_runtime'] ?? null)
+            ? $replyDraft['meta']['llm_runtime']
+            : [];
+
         $grounded = $this->groundedResponseComposerService->composeGroundedReply(
             replyDraft: $replyDraft,
             context: $context,
@@ -189,6 +197,10 @@ class ReplyOrchestratorService
             faqResult: $faqResult,
         );
 
+        $groundedRuntime = is_array($grounded['meta']['llm_runtime'] ?? null)
+            ? $grounded['meta']['llm_runtime']
+            : [];
+
         $afterHallucination = $this->hallucinationGuardService->guardReply(
             conversation: $context['conversation'],
             intentResult: $intentResult,
@@ -197,6 +209,11 @@ class ReplyOrchestratorService
                 ...$context,
                 'faq_result' => $faqResult ?? [],
                 'knowledge_hits' => $knowledgeHits,
+                'llm_runtime' => [
+                    'understanding' => $understandingRuntime,
+                    'reply_draft' => $draftRuntime,
+                    'grounded_response' => $groundedRuntime,
+                ],
             ],
         );
 
@@ -240,6 +257,20 @@ class ReplyOrchestratorService
             $afterHallucination['meta']['decision_trace'] ?? [],
             $policyReport['decision_trace_policy'] ?? [],
             [
+                'understanding' => [
+                    'runtime' => $understandingRuntime,
+                    'runtime_health' => $intentResult['runtime_health'] ?? null,
+                    'model_used' => $intentResult['model_used'] ?? null,
+                    'provider' => $intentResult['provider'] ?? null,
+                    'runtime_status' => $intentResult['runtime_status'] ?? null,
+                    'degraded_mode' => $intentResult['degraded_mode'] ?? null,
+                    'schema_valid' => $intentResult['schema_valid'] ?? null,
+                    'used_fallback_model' => $intentResult['used_fallback_model'] ?? null,
+                ],
+                'llm_runtime' => [
+                    'reply_draft' => $draftRuntime,
+                    'grounded_response' => $groundedRuntime,
+                ],
                 'outcome' => [
                     'reply_action' => $final['next_action'] ?? null,
                     'final_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
@@ -255,6 +286,8 @@ class ReplyOrchestratorService
                     'used_crm_facts' => is_array($final['used_crm_facts'] ?? null)
                         ? array_values(array_unique($final['used_crm_facts']))
                         : [],
+                    'runtime_health' => $grounded['meta']['runtime_health'] ?? null,
+                    'llm_runtime' => $groundedRuntime,
                 ],
             ],
         );
@@ -266,6 +299,11 @@ class ReplyOrchestratorService
                 'hardening_applied' => true,
                 'decision_source' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
                 'policy_violations' => $policyReport['violations'] ?? [],
+                'llm_runtime' => [
+                    'understanding' => $understandingRuntime,
+                    'reply_draft' => $draftRuntime,
+                    'grounded_response' => $groundedRuntime,
+                ],
                 'decision_trace' => $decisionTrace,
             ],
         );
@@ -395,6 +433,14 @@ class ReplyOrchestratorService
                 'intent' => $intentResult['intent'] ?? $understanding['intent'] ?? null,
                 'confidence' => $intentResult['confidence'] ?? $understanding['confidence'] ?? null,
                 'reasoning_short' => $intentResult['reasoning_short'] ?? $understanding['reasoning_short'] ?? null,
+                'runtime_health' => $intentResult['runtime_health'] ?? $understanding['runtime_health'] ?? null,
+                'model_used' => $intentResult['model_used'] ?? $understanding['model_used'] ?? null,
+                'provider' => $intentResult['provider'] ?? $understanding['provider'] ?? null,
+                'runtime_status' => $intentResult['runtime_status'] ?? $understanding['runtime_status'] ?? null,
+                'degraded_mode' => $intentResult['degraded_mode'] ?? $understanding['degraded_mode'] ?? null,
+                'schema_valid' => $intentResult['schema_valid'] ?? $understanding['schema_valid'] ?? null,
+                'used_fallback_model' => $intentResult['used_fallback_model'] ?? $understanding['used_fallback_model'] ?? null,
+                'runtime' => $understanding['runtime'] ?? null,
             ], fn ($v) => $v !== null && $v !== ''),
             'outcome' => array_filter([
                 'final_decision' => $outcome['final_decision'] ?? ($replyResult['meta']['decision_source'] ?? $replyResult['meta']['source'] ?? null),

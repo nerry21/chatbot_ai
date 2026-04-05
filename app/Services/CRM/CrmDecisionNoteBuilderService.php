@@ -32,6 +32,11 @@ class CrmDecisionNoteBuilderService
         $finalReplyTrace = is_array($decisionTrace['final_reply'] ?? null) ? $decisionTrace['final_reply'] : [];
         $crmBefore = is_array($decisionTrace['crm_state_before_writeback'] ?? null) ? $decisionTrace['crm_state_before_writeback'] : [];
         $outcome = is_array($decisionTrace['outcome'] ?? null) ? $decisionTrace['outcome'] : [];
+        $llmRuntime = is_array($decisionTrace['llm_runtime'] ?? null) ? $decisionTrace['llm_runtime'] : [];
+        $runtimeHealth = $this->normalizeText($llmRuntime['overall_health'] ?? ($outcome['runtime_health'] ?? null)) ?? 'unknown';
+        $understandingRuntime = is_array($llmRuntime['understanding'] ?? null) ? $llmRuntime['understanding'] : [];
+        $replyDraftRuntime = is_array($llmRuntime['reply_draft'] ?? null) ? $llmRuntime['reply_draft'] : [];
+        $groundedRuntime = is_array($llmRuntime['grounded_response'] ?? null) ? $llmRuntime['grounded_response'] : [];
 
         $lines = array_filter([
             '=== AI Decision Trace / CRM Audit Snapshot ===',
@@ -48,6 +53,24 @@ class CrmDecisionNoteBuilderService
             'Reasoning       : '.($llm['reasoning_short'] ?? ($intentResult['reasoning_short'] ?? '-')),
             'Clarify         : '.$this->boolToText($llm['needs_clarification'] ?? ($intentResult['needs_clarification'] ?? null)),
             'Handoff Rec     : '.$this->boolToText($llm['handoff_recommended'] ?? ($intentResult['handoff_recommended'] ?? null)),
+            'Model           : '.($llm['model'] ?? ($understandingRuntime['model'] ?? '-')),
+            'Provider        : '.($llm['provider'] ?? ($understandingRuntime['provider'] ?? '-')),
+            '',
+
+            '--- AI Runtime Quality ---',
+            'Overall Health  : '.$this->healthLabel($runtimeHealth),
+            'Understanding   : '.$this->healthLabel($llmRuntime['understanding_health'] ?? 'unknown')
+                .($understandingRuntime['model'] !== null && $understandingRuntime['model'] !== ''
+                    ? '  ['.$understandingRuntime['model'].']'
+                    : ''),
+            'Reply Draft     : '.$this->healthLabel($llmRuntime['reply_draft_health'] ?? 'unknown')
+                .($replyDraftRuntime['model'] !== null && ($replyDraftRuntime['model'] ?? '') !== ''
+                    ? '  ['.$replyDraftRuntime['model'].']'
+                    : ''),
+            'Grounded Resp   : '.$this->healthLabel($llmRuntime['grounded_response_health'] ?? 'unknown')
+                .($groundedRuntime['model'] !== null && ($groundedRuntime['model'] ?? '') !== ''
+                    ? '  ['.$groundedRuntime['model'].']'
+                    : ''),
             '',
 
             '--- Policy Guard ---',
@@ -87,6 +110,7 @@ class CrmDecisionNoteBuilderService
             'Final Decision  : '.($outcome['final_decision'] ?? '-'),
             'Needs Escalate  : '.$this->boolToText($outcome['needs_escalation'] ?? null),
             'Closed Loop     : '.$this->boolToText($outcome['closed_loop_ready'] ?? null),
+            'Runtime Health  : '.$this->healthLabel($outcome['runtime_health'] ?? $runtimeHealth),
             '',
 
             'Ringkasan AI:',
@@ -97,6 +121,18 @@ class CrmDecisionNoteBuilderService
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
 
         return implode("\n", $lines);
+    }
+
+    private function healthLabel(mixed $health): string
+    {
+        return match ((string) ($health ?? 'unknown')) {
+            'healthy'        => 'Healthy',
+            'fallback_model' => 'Fallback Model',
+            'degraded'       => 'Degraded',
+            'fallback'       => 'Fallback (tidak sehat)',
+            'schema_invalid' => 'Schema Invalid',
+            default          => 'Unknown',
+        };
     }
 
     private function normalizeText(mixed $value): ?string

@@ -73,6 +73,14 @@ class CRMWritebackService
             $builderContext = array_merge($builderContext, (array) $contextSnapshot['decision_trace']);
         }
 
+        $llmRuntime = $this->resolveLlmRuntimeBundle(
+            contextSnapshot: $contextSnapshot,
+            intentResult: $intentResult,
+            finalReply: $finalReply,
+        );
+
+        $runtimeHealth = $this->resolveRuntimeHealthFromBundle($llmRuntime);
+
         $decisionTrace = $this->decisionTraceBuilder->build(
             customer: $customer,
             conversation: $conversation,
@@ -127,6 +135,8 @@ class CRMWritebackService
                 'queue' => 'crm',
                 'reason' => 'decision_note_enqueued',
                 'trace_id' => $decisionTrace['trace_id'] ?? null,
+                'runtime_health' => $runtimeHealth,
+                'llm_runtime' => $this->summarizeRuntimeForWriteback($llmRuntime),
             ];
         }
 
@@ -173,6 +183,20 @@ class CRMWritebackService
                 'needs_human_followup' => $needsEscalation,
                 'admin_takeover_active' => (bool) ($crmContext['business_flags']['admin_takeover_active'] ?? false),
                 'last_whatsapp_interaction_at' => now()->toIso8601String(),
+                'ai_runtime_health' => $runtimeHealth,
+                'ai_runtime_overall' => $runtimeHealth,
+                'ai_runtime_understanding_health' => $this->resolveStageRuntimeHealth(
+                    is_array($llmRuntime['understanding'] ?? null) ? $llmRuntime['understanding'] : []
+                ),
+                'ai_runtime_reply_draft_health' => $this->resolveStageRuntimeHealth(
+                    is_array($llmRuntime['reply_draft'] ?? null) ? $llmRuntime['reply_draft'] : []
+                ),
+                'ai_runtime_grounded_health' => $this->resolveStageRuntimeHealth(
+                    is_array($llmRuntime['grounded_response'] ?? null) ? $llmRuntime['grounded_response'] : []
+                ),
+                'ai_runtime_understanding_model' => $llmRuntime['understanding']['model'] ?? null,
+                'ai_runtime_reply_draft_model' => $llmRuntime['reply_draft']['model'] ?? null,
+                'ai_runtime_grounded_model' => $llmRuntime['grounded_response']['model'] ?? null,
             ],
         ];
 
@@ -198,6 +222,8 @@ class CRMWritebackService
             'decision_trace_id' => $decisionTrace['trace_id'] ?? null,
             'decision_trace_final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
             'decision_trace_used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
+            'runtime_health' => $runtimeHealth,
+            'runtime_summary' => $this->summarizeRuntimeForWriteback($llmRuntime),
         ]);
 
         return [
@@ -216,6 +242,8 @@ class CRMWritebackService
                 'orchestration_present' => ! empty($contextSnapshot['orchestration']),
                 'conversation_id' => $conversation->id,
                 'customer_id' => $customer->id,
+                'runtime_health' => $runtimeHealth,
+                'runtime_summary' => $this->summarizeRuntimeForWriteback($llmRuntime),
             ],
         ];
     }
@@ -356,6 +384,139 @@ class CRMWritebackService
             || (($finalReply['meta']['force_handoff'] ?? false) === true)
             || (bool) ($summaryResult['needs_human_followup'] ?? false)
             || $conversation->isAdminTakeover();
+    }
+
+    /**
+     * @param  array<string, mixed>  $contextSnapshot
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $finalReply
+     * @return array<string, mixed>
+     */
+    private function resolveLlmRuntimeBundle(
+        array $contextSnapshot = [],
+        array $intentResult = [],
+        array $finalReply = [],
+    ): array {
+        $finalMeta = is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [];
+        $replyRuntime = is_array($finalMeta['llm_runtime'] ?? null) ? $finalMeta['llm_runtime'] : [];
+        $snapshotRuntime = is_array($contextSnapshot['llm_runtime'] ?? null) ? $contextSnapshot['llm_runtime'] : [];
+        $understandingRuntime = is_array($contextSnapshot['understanding_runtime'] ?? null)
+            ? $contextSnapshot['understanding_runtime']
+            : (is_array($intentResult['llm_runtime'] ?? null) ? $intentResult['llm_runtime'] : []);
+
+        return [
+            'understanding' => is_array($replyRuntime['understanding'] ?? null)
+                ? $replyRuntime['understanding']
+                : (is_array($snapshotRuntime['understanding'] ?? null)
+                    ? $snapshotRuntime['understanding']
+                    : $understandingRuntime),
+            'reply_draft' => is_array($replyRuntime['reply_draft'] ?? null)
+                ? $replyRuntime['reply_draft']
+                : (is_array($snapshotRuntime['reply_draft'] ?? null) ? $snapshotRuntime['reply_draft'] : []),
+            'grounded_response' => is_array($replyRuntime['grounded_response'] ?? null)
+                ? $replyRuntime['grounded_response']
+                : (is_array($snapshotRuntime['grounded_response'] ?? null) ? $snapshotRuntime['grounded_response'] : []),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     */
+    private function resolveRuntimeHealthFromBundle(array $bundle): string
+    {
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+            if (($runtime['status'] ?? null) === 'fallback') {
+                return 'fallback';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+            if (array_key_exists('schema_valid', $runtime) && ($runtime['schema_valid'] ?? true) === false) {
+                return 'schema_invalid';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+            if (($runtime['degraded_mode'] ?? false) === true) {
+                return 'degraded';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+            if (($runtime['used_fallback_model'] ?? false) === true) {
+                return 'fallback_model';
+            }
+        }
+
+        foreach (['understanding', 'reply_draft', 'grounded_response'] as $stage) {
+            $runtime = is_array($bundle[$stage] ?? null) ? $bundle[$stage] : [];
+            if (($runtime['status'] ?? null) === 'success') {
+                return 'healthy';
+            }
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtime
+     */
+    private function resolveStageRuntimeHealth(array $runtime): string
+    {
+        if (($runtime['status'] ?? null) === 'fallback') {
+            return 'fallback';
+        }
+
+        if (array_key_exists('schema_valid', $runtime) && ($runtime['schema_valid'] ?? true) === false) {
+            return 'schema_invalid';
+        }
+
+        if (($runtime['degraded_mode'] ?? false) === true) {
+            return 'degraded';
+        }
+
+        if (($runtime['used_fallback_model'] ?? false) === true) {
+            return 'fallback_model';
+        }
+
+        if (($runtime['status'] ?? null) === 'success') {
+            return 'healthy';
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     * @return array<string, mixed>
+     */
+    private function summarizeRuntimeForWriteback(array $bundle): array
+    {
+        return [
+            'overall' => $this->resolveRuntimeHealthFromBundle($bundle),
+            'understanding' => [
+                'health' => $this->resolveStageRuntimeHealth(
+                    is_array($bundle['understanding'] ?? null) ? $bundle['understanding'] : []
+                ),
+                'model' => $bundle['understanding']['model'] ?? null,
+            ],
+            'reply_draft' => [
+                'health' => $this->resolveStageRuntimeHealth(
+                    is_array($bundle['reply_draft'] ?? null) ? $bundle['reply_draft'] : []
+                ),
+                'model' => $bundle['reply_draft']['model'] ?? null,
+            ],
+            'grounded_response' => [
+                'health' => $this->resolveStageRuntimeHealth(
+                    is_array($bundle['grounded_response'] ?? null) ? $bundle['grounded_response'] : []
+                ),
+                'model' => $bundle['grounded_response']['model'] ?? null,
+            ],
+        ];
     }
 
     /**
