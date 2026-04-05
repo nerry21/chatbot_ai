@@ -27,13 +27,16 @@ final readonly class ConversationContextPayload
     ) {}
 
     /**
+     * Penting:
+     * Tahap understanding awal TIDAK lagi menerima full crm_context.
+     * Hanya pesan, history, state, known entities, summary, dan admin flag.
+     *
      * @return array{
      *     latest_message: string,
      *     recent_history: array<int, array{role: string, text: string, sent_at: string|null}>,
      *     conversation_state: array<string, mixed>,
      *     known_entities: array<string, mixed>,
      *     conversation_summary: string|null,
-     *     crm_context: array<string, mixed>,
      *     admin_takeover: bool
      * }
      */
@@ -43,14 +46,15 @@ final readonly class ConversationContextPayload
             'latest_message' => $this->latestMessageText,
             'recent_history' => $this->recentHistoryForUnderstanding(),
             'conversation_state' => $this->conversationStateForUnderstanding(),
-            'known_entities' => $this->knownEntities,
+            'known_entities' => $this->knownEntitiesForUnderstanding(),
             'conversation_summary' => $this->conversationSummary,
-            'crm_context' => $this->crmContext,
             'admin_takeover' => $this->adminTakeover,
         ];
     }
 
     /**
+     * Full AI context untuk tahap setelah understanding.
+     *
      * @return array<string, mixed>
      */
     public function toAiContext(): array
@@ -126,6 +130,9 @@ final readonly class ConversationContextPayload
     }
 
     /**
+     * Penting:
+     * Jangan bocorkan full crm_context ke conversation_state understanding.
+     *
      * @return array<string, mixed>
      */
     private function conversationStateForUnderstanding(): array
@@ -134,9 +141,19 @@ final readonly class ConversationContextPayload
             ...$this->conversationState,
             'resolved_context' => $this->resolvedContext !== [] ? $this->resolvedContext : null,
             'conversation_summary' => $this->conversationSummary,
-            'crm_context' => $this->crmContext !== [] ? $this->crmContext : null,
             'admin_takeover' => $this->adminTakeover,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function knownEntitiesForUnderstanding(): array
+    {
+        return array_filter(
+            $this->knownEntities,
+            static fn (mixed $value): bool => $value !== null && $value !== '',
+        );
     }
 
     /**

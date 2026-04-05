@@ -252,6 +252,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $contextPayload = $contextPayload->withCrmContext($crmSnapshot);
             $aiContext = $contextPayload->toAiContext();
             $aiContext['crm_context'] = $crmSnapshot;
+            $aiContext['understanding_mode'] = 'llm_first_with_crm_hints_only';
 
             // ── 2.5 Knowledge retrieval (Tahap 10) ──────────────────────────
             // Fetch once, reuse across all AI steps.
@@ -271,6 +272,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'conversation_id' => $conversation->id,
                 'message_preview' => mb_substr($messageText, 0, 60),
                 'knowledge_hits' => count($knowledgeHits),
+                'understanding_mode' => 'llm_first_with_crm_hints_only',
             ]);
             $understandingResult = $understandingEngine->understandFromContext(
                 contextPayload: $contextPayload,
@@ -283,6 +285,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'confidence' => $understandingResult->confidence,
                 'needs_clarification' => $understandingResult->needsClarification,
                 'handoff_recommended' => $understandingResult->handoffRecommended,
+                'understanding_mode' => 'llm_first_with_crm_hints_only',
                 'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
             ]);
 

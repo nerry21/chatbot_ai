@@ -15,6 +15,8 @@ class UnderstandingResultAdapterService
      *     entity_result: array<string, mixed>,
      *     meta: array{
      *         llm_primary: bool,
+     *         understanding_source: string,
+     *         crm_hints_used: bool,
      *         used_legacy_intent_fallback: bool,
      *         used_legacy_entity_fallback: bool,
      *         legacy_fallback_reason: string|null
@@ -40,15 +42,15 @@ class UnderstandingResultAdapterService
         $intentResult = [
             'intent' => $intent,
             'confidence' => min(1.0, max(0.0, $confidence)),
-            'reasoning_short' => $reasoning !== '' ? $reasoning : 'Understanding LLM + CRM aktif.',
+            'reasoning_short' => $reasoning !== '' ? $reasoning : 'Understanding LLM-first dengan CRM hints aktif.',
             'sub_intent' => $understanding->subIntent,
             'needs_clarification' => $understanding->needsClarification,
             'clarification_question' => $understanding->clarificationQuestion,
             'handoff_recommended' => $understanding->handoffRecommended,
             'uses_previous_context' => $understanding->usesPreviousContext,
             'llm_primary' => true,
-            'understanding_source' => 'llm_with_crm_context',
-            'crm_context_used' => true,
+            'understanding_source' => 'llm_first_understanding_with_crm_hints',
+            'crm_hints_used' => true,
         ];
 
         $entityResult = $this->mergeLegacyEntities(
@@ -61,12 +63,12 @@ class UnderstandingResultAdapterService
             'entity_result' => $entityResult,
             'meta' => [
                 'llm_primary' => true,
-                'understanding_source' => 'llm_with_crm_context',
-                'crm_context_used' => true,
+                'understanding_source' => 'llm_first_understanding_with_crm_hints',
+                'crm_hints_used' => true,
                 'used_legacy_intent_fallback' => $usedLegacyIntentFallback,
                 'used_legacy_entity_fallback' => $usedLegacyEntityFallback,
                 'legacy_fallback_reason' => $usedLegacyIntentFallback || $usedLegacyEntityFallback
-                    ? 'LLM understanding gagal total sehingga legacy fallback dipakai sebagai backup.'
+                    ? 'LLM understanding tidak cukup kuat sehingga legacy fallback dipakai sebagai backup.'
                     : null,
             ],
         ];
@@ -118,7 +120,8 @@ class UnderstandingResultAdapterService
     private function buildEntityResult(LlmUnderstandingResult $understanding): array
     {
         $selectedSeats = $this->seatList($understanding->entities->seatNumber);
-        $entityResult = [
+
+        return [
             'customer_name' => $understanding->entities->passengerName,
             'passenger_name' => $understanding->entities->passengerName,
             'pickup_location' => $understanding->entities->origin,
@@ -132,8 +135,6 @@ class UnderstandingResultAdapterService
             'notes' => null,
             'missing_fields' => $this->missingFields($understanding),
         ];
-
-        return $entityResult;
     }
 
     /**

@@ -5,176 +5,157 @@ namespace App\Services\AI;
 class UnderstandingCrmContextFormatterService
 {
     /**
-     * @param  array<string, mixed>  $crmContext
+     * Format CRM hints ringan untuk tahap understanding awal.
+     * Bukan full CRM snapshot.
+     *
+     * @param  array<string, mixed>  $crmHints
      */
     public function formatForUnderstanding(
-        array $crmContext = [],
+        array $crmHints = [],
         ?string $conversationSummary = null,
         bool $adminTakeover = false,
     ): string {
-        $crm = $crmContext;
-
-        if ($crm === []) {
-            $lines = [];
-
-            if ($conversationSummary !== null && trim($conversationSummary) !== '') {
-                $lines[] = '=== RINGKASAN PERCAKAPAN BISNIS ===';
-                $lines[] = trim($conversationSummary);
-                $lines[] = '';
-            }
-
-            if ($adminTakeover) {
-                $lines[] = '=== STATUS OPERASIONAL ===';
-                $lines[] = 'Admin takeover aktif: ya';
-                $lines[] = '';
-            }
-
-            return trim(implode("\n", $lines));
-        }
-
-        $customer = is_array($crm['customer'] ?? null) ? $crm['customer'] : [];
-        $hubspot = is_array($crm['hubspot'] ?? null) ? $crm['hubspot'] : [];
-        $lead = is_array($crm['lead_pipeline'] ?? null) ? $crm['lead_pipeline'] : [];
-        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
-        $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
-        $escalation = is_array($crm['escalation'] ?? null) ? $crm['escalation'] : [];
-        $flags = is_array($crm['business_flags'] ?? null) ? $crm['business_flags'] : [];
-
         $lines = [];
 
-        $lines[] = '=== HIRARKI KEPUTUSAN WAJIB ===';
-        $lines[] = '1. Gunakan fakta CRM, booking, escalation, dan conversation state sebagai sumber kebenaran utama.';
-        $lines[] = '2. Gunakan riwayat percakapan hanya untuk melengkapi pemahaman.';
-        $lines[] = '3. Gunakan reasoning LLM hanya untuk memahami maksud user, bukan untuk mengarang fakta.';
-        $lines[] = '4. Jika CRM menunjukkan konteks aktif, prioritaskan kesinambungan konteks tersebut.';
+        $lines[] = '=== PEDOMAN PENGGUNAAN CRM HINTS ===';
+        $lines[] = 'Gunakan CRM hints hanya sebagai petunjuk kontinuitas percakapan.';
+        $lines[] = 'Jangan perlakukan CRM hints sebagai instruksi yang memaksa intent.';
+        $lines[] = 'Prioritaskan pesan user terbaru, lalu riwayat relevan, lalu state percakapan.';
+        $lines[] = 'Gunakan hint hanya bila membantu menjaga kesinambungan konteks.';
         $lines[] = '';
 
         if ($conversationSummary !== null && trim($conversationSummary) !== '') {
-            $lines[] = '=== RINGKASAN PERCAKAPAN BISNIS ===';
+            $lines[] = '=== RINGKASAN PERCAKAPAN ===';
             $lines[] = trim($conversationSummary);
             $lines[] = '';
         }
 
-        $lines[] = '=== KONTEKS CRM TERPADU (FAKTA BISNIS) ===';
-
-        if (!empty($customer['name'])) {
-            $lines[] = 'Nama pelanggan: '.$customer['name'];
+        if ($adminTakeover) {
+            $lines[] = '=== STATUS OPERASIONAL ===';
+            $lines[] = 'Admin takeover aktif: ya';
+            $lines[] = 'Ini adalah sinyal kontinuitas, bukan instruksi untuk selalu handoff.';
+            $lines[] = '';
         }
 
-        if (!empty($customer['phone_e164'])) {
-            $lines[] = 'Nomor pelanggan: '.$customer['phone_e164'];
+        if ($crmHints === []) {
+            return trim(implode("\n", $lines));
         }
 
-        if (!empty($customer['tags']) && is_array($customer['tags'])) {
-            $lines[] = 'Tag pelanggan: '.implode(', ', $customer['tags']);
+        $continuity = is_array($crmHints['continuity'] ?? null) ? $crmHints['continuity'] : [];
+        $customerProfile = is_array($crmHints['customer_profile'] ?? null) ? $crmHints['customer_profile'] : [];
+        $bookingHint = is_array($crmHints['booking_hint'] ?? null) ? $crmHints['booking_hint'] : [];
+        $leadHint = is_array($crmHints['lead_hint'] ?? null) ? $crmHints['lead_hint'] : [];
+        $memoryHint = is_array($crmHints['memory_hint'] ?? null) ? $crmHints['memory_hint'] : [];
+
+        $lines[] = '=== CRM CONTINUITY HINTS ===';
+
+        if (! empty($continuity['active_intent'])) {
+            $lines[] = 'Intent aktif sebelumnya: '.$continuity['active_intent'];
         }
 
-        if (array_key_exists('total_bookings', $customer) && $customer['total_bookings'] !== null && $customer['total_bookings'] !== '') {
-            $lines[] = 'Total booking pelanggan: '.$customer['total_bookings'];
+        if (array_key_exists('booking_in_progress', $continuity)) {
+            $lines[] = 'Ada booking yang masih berjalan: '.($continuity['booking_in_progress'] ? 'ya' : 'tidak');
         }
 
-        if (!empty($hubspot['lifecycle_stage'])) {
-            $lines[] = 'Lifecycle HubSpot: '.$hubspot['lifecycle_stage'];
+        if (! empty($continuity['expected_input'])) {
+            $lines[] = 'Input yang kemungkinan sedang ditunggu: '.$continuity['expected_input'];
         }
 
-        if (!empty($hubspot['lead_status'])) {
-            $lines[] = 'Lead status HubSpot: '.$hubspot['lead_status'];
+        if (! empty($continuity['waiting_for'])) {
+            $lines[] = 'Sistem sedang menunggu: '.$continuity['waiting_for'];
         }
 
-        if (!empty($hubspot['company'])) {
-            $lines[] = 'Perusahaan: '.$hubspot['company'];
+        if (array_key_exists('has_open_escalation', $continuity)) {
+            $lines[] = 'Open escalation: '.($continuity['has_open_escalation'] ? 'ya' : 'tidak');
         }
 
-        if (!empty($hubspot['source'])) {
-            $lines[] = 'Sumber lead CRM: '.$hubspot['source'];
+        if (array_key_exists('needs_human_followup', $continuity)) {
+            $lines[] = 'Perlu follow-up human: '.($continuity['needs_human_followup'] ? 'ya' : 'tidak');
         }
 
-        $hubspotAiMemory = is_array($hubspot['ai_memory'] ?? null) ? $hubspot['ai_memory'] : [];
-
-        if (!empty($hubspotAiMemory['last_ai_intent'])) {
-            $lines[] = 'AI memory intent terakhir: '.$hubspotAiMemory['last_ai_intent'];
+        if (array_key_exists('admin_takeover', $continuity)) {
+            $lines[] = 'Admin takeover aktif: '.($continuity['admin_takeover'] ? 'ya' : 'tidak');
         }
 
-        if (!empty($hubspotAiMemory['customer_interest_topic'])) {
-            $lines[] = 'Topik minat pelanggan CRM: '.$hubspotAiMemory['customer_interest_topic'];
+        if (! empty($customerProfile['name'])) {
+            $lines[] = 'Nama pelanggan: '.$customerProfile['name'];
         }
 
-        if (array_key_exists('needs_human_followup', $hubspotAiMemory)) {
-            $lines[] = 'Follow-up human dari CRM: '.($hubspotAiMemory['needs_human_followup'] ? 'ya' : 'tidak');
+        if (array_key_exists('is_returning', $customerProfile)) {
+            $lines[] = 'Pelanggan returning: '.($customerProfile['is_returning'] ? 'ya' : 'tidak');
         }
 
-        if (!empty($lead['stage'])) {
-            $lines[] = 'Stage pipeline internal: '.$lead['stage'];
+        if (! empty($customerProfile['preferred_pickup'])) {
+            $lines[] = 'Pickup yang sering muncul: '.$customerProfile['preferred_pickup'];
         }
 
-        if (!empty($conversation['current_intent'])) {
-            $lines[] = 'Intent percakapan sebelumnya: '.$conversation['current_intent'];
+        if (! empty($customerProfile['preferred_destination'])) {
+            $lines[] = 'Tujuan yang sering muncul: '.$customerProfile['preferred_destination'];
         }
 
-        if (!empty($conversation['summary'])) {
-            $lines[] = 'Ringkasan percakapan CRM: '.$conversation['summary'];
+        if (! empty($customerProfile['interest_topic'])) {
+            $lines[] = 'Topik minat pelanggan: '.$customerProfile['interest_topic'];
         }
 
-        if (array_key_exists('needs_human', $conversation)) {
-            $lines[] = 'Perlu human follow-up: '.($conversation['needs_human'] ? 'ya' : 'tidak');
+        if (! empty($bookingHint['status'])) {
+            $lines[] = 'Status booking hint: '.$bookingHint['status'];
         }
 
-        if (!empty($booking['booking_status'])) {
-            $lines[] = 'Status booking: '.$booking['booking_status'];
+        if (! empty($bookingHint['pickup_location'])) {
+            $lines[] = 'Pickup hint: '.$bookingHint['pickup_location'];
         }
 
-        if (!empty($booking['pickup_location'])) {
-            $lines[] = 'Pickup booking: '.$booking['pickup_location'];
+        if (! empty($bookingHint['destination'])) {
+            $lines[] = 'Destination hint: '.$bookingHint['destination'];
         }
 
-        if (!empty($booking['destination'])) {
-            $lines[] = 'Tujuan booking: '.$booking['destination'];
+        if (! empty($bookingHint['departure_date'])) {
+            $lines[] = 'Tanggal berangkat hint: '.$bookingHint['departure_date'];
         }
 
-        if (!empty($booking['departure_date'])) {
-            $lines[] = 'Tanggal keberangkatan: '.$booking['departure_date'];
+        if (! empty($bookingHint['departure_time'])) {
+            $lines[] = 'Jam berangkat hint: '.$bookingHint['departure_time'];
         }
 
-        if (!empty($booking['departure_time'])) {
-            $lines[] = 'Jam keberangkatan: '.$booking['departure_time'];
+        if (array_key_exists('passenger_count', $bookingHint) && $bookingHint['passenger_count'] !== null) {
+            $lines[] = 'Jumlah penumpang hint: '.$bookingHint['passenger_count'];
         }
 
-        if (array_key_exists('ready_for_confirmation', $booking)) {
-            $lines[] = 'Siap untuk konfirmasi: '.($booking['ready_for_confirmation'] ? 'ya' : 'tidak');
+        if (! empty($bookingHint['payment_method'])) {
+            $lines[] = 'Metode pembayaran hint: '.$bookingHint['payment_method'];
         }
 
-        if (!empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
-            $lines[] = 'Data booking yang masih kurang: '.implode(', ', $booking['missing_fields']);
+        if (! empty($bookingHint['missing_fields']) && is_array($bookingHint['missing_fields'])) {
+            $lines[] = 'Data booking yang kemungkinan masih kurang: '.implode(', ', $bookingHint['missing_fields']);
         }
 
-        if (($escalation['has_open_escalation'] ?? false) === true) {
-            $lines[] = 'Ada escalation terbuka: ya';
-
-            if (!empty($escalation['priority'])) {
-                $lines[] = 'Prioritas escalation: '.$escalation['priority'];
-            }
-
-            if (!empty($escalation['reason'])) {
-                $lines[] = 'Alasan escalation: '.$escalation['reason'];
-            }
-        } else {
-            $lines[] = 'Ada escalation terbuka: tidak';
+        if (! empty($leadHint['stage'])) {
+            $lines[] = 'Lead stage hint: '.$leadHint['stage'];
         }
 
-        $effectiveAdminTakeover = $adminTakeover || (($flags['admin_takeover_active'] ?? false) === true);
+        if (! empty($leadHint['lifecycle_stage'])) {
+            $lines[] = 'Lifecycle stage hint: '.$leadHint['lifecycle_stage'];
+        }
 
-        $lines[] = '=== STATUS OPERASIONAL ===';
-        $lines[] = 'Admin takeover aktif: '.($effectiveAdminTakeover ? 'ya' : 'tidak');
-        $lines[] = 'Bot sedang pause: '.((($flags['bot_paused'] ?? false) === true) ? 'ya' : 'tidak');
-        $lines[] = 'Perlu human follow-up: '.((($flags['needs_human_followup'] ?? false) === true) ? 'ya' : 'tidak');
+        if (! empty($leadHint['lead_status'])) {
+            $lines[] = 'Lead status hint: '.$leadHint['lead_status'];
+        }
 
-        $lines[] = '';
-        $lines[] = '=== CARA MEMAKAI KONTEKS DI ATAS ===';
-        $lines[] = '- Jika pesan user tampak ambigu, gunakan konteks CRM aktif untuk memilih intent yang paling nyambung.';
-        $lines[] = '- Jika ada booking aktif, prioritaskan interpretasi sebagai kelanjutan booking tersebut bila masuk akal.';
-        $lines[] = '- Jika ada escalation atau needs_human_followup, pertimbangkan handoff_recommended=true bila pesan memperkuat kebutuhan tersebut.';
-        $lines[] = '- Jangan bertentangan dengan fakta CRM yang sudah ada.';
-        $lines[] = '- Jangan mengarang data baru di luar fakta CRM, riwayat, dan pesan user terbaru.';
+        if (! empty($memoryHint['last_ai_intent'])) {
+            $lines[] = 'Intent AI terakhir: '.$memoryHint['last_ai_intent'];
+        }
+
+        if (! empty($memoryHint['customer_interest_topic'])) {
+            $lines[] = 'Topik interest AI memory: '.$memoryHint['customer_interest_topic'];
+        }
+
+        if (array_key_exists('needs_human_followup', $memoryHint)) {
+            $lines[] = 'AI memory follow-up human: '.($memoryHint['needs_human_followup'] ? 'ya' : 'tidak');
+        }
+
+        if (! empty($memoryHint['recent_topic'])) {
+            $lines[] = 'Topik percakapan yang baru-baru ini muncul: '.$memoryHint['recent_topic'];
+        }
 
         return trim(implode("\n", $lines));
     }

@@ -12,6 +12,7 @@ class LlmUnderstandingEngine
         private readonly LlmClientService $llmClient,
         private readonly UnderstandingPromptBuilderService $promptBuilder,
         private readonly UnderstandingOutputParserService $parser,
+        private readonly UnderstandingCrmHintReducerService $crmHintReducer,
     ) {
     }
 
@@ -20,6 +21,7 @@ class LlmUnderstandingEngine
      * @param  array<string, mixed>  $conversationState
      * @param  array<string, mixed>  $knownEntities
      * @param  array<int, string|IntentType>  $allowedIntents
+     * @param  array<string, mixed>  $crmHints
      */
     public function understand(
         string $latestMessage,
@@ -28,7 +30,7 @@ class LlmUnderstandingEngine
         array $knownEntities = [],
         array $allowedIntents = [],
         ?string $conversationSummary = null,
-        array $crmContext = [],
+        array $crmHints = [],
         bool $adminTakeover = false,
         ?int $conversationId = null,
         ?int $messageId = null,
@@ -50,7 +52,7 @@ class LlmUnderstandingEngine
             knownEntities: $knownEntities,
             allowedIntents: $normalizedAllowedIntents,
             conversationSummary: $conversationSummary,
-            crmContext: $crmContext,
+            crmHints: $crmHints,
             adminTakeover: $adminTakeover,
         );
 
@@ -62,9 +64,10 @@ class LlmUnderstandingEngine
             'conversation_state' => $conversationState,
             'known_entities' => $knownEntities,
             'conversation_summary' => $conversationSummary,
-            'crm_context' => $crmContext,
+            'crm_hints' => $crmHints,
             'admin_takeover' => $adminTakeover,
             'allowed_intents' => $normalizedAllowedIntents,
+            'understanding_mode' => 'llm_first_with_crm_hints_only',
             'system' => $prompts['system'],
             'user' => $prompts['user'],
             'model' => config('chatbot.llm.models.understanding', config('chatbot.llm.models.intent')),
@@ -82,6 +85,12 @@ class LlmUnderstandingEngine
     ): LlmUnderstandingResult {
         $input = $contextPayload->toUnderstandingInput();
 
+        $crmHints = $this->crmHintReducer->reduce(
+            crmContext: $contextPayload->crmContext,
+            conversationSummary: $contextPayload->conversationSummary,
+            adminTakeover: $contextPayload->adminTakeover,
+        );
+
         return $this->understand(
             latestMessage: $contextPayload->latestMessageText,
             recentHistory: $input['recent_history'],
@@ -89,7 +98,7 @@ class LlmUnderstandingEngine
             knownEntities: $input['known_entities'],
             allowedIntents: $allowedIntents,
             conversationSummary: $input['conversation_summary'] ?? null,
-            crmContext: is_array($input['crm_context'] ?? null) ? $input['crm_context'] : [],
+            crmHints: $crmHints,
             adminTakeover: (bool) ($input['admin_takeover'] ?? false),
             conversationId: $contextPayload->conversationId,
             messageId: $contextPayload->messageId,
