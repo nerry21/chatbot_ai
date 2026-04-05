@@ -7,6 +7,7 @@ use App\Jobs\EscalateConversationToAdminJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\Customer;
+use App\Models\Escalation;
 use App\Services\CRM\CrmDecisionTraceBuilderService;
 use App\Support\WaLog;
 use Illuminate\Support\Facades\DB;
@@ -79,6 +80,19 @@ class CRMWritebackService
 
         $intentEnum = $intent !== '' ? IntentType::tryFrom($intent) : null;
         $leadStageBefore = $crmLeadPipeline['stage'] ?? null;
+
+        $contactSync = $this->crmSyncService->syncCustomerSnapshot(
+            customer: $customer,
+            context: [
+                'last_ai_intent' => $intentResult['intent'] ?? null,
+                'last_ai_summary' => $summaryResult['summary'] ?? null,
+                'customer_interest_topic' => $this->deriveInterestTopic($intentResult, $summaryResult, $finalReply),
+                'ai_sentiment' => $summaryResult['sentiment'] ?? null,
+                'needs_human_followup' => false,
+                'admin_takeover_active' => (bool) ($crmContext['business_flags']['admin_takeover_active'] ?? false),
+                'last_whatsapp_interaction_at' => now()->toIso8601String(),
+            ],
+        );
 
         $summarySync = ['status' => 'skipped', 'reason' => 'no_summary'];
         if ($this->shouldSyncSummary($summaryResult)) {
@@ -162,11 +176,36 @@ class CRMWritebackService
         );
 
         if ($needsEscalation) {
-            EscalateConversationToAdminJob::dispatch(
-                $conversation->id,
-                (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
-                'normal',
-            );
+            $conversation->forceFill([
+                'needs_human' => true,
+            ])->save();
+
+            try {
+                EscalateConversationToAdminJob::dispatch(
+                    $conversation->id,
+                    (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
+                    'normal',
+                );
+            } catch (\Throwable $e) {
+                WaLog::error('[CRMWriteback] Escalation dispatch failed - applying inline fallback', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                $existingEscalation = Escalation::where('conversation_id', $conversation->id)
+                    ->where('status', 'open')
+                    ->first();
+
+                if ($existingEscalation === null) {
+                    Escalation::create([
+                        'conversation_id' => $conversation->id,
+                        'reason' => (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
+                        'priority' => 'normal',
+                        'status' => 'open',
+                        'summary' => $conversation->summary,
+                    ]);
+                }
+            }
         }
 
         WaLog::info('[CRMWriteback] CRM + LLM writeback complete', [

@@ -405,6 +405,20 @@ return [
             'token'   => env('HUBSPOT_ACCESS_TOKEN', ''),
             // HubSpot portal/account ID — used for building deep links if needed.
             'portal_id' => env('HUBSPOT_PORTAL_ID', ''),
+            // Remove a property from this list to disable syncing it if it's
+            // not yet available in your HubSpot account.
+            'allowed_contact_properties' => [
+                'firstname',
+                'phone',
+                'email',
+                'last_ai_intent',
+                'last_ai_summary',
+                'customer_interest_topic',
+                'ai_sentiment',
+                'needs_human_followup',
+                'admin_takeover_active',
+                'last_whatsapp_interaction_at',
+            ],
         ],
 
         'ai_context' => [

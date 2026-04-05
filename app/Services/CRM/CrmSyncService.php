@@ -2,6 +2,7 @@
 
 namespace App\Services\CRM;
 
+use App\Jobs\RetryDecisionNoteToCrmJob;
 use App\Models\Conversation;
 use App\Models\CrmContact;
 use App\Models\Customer;
@@ -244,7 +245,9 @@ class CrmSyncService
         array $decisionTrace = [],
     ): array {
         try {
-            if (trim($note) === '') {
+            $note = trim($note);
+
+            if ($note === '') {
                 Log::info('[CrmSync] appendConversationDecisionNote result', [
                     'customer_id' => $customer->id,
                     'status' => 'skipped',
@@ -255,17 +258,29 @@ class CrmSyncService
                 return ['status' => 'skipped', 'reason' => 'empty_note'];
             }
 
+            if (mb_strlen($note) > 60000) {
+                $note = mb_substr($note, 0, 60000)."\n\n[truncated]";
+            }
+
             $crmContact = CrmContact::where('customer_id', $customer->id)->first();
 
             if ($crmContact === null || empty($crmContact->external_contact_id)) {
-                Log::info('[CrmSync] appendConversationDecisionNote result', [
-                    'customer_id' => $customer->id,
-                    'status' => 'skipped',
-                    'reason' => 'no_crm_contact',
-                    'trace_id' => $decisionTrace['trace_id'] ?? null,
-                ]);
+                $seedResult = $this->syncCustomer($customer);
+                $crmContact = CrmContact::where('customer_id', $customer->id)->first();
 
-                return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
+                if ($crmContact === null || empty($crmContact->external_contact_id)) {
+                    RetryDecisionNoteToCrmJob::dispatch($customer->id, $note)->delay(now()->addMinutes(5));
+
+                    Log::info('[CrmSync] appendConversationDecisionNote result', [
+                        'customer_id' => $customer->id,
+                        'status' => 'queued_retry',
+                        'reason' => 'no_crm_contact',
+                        'seed_status' => $seedResult['status'] ?? null,
+                        'trace_id' => $decisionTrace['trace_id'] ?? null,
+                    ]);
+
+                    return ['status' => 'queued_retry', 'reason' => 'no_crm_contact'];
+                }
             }
 
             if (! method_exists($this->hubspot, 'appendNote')) {
@@ -293,8 +308,15 @@ class CrmSyncService
                 return ['status' => $result['status']];
             }
 
-            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+            RetryDecisionNoteToCrmJob::dispatch($customer->id, $note)->delay(now()->addMinutes(5));
+
+            return [
+                'status' => 'queued_retry',
+                'error' => $result['error'] ?? 'unknown',
+            ];
         } catch (\Throwable $e) {
+            RetryDecisionNoteToCrmJob::dispatch($customer->id, trim($note))->delay(now()->addMinutes(5));
+
             Log::error('[CrmSync] appendConversationDecisionNote exception', [
                 'customer_id' => $customer->id,
                 'trace_id' => $decisionTrace['trace_id'] ?? null,
@@ -317,7 +339,7 @@ class CrmSyncService
      */
     private function buildContactPayload(Customer $customer, array $context = []): array
     {
-        return array_filter([
+        $payload = array_filter([
             'firstname' => $customer->name ?: null,
             'phone' => $customer->phone_e164 ?: null,
             'email' => $customer->email ?: null,
@@ -329,6 +351,8 @@ class CrmSyncService
             'admin_takeover_active' => $this->normalizeBooleanString($context['admin_takeover_active'] ?? null),
             'last_whatsapp_interaction_at' => $this->normalizeCrmValue($context['last_whatsapp_interaction_at'] ?? null),
         ], static fn ($value) => $value !== null && $value !== '');
+
+        return $this->filterSupportedHubspotProperties($payload);
     }
 
     private function buildSummaryNote(Customer $customer, Conversation $conversation): string
@@ -342,6 +366,42 @@ class CrmSyncService
             '',
             $conversation->summary,
         ]));
+    }
+
+    /**
+     * Hindari kegagalan total saat custom property HubSpot belum tersedia.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function filterSupportedHubspotProperties(array $payload): array
+    {
+        $supported = array_filter(array_map(
+            static fn ($value) => is_string($value) ? trim($value) : null,
+            (array) config('chatbot.crm.hubspot.allowed_contact_properties', [
+                'firstname',
+                'phone',
+                'email',
+                'last_ai_intent',
+                'last_ai_summary',
+                'customer_interest_topic',
+                'ai_sentiment',
+                'needs_human_followup',
+                'admin_takeover_active',
+                'last_whatsapp_interaction_at',
+            ]),
+        ));
+
+        $filtered = array_intersect_key($payload, array_flip($supported));
+        $dropped = array_values(array_diff(array_keys($payload), array_keys($filtered)));
+
+        if ($dropped !== []) {
+            Log::warning('[CrmSync] unsupported HubSpot contact properties dropped', [
+                'dropped_properties' => $dropped,
+            ]);
+        }
+
+        return $filtered;
     }
 
     private function normalizeCrmValue(mixed $value): string|bool|int|float|null

@@ -54,7 +54,8 @@ class HubSpotService
 
             if ($existingId !== null) {
                 $response = Http::withToken($this->token)
-                    ->timeout(10)
+                    ->retry(3, 1000)
+                    ->timeout(20)
                     ->patch(self::BASE_URL.'/objects/contacts/'.$existingId, [
                         'properties' => $data,
                     ]);
@@ -77,7 +78,8 @@ class HubSpotService
             }
 
             $response = Http::withToken($this->token)
-                ->timeout(10)
+                ->retry(3, 1000)
+                ->timeout(20)
                 ->post(self::BASE_URL.'/objects/contacts', [
                     'properties' => $data,
                 ]);
@@ -162,7 +164,8 @@ class HubSpotService
 
         try {
             $response = Http::withToken($this->token)
-                ->timeout(10)
+                ->retry(3, 1000)
+                ->timeout(20)
                 ->post(self::BASE_URL.'/objects/notes', [
                     'properties' => [
                         'hs_note_body' => $note,
@@ -223,7 +226,8 @@ class HubSpotService
 
         try {
             $response = Http::withToken($this->token)
-                ->timeout(10)
+                ->retry(3, 1000)
+                ->timeout(20)
                 ->patch(self::BASE_URL.'/objects/contacts/'.$externalContactId, [
                     'properties' => $properties,
                 ]);
