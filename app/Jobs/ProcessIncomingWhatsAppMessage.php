@@ -745,14 +745,14 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 intentResult   : $intentResult,
                 summaryResult  : $summaryResult,
                 finalReply     : $finalReply,
-                contextSnapshot: array_merge(
-                    $aiContext,
-                    $contextPayload?->toArray() ?? [],
-                    [
-                        'crm_context' => $crmSnapshot,
-                        'orchestration' => $orchestrationSnapshot,
-                    ],
-                ),
+                contextSnapshot: [
+                    'crm_context' => $crmSnapshot,
+                    'orchestration' => $orchestrationSnapshot,
+                    'decision_trace' => $aiContext['decision_trace'] ?? [],
+                    'job_trace_id' => WaLog::traceId(),
+                    'message_id' => $message->id,
+                    'conversation_id' => $conversation->id,
+                ],
                 crmWriteback   : $crmWriteback,
             );
 
@@ -975,16 +975,23 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 contextSnapshot: $contextSnapshot,
             );
 
-            WaLog::info('[Job:ProcessIncoming] CRM integrated writeback finished', [
+            WaLog::info('[Job:ProcessIncoming] CRM writeback dispatched', [
                 'conversation_id' => $conversation->id,
+                'message_id' => $contextSnapshot['message_id'] ?? null,
+                'job_trace_id' => $contextSnapshot['job_trace_id'] ?? null,
                 'result_status' => $result['status'] ?? null,
                 'lead_stage' => $result['lead_stage'] ?? null,
                 'needs_escalation' => $result['needs_escalation'] ?? false,
                 'tags' => $result['tags'] ?? [],
+                'contact_sync' => $result['contact_sync']['status'] ?? null,
+                'summary_sync' => $result['summary_sync']['status'] ?? null,
+                'decision_note_sync' => $result['decision_note_sync']['status'] ?? null,
+                'decision_trace_id' => $result['decision_trace']['trace_id'] ?? null,
             ]);
         } catch (\Throwable $e) {
             WaLog::error('[Job:ProcessIncoming] CRM integrated writeback failed (non-fatal)', [
                 'conversation_id' => $conversation->id,
+                'job_trace_id' => $contextSnapshot['job_trace_id'] ?? null,
                 'error' => $e->getMessage(),
                 'file' => $e->getFile().':'.$e->getLine(),
             ]);

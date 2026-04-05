@@ -4,6 +4,9 @@ namespace App\Services\CRM;
 
 use App\Enums\IntentType;
 use App\Jobs\EscalateConversationToAdminJob;
+use App\Jobs\RetryDecisionNoteToCrmJob;
+use App\Jobs\SyncContactToCrmJob;
+use App\Jobs\SyncConversationSummaryToCrmJob;
 use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Support\WaLog;
@@ -90,10 +93,16 @@ class CRMWritebackService
 
         $summarySync = ['status' => 'skipped', 'reason' => 'no_summary'];
         if ($this->shouldSyncSummary($summaryResult)) {
-            $summarySync = $this->crmSyncService->syncConversationSummary(
-                customer: $customer,
-                conversation: $conversation,
-            );
+            SyncConversationSummaryToCrmJob::dispatch(
+                customerId: $customer->id,
+                conversationId: $conversation->id,
+            )->onQueue('crm');
+
+            $summarySync = [
+                'status' => 'queued',
+                'queue' => 'crm',
+                'reason' => 'summary_sync_enqueued',
+            ];
         }
 
         $decisionNote = $this->decisionNoteBuilder->build(
@@ -108,11 +117,17 @@ class CRMWritebackService
 
         $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
         if (trim($decisionNote) !== '') {
-            $decisionNoteSync = $this->crmSyncService->appendConversationDecisionNote(
-                customer: $customer,
+            RetryDecisionNoteToCrmJob::dispatch(
+                customerId: $customer->id,
                 note: $decisionNote,
-                decisionTrace: $decisionTrace,
-            );
+            )->onQueue('crm');
+
+            $decisionNoteSync = [
+                'status' => 'queued',
+                'queue' => 'crm',
+                'reason' => 'decision_note_enqueued',
+                'trace_id' => $decisionTrace['trace_id'] ?? null,
+            ];
         }
 
         $intent = is_string($intentResult['intent'] ?? null)
@@ -142,9 +157,15 @@ class CRMWritebackService
             needsEscalation: $needsEscalation,
         );
 
-        $contactSync = $this->crmSyncService->syncCustomerSnapshot(
-            customer: $customer,
-            context: [
+        SyncContactToCrmJob::dispatch(
+            customerId: $customer->id,
+        )->onQueue('crm');
+
+        $contactSync = [
+            'status' => 'queued',
+            'queue' => 'crm',
+            'reason' => 'contact_sync_enqueued',
+            'context' => [
                 'last_ai_intent' => $intentResult['intent'] ?? null,
                 'last_ai_summary' => $summaryResult['summary'] ?? null,
                 'customer_interest_topic' => $this->deriveInterestTopic($intentResult, $summaryResult, $finalReply),
@@ -153,14 +174,14 @@ class CRMWritebackService
                 'admin_takeover_active' => (bool) ($crmContext['business_flags']['admin_takeover_active'] ?? false),
                 'last_whatsapp_interaction_at' => now()->toIso8601String(),
             ],
-        );
+        ];
 
         if ($needsEscalation && (($crmEscalation['has_open_escalation'] ?? false) !== true)) {
             EscalateConversationToAdminJob::dispatch(
                 $conversation->id,
                 (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
                 'normal',
-            );
+            )->onQueue('priority');
         }
 
         WaLog::info('[CRMWriteback] CRM + LLM writeback complete', [
@@ -170,9 +191,9 @@ class CRMWritebackService
             'lead_stage_before' => $crmLeadPipeline['stage'] ?? null,
             'lead_stage_after' => $lead?->stage,
             'tags' => $tags,
-            'contact_sync' => $contactSync['status'] ?? null,
-            'summary_sync' => $summarySync['status'] ?? null,
-            'decision_note_sync' => $decisionNoteSync['status'] ?? null,
+            'contact_sync' => $contactSync,
+            'summary_sync' => $summarySync,
+            'decision_note_sync' => $decisionNoteSync,
             'needs_escalation' => $needsEscalation,
             'decision_trace_id' => $decisionTrace['trace_id'] ?? null,
             'decision_trace_final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,

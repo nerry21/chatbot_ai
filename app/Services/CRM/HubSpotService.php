@@ -130,7 +130,7 @@ class HubSpotService
     }
 
     /**
-     * @return array{status:string, note_id?:string, error?:string, reason?:string, http_status?:int}
+     * @return array{status:string, note_id?:string, error?:string, reason?:string, reason_code?:string, http_status?:int, retryable?:bool}
      */
     public function appendNote(string $externalContactId, string $note): array
     {
@@ -168,12 +168,18 @@ class HubSpotService
                 return [
                     'status' => 'success',
                     'note_id' => (string) $response->json('id'),
+                    'retryable' => false,
                 ];
             }
+
+            $reasonCode = $this->classifyNoteWriteFailure($response);
+            $retryable = $this->isRetryableHttpStatus($response->status());
 
             Log::warning('[HubSpot] appendNote failed', [
                 'contact_id' => $externalContactId,
                 'http_status' => $response->status(),
+                'reason_code' => $reasonCode,
+                'retryable' => $retryable,
                 'body' => $response->body(),
             ]);
 
@@ -181,6 +187,8 @@ class HubSpotService
                 'status' => 'failed',
                 'error' => $response->body(),
                 'http_status' => $response->status(),
+                'reason_code' => $reasonCode,
+                'retryable' => $retryable,
             ];
         } catch (ConnectionException $e) {
             Log::error('[HubSpot] appendNote connection exception', [
@@ -188,14 +196,24 @@ class HubSpotService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return [
+                'status' => 'error',
+                'error' => $e->getMessage(),
+                'reason_code' => 'connection_exception',
+                'retryable' => true,
+            ];
         } catch (\Throwable $e) {
             Log::error('[HubSpot] appendNote exception', [
                 'contact_id' => $externalContactId,
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return [
+                'status' => 'error',
+                'error' => $e->getMessage(),
+                'reason_code' => 'unexpected_exception',
+                'retryable' => true,
+            ];
         }
     }
 
@@ -524,12 +542,53 @@ class HubSpotService
         ];
     }
 
+    private function classifyNoteWriteFailure(Response $response): string
+    {
+        $status = $response->status();
+        $body = strtolower($response->body());
+
+        if ($status === 404) {
+            return 'contact_not_found';
+        }
+
+        if ($status === 409) {
+            return 'conflict';
+        }
+
+        if ($status === 429) {
+            return 'rate_limited';
+        }
+
+        if ($status >= 500) {
+            return 'hubspot_server_error';
+        }
+
+        if (str_contains($body, 'association')) {
+            return 'association_failed';
+        }
+
+        if (str_contains($body, 'object not found')) {
+            return 'contact_not_found';
+        }
+
+        if (str_contains($body, 'rate limit')) {
+            return 'rate_limited';
+        }
+
+        return 'append_note_failed';
+    }
+
+    private function isRetryableHttpStatus(int $status): bool
+    {
+        return $status === 429 || $status >= 500;
+    }
+
     /**
      * @return array{status:string, reason:string}
      */
     private function skipped(string $reason): array
     {
-        return ['status' => 'skipped', 'reason' => $reason];
+        return ['status' => 'skipped', 'reason' => $reason, 'retryable' => false];
     }
 
     private function normalizeText(mixed $value): ?string

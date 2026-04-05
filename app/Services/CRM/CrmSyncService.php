@@ -115,7 +115,7 @@ class CrmSyncService
     }
 
     /**
-     * @return array{status:string, reason?:string, error?:string}
+     * @return array{status:string, reason?:string, error?:string, retryable?:bool}
      */
     public function syncConversationSummary(Customer $customer, Conversation $conversation): array
     {
@@ -124,7 +124,7 @@ class CrmSyncService
                 return ['status' => 'skipped', 'reason' => 'no_summary'];
             }
 
-            $crmContact = $this->ensureCrmContact($customer, seedIfMissing: false);
+            $crmContact = $this->resolveCrmContactForWriteback($customer);
 
             if ($crmContact === null || empty($crmContact->external_contact_id)) {
                 return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
@@ -133,11 +133,14 @@ class CrmSyncService
             $note = $this->buildSummaryNote($customer, $conversation);
             $result = $this->hubspot->appendNote((string) $crmContact->external_contact_id, $note);
 
-            if (in_array($result['status'] ?? null, ['success', 'skipped'], true)) {
-                return ['status' => (string) $result['status'], 'reason' => $result['reason'] ?? null];
-            }
-
-            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+            return $this->normalizeNoteWriteResult(
+                result: $result,
+                customerId: $customer->id,
+                context: [
+                    'conversation_id' => $conversation->id,
+                    'write_type' => 'summary',
+                ],
+            );
         } catch (\Throwable $e) {
             Log::error('[CrmSync] syncConversationSummary exception', [
                 'customer_id' => $customer->id,
@@ -145,13 +148,13 @@ class CrmSyncService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return ['status' => 'error', 'error' => $e->getMessage(), 'retryable' => true];
         }
     }
 
     /**
      * @param  array<string, mixed>  $decisionTrace
-     * @return array{status:string, reason?:string, error?:string}
+     * @return array{status:string, reason?:string, error?:string, retryable?:bool, note_id?:string}
      */
     public function appendConversationDecisionNote(
         Customer $customer,
@@ -159,14 +162,24 @@ class CrmSyncService
         array $decisionTrace = [],
     ): array {
         try {
-            if (trim($note) === '') {
+            $note = trim($note);
+
+            if ($note === '') {
                 return ['status' => 'skipped', 'reason' => 'empty_note'];
             }
 
-            $crmContact = $this->ensureCrmContact($customer, seedIfMissing: false);
+            $crmContact = $this->resolveCrmContactForWriteback($customer);
 
             if ($crmContact === null || empty($crmContact->external_contact_id)) {
                 return ['status' => 'skipped', 'reason' => 'no_crm_contact'];
+            }
+
+            $traceId = is_scalar($decisionTrace['trace_id'] ?? null)
+                ? trim((string) $decisionTrace['trace_id'])
+                : '';
+
+            if ($traceId !== '' && ! str_contains($note, '[trace:'.$traceId.']')) {
+                $note = "[trace:{$traceId}]\n".$note;
             }
 
             $result = $this->hubspot->appendNote((string) $crmContact->external_contact_id, $note);
@@ -174,15 +187,20 @@ class CrmSyncService
             Log::info('[CrmSync] appendConversationDecisionNote result', [
                 'customer_id' => $customer->id,
                 'status' => $result['status'] ?? null,
-                'trace_id' => $decisionTrace['trace_id'] ?? null,
+                'trace_id' => $traceId,
                 'final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
+                'retryable' => $result['retryable'] ?? null,
             ]);
 
-            if (in_array($result['status'] ?? null, ['success', 'skipped'], true)) {
-                return ['status' => (string) $result['status'], 'reason' => $result['reason'] ?? null];
-            }
-
-            return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+            return $this->normalizeNoteWriteResult(
+                result: $result,
+                customerId: $customer->id,
+                context: [
+                    'trace_id' => $traceId,
+                    'final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
+                    'write_type' => 'decision_note',
+                ],
+            );
         } catch (\Throwable $e) {
             Log::error('[CrmSync] appendConversationDecisionNote exception', [
                 'customer_id' => $customer->id,
@@ -190,8 +208,68 @@ class CrmSyncService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return ['status' => 'error', 'error' => $e->getMessage(), 'retryable' => true];
         }
+    }
+
+    private function resolveCrmContactForWriteback(Customer $customer): ?CrmContact
+    {
+        $crmContact = $this->ensureCrmContact($customer, seedIfMissing: true);
+
+        if ($crmContact !== null && filled($crmContact->external_contact_id)) {
+            return $crmContact;
+        }
+
+        $seedResult = $this->syncCustomer($customer);
+
+        Log::info('[CrmSync] resolveCrmContactForWriteback seed retry', [
+            'customer_id' => $customer->id,
+            'status' => $seedResult['status'] ?? null,
+        ]);
+
+        $crmContact = CrmContact::where('customer_id', $customer->id)->first();
+
+        return ($crmContact !== null && filled($crmContact->external_contact_id))
+            ? $crmContact
+            : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function normalizeNoteWriteResult(array $result, int $customerId, array $context = []): array
+    {
+        $status = (string) ($result['status'] ?? 'failed');
+
+        if (in_array($status, ['success', 'skipped'], true)) {
+            return [
+                'status' => $status,
+                'reason' => $result['reason'] ?? null,
+                'note_id' => $result['note_id'] ?? null,
+                'retryable' => (bool) ($result['retryable'] ?? false),
+            ];
+        }
+
+        Log::warning('[CrmSync] note write failed', [
+            'customer_id' => $customerId,
+            'status' => $status,
+            'context' => $context,
+            'http_status' => $result['http_status'] ?? null,
+            'reason_code' => $result['reason_code'] ?? null,
+            'retryable' => $result['retryable'] ?? null,
+            'error' => $result['error'] ?? null,
+        ]);
+
+        return [
+            'status' => $status === 'error' ? 'error' : 'failed',
+            'error' => $result['error'] ?? 'unknown',
+            'reason' => $result['reason'] ?? null,
+            'reason_code' => $result['reason_code'] ?? null,
+            'http_status' => $result['http_status'] ?? null,
+            'retryable' => (bool) ($result['retryable'] ?? false),
+        ];
     }
 
     /**
