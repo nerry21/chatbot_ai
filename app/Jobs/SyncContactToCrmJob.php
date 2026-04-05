@@ -14,13 +14,16 @@ class SyncContactToCrmJob implements ShouldQueue
 {
     use Queueable, InteractsWithQueue, SerializesModels;
 
-    public int   $tries   = 3;
-    public array $backoff = [30, 120, 300];
-    public int   $timeout = 60;
+    public string $queue = 'crm';
+    public int $tries = 4;
+    public array $backoff = [30, 120, 300, 900];
+    public int $timeout = 90;
 
     public function __construct(
         public readonly int $customerId,
-    ) {}
+    ) {
+        $this->onQueue('crm');
+    }
 
     public function handle(CrmSyncService $crmSyncService): void
     {
@@ -29,6 +32,7 @@ class SyncContactToCrmJob implements ShouldQueue
         if ($customer === null) {
             Log::warning('[SyncContactToCrmJob] Customer not found', [
                 'customer_id' => $this->customerId,
+                'queue' => $this->queue,
             ]);
 
             return;
@@ -36,17 +40,27 @@ class SyncContactToCrmJob implements ShouldQueue
 
         $result = $crmSyncService->syncCustomer($customer);
 
-        Log::info('[SyncContactToCrmJob] Done', [
+        Log::info('[SyncContactToCrmJob] Result', [
             'customer_id' => $this->customerId,
-            'status'      => $result['status'],
+            'queue' => $this->queue,
+            'status' => $result['status'] ?? null,
+            'reason' => $result['reason'] ?? null,
+            'reason_code' => $result['reason_code'] ?? null,
+            'retryable' => $result['retryable'] ?? null,
+            'external_contact_id' => $result['external_contact_id'] ?? null,
         ]);
+
+        if (($result['retryable'] ?? false) === true && ! in_array($result['status'] ?? null, ['success', 'skipped'], true)) {
+            throw new \RuntimeException((string) ($result['error'] ?? $result['reason'] ?? 'CRM contact sync retry requested'));
+        }
     }
 
     public function failed(\Throwable $exception): void
     {
         Log::error('[SyncContactToCrmJob] Permanently failed', [
             'customer_id' => $this->customerId,
-            'error'       => $exception->getMessage(),
+            'queue' => $this->queue,
+            'error' => $exception->getMessage(),
         ]);
     }
 }
