@@ -23,6 +23,7 @@ use App\Services\AI\UnderstandingResultAdapterService;
 use App\Services\Booking\BookingAssistantService;
 use App\Services\Booking\BookingFlowStateMachine;
 use App\Services\Chatbot\BotAutomationToggleService;
+use App\Services\Chatbot\TravelWhatsAppPipelineService;
 use App\Services\Chatbot\ConversationContextLoaderService;
 use App\Services\Chatbot\ConversationManagerService;
 use App\Services\Chatbot\ConversationOutboundRouterService;
@@ -80,6 +81,7 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         ConversationReplyGuardService $replyGuard,
         ReplyOrchestratorService $replyOrchestrator,
         ConversationOutboundRouterService $outboundRouter,
+        TravelWhatsAppPipelineService $travelPipeline,
         CRMWritebackService $crmWriteback,
         CrmOrchestrationSnapshotService $crmSnapshotService,
         AuditLogService $audit,
@@ -257,6 +259,28 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 );
 
                 return; // Inbound message is stored; nothing else runs.
+            }
+
+            // ── 1.75 Travel pipeline shortcut ──────────────────────────────
+            // For travel-domain messages (booking, fare inquiry, schedule change),
+            // the rule-based orchestrator handles the full cycle and returns early.
+            // If the orchestrator throws, we fall through to the LLM pipeline as a fallback.
+            try {
+                if ($travelPipeline->handleIfApplicable($message, $conversation, $customer)) {
+                    WaLog::info('[Job:ProcessIncoming] Handled by TravelWhatsAppPipelineService', [
+                        'conversation_id' => $conversation->id,
+                        'message_id'      => $message->id,
+                    ]);
+
+                    return;
+                }
+            } catch (\Throwable $e) {
+                WaLog::error('[Job:ProcessIncoming] Travel pipeline error — falling back to LLM pipeline', [
+                    'conversation_id' => $conversation->id,
+                    'message_id'      => $message->id,
+                    'error'           => $e->getMessage(),
+                ]);
+                // Intentionally not re-throwing — LLM pipeline continues as fallback.
             }
 
             // ── 2. Build base AI context ────────────────────────────────────
