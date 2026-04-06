@@ -51,3 +51,12 @@ Schedule::command('statuses:deactivate-expired')
     ->withoutOverlapping()
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/statuses-deactivate-expired.log'));
+
+// Travel chatbot follow-up — runs every minute.
+// Sends a 15-minute reminder when a customer goes silent mid-booking,
+// and auto-cancels the booking after a second 15-minute window.
+Schedule::command('travel-chatbot:process-followups')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->appendOutputTo(storage_path('logs/travel-chatbot-followups.log'));

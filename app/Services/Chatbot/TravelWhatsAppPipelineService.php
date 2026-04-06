@@ -318,6 +318,68 @@ class TravelWhatsAppPipelineService
         );
     }
 
+    public function sendFollowUpToCustomerPhone(string $customerPhone, string $message): array
+    {
+        try {
+            $normalizedPhone = $this->normalizePhone($customerPhone);
+
+            $customer = \App\Models\Customer::query()
+                ->where('phone_e164', $normalizedPhone)
+                ->first();
+
+            if (! $customer) {
+                return [
+                    'status' => 'error',
+                    'target' => $customerPhone,
+                    'error'  => 'Customer not found for follow-up.',
+                ];
+            }
+
+            $conversation = \App\Models\Conversation::query()
+                ->where('customer_id', $customer->id)
+                ->where('channel', 'whatsapp')
+                ->latest('id')
+                ->first();
+
+            if (! $conversation) {
+                return [
+                    'status' => 'error',
+                    'target' => $customerPhone,
+                    'error'  => 'WhatsApp conversation not found for follow-up.',
+                ];
+            }
+
+            $outboundMessage = $this->conversationManager->appendOutboundMessage(
+                conversation: $conversation,
+                text: $message,
+                rawPayload: [
+                    'source' => 'travel_follow_up_scheduler',
+                ],
+                messageType: 'text',
+            );
+
+            $this->outboundRouter->dispatch($outboundMessage, WaLog::traceId());
+
+            return [
+                'status'                  => 'queued',
+                'target'                  => $customerPhone,
+                'conversation_id'         => $conversation->id,
+                'conversation_message_id' => $outboundMessage->id,
+            ];
+        } catch (\Throwable $e) {
+            Log::error('[TravelPipeline] Failed sending follow-up message', [
+                'customer_phone' => $customerPhone,
+                'error'          => $e->getMessage(),
+            ]);
+
+            return [
+                'status' => 'error',
+                'target' => $customerPhone,
+                'error'  => $e->getMessage(),
+            ];
+        }
+    }
+
     protected function normalizePhone(string $phone): string
     {
         $phone = preg_replace('/\s+/', '', trim($phone)) ?? trim($phone);
