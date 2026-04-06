@@ -212,21 +212,33 @@ class ReplyOrchestratorService
             ? $grounded['meta']['llm_runtime']
             : [];
 
-        $afterHallucination = $this->hallucinationGuardService->guardReply(
-            conversation: $context['conversation'],
-            intentResult: $intentResult,
-            reply: $grounded,
-            context: [
-                ...$context,
-                'faq_result' => $faqResult ?? [],
-                'knowledge_hits' => $knowledgeHits,
-                'llm_runtime' => [
-                    'understanding' => $understandingRuntime,
-                    'reply_draft' => $draftRuntime,
-                    'grounded_response' => $groundedRuntime,
+        $conversation = $context['conversation'] ?? null;
+
+        if ($conversation) {
+            $afterHallucination = $this->hallucinationGuardService->guardReply(
+                conversation: $conversation,
+                intentResult: $intentResult,
+                reply: $grounded,
+                context: [
+                    ...$context,
+                    'faq_result' => $faqResult ?? [],
+                    'knowledge_hits' => $knowledgeHits,
+                    'llm_runtime' => [
+                        'understanding' => $understandingRuntime,
+                        'reply_draft' => $draftRuntime,
+                        'grounded_response' => $groundedRuntime,
+                    ],
                 ],
-            ],
-        );
+            );
+        } else {
+            $groundedMeta = is_array($grounded['meta'] ?? null) ? $grounded['meta'] : [];
+
+            $afterHallucination = $grounded;
+            $afterHallucination['meta'] = array_merge($groundedMeta, [
+                'hallucination_guard_skipped' => true,
+                'hallucination_guard_skip_reason' => 'conversation_missing',
+            ]);
+        }
 
         $policyReport = $this->policyGuardService->evaluatePolicyCompliance(
             replyResult: $afterHallucination,
@@ -594,10 +606,10 @@ class ReplyOrchestratorService
      */
     public function compose(array $context): array
     {
-        /** @var Conversation $conversation */
-        $conversation = $context['conversation'];
-        /** @var Customer $customer */
-        $customer        = $context['customer'];
+        /** @var Conversation|null $conversation */
+        $conversation = $context['conversation'] ?? null;
+        /** @var Customer|null $customer */
+        $customer        = $context['customer'] ?? null;
         $intentResult    = $context['intentResult'] ?? [];
         $entityResult    = $context['entityResult'] ?? [];
         $replyResult     = $context['replyResult']  ?? ['text' => '', 'is_fallback' => true];
@@ -605,7 +617,7 @@ class ReplyOrchestratorService
         /** @var BookingRequest|null $booking */
         $booking = $context['booking'] ?? null;
 
-        $customerName = $customer->name ?? null;
+        $customerName = $customer?->name ?? null;
 
         // ── No booking engine involvement → pass through AI reply ─────────
         if ($bookingDecision === null) {
