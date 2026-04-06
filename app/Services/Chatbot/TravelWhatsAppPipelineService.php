@@ -47,8 +47,7 @@ class TravelWhatsAppPipelineService
         }
 
         /**
-         * Jika state sebelumnya sudah dianggap batal karena timeout,
-         * dan customer menghubungi lagi, maka mulai dari awal lagi.
+         * Ambil / buat state travel customer.
          */
         $travelState = $this->stateService->findOrCreate(
             $customerPhone,
@@ -56,14 +55,57 @@ class TravelWhatsAppPipelineService
             $customer->name ?? null
         );
 
+        /**
+         * 1. Jika state sebelumnya dibatalkan karena timeout,
+         *    dan customer chat lagi, mulai dari awal.
+         */
         if ((bool) $travelState->is_cancelled === true) {
-            $this->stateService->resetForNewConversation($travelState);
+            $travelState = $this->stateService->resetForNewConversation($travelState);
 
             WaLog::info('[TravelPipeline] Reset cancelled travel state for new incoming message', [
-                'conversation_id'  => $conversation->id,
-                'message_id'       => $message->id,
-                'customer_id'      => $customer->id ?? null,
-                'travel_state_id'  => $travelState->id,
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'customer_id' => $customer->id ?? null,
+                'travel_state_id' => $travelState->id,
+            ]);
+        }
+
+        $normalizedIncoming = $this->normalizeText($incomingText);
+
+        /**
+         * 2. Jika user membuka percakapan baru dengan salam/pembuka sederhana,
+         *    jangan lanjutkan state booking lama.
+         */
+        if ($this->isFreshOpeningMessage($normalizedIncoming)) {
+            $travelState = $this->stateService->resetForNewConversation($travelState);
+
+            WaLog::info('[TravelPipeline] Reset state because fresh opening detected', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'customer_id' => $customer->id ?? null,
+                'travel_state_id' => $travelState->id,
+                'incoming_text' => $incomingText,
+            ]);
+        }
+
+        /**
+         * 3. Jika user hanya tanya jadwal sederhana,
+         *    dan state lama masih nyangkut di flow booking/review,
+         *    reset dulu supaya bot tidak kirim review lama.
+         */
+        if (
+            $this->isSimpleScheduleQuestion($normalizedIncoming)
+            && in_array($travelState->status, ['booking', 'booking_confirmed', 'schedule_change'], true)
+        ) {
+            $travelState = $this->stateService->resetForNewConversation($travelState);
+
+            WaLog::info('[TravelPipeline] Reset stale state because simple schedule question detected', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'customer_id' => $customer->id ?? null,
+                'travel_state_id' => $travelState->id,
+                'incoming_text' => $incomingText,
+                'old_status' => $travelState->status,
             ]);
         }
 
@@ -74,7 +116,7 @@ class TravelWhatsAppPipelineService
                 'customer_name' => $customer->name ?? null,
                 'channel' => 'whatsapp',
                 'message_id' => (string) $message->id,
-                'now' => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
+                'now' => now(config('chatbot.timezone', 'Asia/Jakarta')),
             ],
             [
                 'send_reply' => function (string $phone, string $replyText, array $context) use ($conversation, $message) {
@@ -113,16 +155,14 @@ class TravelWhatsAppPipelineService
         Conversation $conversation,
         Customer $customer
     ): bool {
-        $text = mb_strtolower($this->extractIncomingText($message));
+        $text = $this->normalizeText($this->extractIncomingText($message));
 
         if ($text === '') {
             return false;
         }
 
         /**
-         * Aturan awal:
-         * 1. Jika ada keyword travel, tangani
-         * 2. Jika nomor sudah punya state travel aktif, tangani
+         * Ambil semua keyword travel penting.
          */
         $travelKeywords = [
             'booking',
@@ -130,6 +170,12 @@ class TravelWhatsAppPipelineService
             'mau pesan',
             'keberangkatan',
             'jadwal',
+            'jam 5',
+            'jam 8',
+            'jam 10',
+            'jam 2',
+            'jam 4',
+            'jam 7',
             'seat',
             'kursi',
             'penjemputan',
@@ -155,6 +201,12 @@ class TravelWhatsAppPipelineService
             'ganti jadwal',
             'perubahan jadwal',
             'assalamualaikum',
+            'halo',
+            'hai',
+            'selamat pagi',
+            'selamat siang',
+            'selamat sore',
+            'selamat malam',
         ];
 
         foreach ($travelKeywords as $keyword) {
@@ -163,6 +215,9 @@ class TravelWhatsAppPipelineService
             }
         }
 
+        /**
+         * Jika nomor punya state travel aktif, tetap tangani.
+         */
         $phone = $this->resolveCustomerPhone($conversation, $customer);
         if ($phone !== '') {
             $state = $this->stateService->findOrCreate($phone, 'whatsapp', $customer->name ?? null);
@@ -195,7 +250,11 @@ class TravelWhatsAppPipelineService
                 messageType: 'text',
             );
 
-            $this->outboundRouter->dispatch($outboundMessage, WaLog::traceId());
+            $traceId = method_exists(WaLog::class, 'getTrace')
+                ? (string) WaLog::getTrace()
+                : '';
+
+            $this->outboundRouter->dispatch($outboundMessage, $traceId);
 
             return [
                 'status' => 'queued',
@@ -242,7 +301,11 @@ class TravelWhatsAppPipelineService
                 messageType: 'text',
             );
 
-            $this->outboundRouter->dispatch($outboundMessage, WaLog::traceId());
+            $traceId = method_exists(WaLog::class, 'getTrace')
+                ? (string) WaLog::getTrace()
+                : '';
+
+            $this->outboundRouter->dispatch($outboundMessage, $traceId);
 
             return [
                 'status' => 'queued',
@@ -268,33 +331,93 @@ class TravelWhatsAppPipelineService
         }
     }
 
-    /**
-     * Opsi B:
-     * Buat / cari conversation khusus admin utama.
-     *
-     * Asumsi aman:
-     * - project Anda punya Customer model
-     * - conversation berelasi ke customer
-     * - customer phone_e164 dipakai outbound router/job
-     *
-     * Bila field nama/tipe di project Anda sedikit berbeda,
-     * bagian ini yang paling mungkin perlu penyesuaian kecil.
-     */
+    public function sendFollowUpToCustomerPhone(string $customerPhone, string $message): array
+    {
+        try {
+            $normalizedPhone = $this->normalizePhone($customerPhone);
+
+            $customer = Customer::query()
+                ->where('phone_e164', $normalizedPhone)
+                ->orWhere('phone', $normalizedPhone)
+                ->orWhere('phone_number', $normalizedPhone)
+                ->first();
+
+            if (! $customer) {
+                return [
+                    'status' => 'error',
+                    'target' => $customerPhone,
+                    'error' => 'Customer not found for follow-up.',
+                ];
+            }
+
+            $conversation = Conversation::query()
+                ->where('customer_id', $customer->id)
+                ->where(function ($query) {
+                    $query->whereNull('channel')
+                        ->orWhere('channel', 'whatsapp');
+                })
+                ->latest('id')
+                ->first();
+
+            if (! $conversation) {
+                return [
+                    'status' => 'error',
+                    'target' => $customerPhone,
+                    'error' => 'Conversation not found for follow-up.',
+                ];
+            }
+
+            $outboundMessage = $this->conversationManager->appendOutboundMessage(
+                conversation: $conversation,
+                text: $message,
+                rawPayload: [
+                    'source' => 'travel_follow_up_scheduler',
+                ],
+                messageType: 'text',
+            );
+
+            $traceId = method_exists(WaLog::class, 'getTrace')
+                ? (string) WaLog::getTrace()
+                : '';
+
+            $this->outboundRouter->dispatch($outboundMessage, $traceId);
+
+            return [
+                'status' => 'queued',
+                'target' => $customerPhone,
+                'conversation_id' => $conversation->id,
+                'conversation_message_id' => $outboundMessage->id,
+            ];
+        } catch (Throwable $e) {
+            Log::error('[TravelPipeline] Failed sending follow-up message', [
+                'customer_phone' => $customerPhone,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'status' => 'error',
+                'target' => $customerPhone,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
     protected function findOrCreateAdminConversation(string $adminPhone): Conversation
     {
         $normalizedAdminPhone = $this->normalizePhone($adminPhone);
 
-        /** @var Customer $adminCustomer */
         $adminCustomer = Customer::query()->firstOrCreate(
             [
                 'phone_e164' => $normalizedAdminPhone,
             ],
             [
-                'name' => config('chatbot.jet.business_name', 'JET') . ' Admin Utama',
+                'name' => config('chatbot.branding.name', 'JET') . ' Admin Utama',
+                'phone' => $normalizedAdminPhone,
+                'phone_number' => $normalizedAdminPhone,
+                'channel' => 'whatsapp',
             ]
         );
 
-        /** @var Conversation $conversation */
         $conversation = Conversation::query()
             ->where('customer_id', $adminCustomer->id)
             ->where(function ($query) {
@@ -339,66 +462,51 @@ class TravelWhatsAppPipelineService
         );
     }
 
-    public function sendFollowUpToCustomerPhone(string $customerPhone, string $message): array
+    protected function isFreshOpeningMessage(string $normalizedIncoming): bool
     {
-        try {
-            $normalizedPhone = $this->normalizePhone($customerPhone);
+        $openingMessages = [
+            'assalamualaikum',
+            'halo',
+            'hai',
+            'pagi',
+            'siang',
+            'sore',
+            'malam',
+            'selamat pagi',
+            'selamat siang',
+            'selamat sore',
+            'selamat malam',
+        ];
 
-            $customer = \App\Models\Customer::query()
-                ->where('phone_e164', $normalizedPhone)
-                ->first();
+        return in_array($normalizedIncoming, $openingMessages, true);
+    }
 
-            if (! $customer) {
-                return [
-                    'status' => 'error',
-                    'target' => $customerPhone,
-                    'error'  => 'Customer not found for follow-up.',
-                ];
-            }
-
-            $conversation = \App\Models\Conversation::query()
-                ->where('customer_id', $customer->id)
-                ->where('channel', 'whatsapp')
-                ->latest('id')
-                ->first();
-
-            if (! $conversation) {
-                return [
-                    'status' => 'error',
-                    'target' => $customerPhone,
-                    'error'  => 'WhatsApp conversation not found for follow-up.',
-                ];
-            }
-
-            $outboundMessage = $this->conversationManager->appendOutboundMessage(
-                conversation: $conversation,
-                text: $message,
-                rawPayload: [
-                    'source' => 'travel_follow_up_scheduler',
-                ],
-                messageType: 'text',
-            );
-
-            $this->outboundRouter->dispatch($outboundMessage, WaLog::traceId());
-
-            return [
-                'status'                  => 'queued',
-                'target'                  => $customerPhone,
-                'conversation_id'         => $conversation->id,
-                'conversation_message_id' => $outboundMessage->id,
-            ];
-        } catch (\Throwable $e) {
-            Log::error('[TravelPipeline] Failed sending follow-up message', [
-                'customer_phone' => $customerPhone,
-                'error'          => $e->getMessage(),
-            ]);
-
-            return [
-                'status' => 'error',
-                'target' => $customerPhone,
-                'error'  => $e->getMessage(),
-            ];
+    protected function isSimpleScheduleQuestion(string $normalizedIncoming): bool
+    {
+        if (
+            str_contains($normalizedIncoming, 'jam 10')
+            || str_contains($normalizedIncoming, 'jam 8')
+            || str_contains($normalizedIncoming, 'jam 5')
+            || str_contains($normalizedIncoming, 'jam 2')
+            || str_contains($normalizedIncoming, 'jam 4')
+            || str_contains($normalizedIncoming, 'jam 7')
+        ) {
+            return true;
         }
+
+        if (
+            str_contains($normalizedIncoming, 'keberangkatan')
+            || str_contains($normalizedIncoming, 'jadwal')
+            || str_contains($normalizedIncoming, 'ada berangkat')
+            || str_contains($normalizedIncoming, 'berangkat pagi')
+            || str_contains($normalizedIncoming, 'berangkat siang')
+            || str_contains($normalizedIncoming, 'berangkat sore')
+            || str_contains($normalizedIncoming, 'berangkat malam')
+        ) {
+            return true;
+        }
+
+        return false;
     }
 
     protected function normalizePhone(string $phone): string
@@ -410,5 +518,14 @@ class TravelWhatsAppPipelineService
         }
 
         return $phone;
+    }
+
+    protected function normalizeText(string $text): string
+    {
+        $text = mb_strtolower(trim($text));
+        $text = preg_replace('/[^\p{L}\p{N}\s:\/\-]/u', ' ', $text) ?? $text;
+        $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+
+        return trim($text);
     }
 }

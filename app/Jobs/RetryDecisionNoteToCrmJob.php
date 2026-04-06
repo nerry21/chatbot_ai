@@ -14,7 +14,6 @@ class RetryDecisionNoteToCrmJob implements ShouldQueue
 {
     use Queueable, InteractsWithQueue, SerializesModels;
 
-    public string $queue = 'crm';
     public int $tries = 5;
     public array $backoff = [60, 300, 900, 1800, 3600];
     public int $timeout = 90;
@@ -33,7 +32,7 @@ class RetryDecisionNoteToCrmJob implements ShouldQueue
         if ($customer === null) {
             Log::warning('[RetryDecisionNoteToCrmJob] Customer not found', [
                 'customer_id' => $this->customerId,
-                'queue' => $this->queue,
+                'queue' => 'crm',
             ]);
 
             return;
@@ -43,7 +42,7 @@ class RetryDecisionNoteToCrmJob implements ShouldQueue
 
         Log::info('[RetryDecisionNoteToCrmJob] Result', [
             'customer_id' => $this->customerId,
-            'queue' => $this->queue,
+            'queue' => 'crm',
             'status' => $result['status'] ?? null,
             'reason' => $result['reason'] ?? null,
             'reason_code' => $result['reason_code'] ?? null,
@@ -61,7 +60,7 @@ class RetryDecisionNoteToCrmJob implements ShouldQueue
     {
         Log::error('[RetryDecisionNoteToCrmJob] Permanently failed', [
             'customer_id' => $this->customerId,
-            'queue' => $this->queue,
+            'queue' => 'crm',
             'error' => $exception->getMessage(),
         ]);
     }
