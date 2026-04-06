@@ -335,6 +335,7 @@ class TravelConversationStateService
     {
         $meta = $state->meta ?? [];
         $meta['reset_for_new_conversation'] = true;
+        $meta['reset_reason']               = 'customer_replied_after_timeout_cancellation';
         $meta['reset_at']                   = now($this->timezone())->toDateTimeString();
 
         $state->status                      = 'idle';

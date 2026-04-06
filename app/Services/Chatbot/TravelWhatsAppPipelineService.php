@@ -46,6 +46,27 @@ class TravelWhatsAppPipelineService
             return false;
         }
 
+        /**
+         * Jika state sebelumnya sudah dianggap batal karena timeout,
+         * dan customer menghubungi lagi, maka mulai dari awal lagi.
+         */
+        $travelState = $this->stateService->findOrCreate(
+            $customerPhone,
+            'whatsapp',
+            $customer->name ?? null
+        );
+
+        if ((bool) $travelState->is_cancelled === true) {
+            $this->stateService->resetForNewConversation($travelState);
+
+            WaLog::info('[TravelPipeline] Reset cancelled travel state for new incoming message', [
+                'conversation_id'  => $conversation->id,
+                'message_id'       => $message->id,
+                'customer_id'      => $customer->id ?? null,
+                'travel_state_id'  => $travelState->id,
+            ]);
+        }
+
         $result = $this->orchestrator->handleIncoming(
             [
                 'text' => $incomingText,
