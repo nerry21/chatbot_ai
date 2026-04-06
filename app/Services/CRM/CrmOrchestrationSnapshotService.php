@@ -13,12 +13,15 @@ class CrmOrchestrationSnapshotService
     ) {}
 
     /**
-     * Bangun snapshot tunggal CRM + runtime conversation + hasil reasoning AI.
+     * Bangun snapshot CRM + AI dalam dua lapisan:
+     * - technical: data penuh untuk mesin, observability, logging
+     * - admin_summary: ringkasan bersih untuk HubSpot note / admin panel
      *
      * @param  array<string, mixed>  $contextPayload
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $entityResult
      * @param  array<string, mixed>|null  $bookingDecision
+     * @param  array<string, mixed>  $finalSnapshot  Dari ReplyOrchestratorService::buildFinalSnapshot()
      * @return array<string, mixed>
      */
     public function build(
@@ -29,6 +32,7 @@ class CrmOrchestrationSnapshotService
         array $intentResult = [],
         array $entityResult = [],
         ?array $bookingDecision = null,
+        array $finalSnapshot = [],
     ): array {
         $crmContext = $this->crmContextService->build(
             customer: $customer,
@@ -40,15 +44,24 @@ class CrmOrchestrationSnapshotService
         $resolvedContext = is_array($contextPayload['resolved_context'] ?? null) ? $contextPayload['resolved_context'] : [];
         $knownEntities = is_array($contextPayload['known_entities'] ?? null) ? $contextPayload['known_entities'] : [];
         $customerMemory = is_array($contextPayload['customer_memory'] ?? null) ? $contextPayload['customer_memory'] : [];
-        $decisionTrace = is_array($contextPayload['decision_trace'] ?? null) ? $contextPayload['decision_trace'] : [];
+        $decisionTrace = is_array($contextPayload['decision_trace'] ?? null)
+            ? $contextPayload['decision_trace']
+            : (is_array($finalSnapshot['decision_trace'] ?? null) ? $finalSnapshot['decision_trace'] : []);
+        $finalGuardTrace = is_array($contextPayload['decision_trace_final_guard'] ?? null)
+            ? $contextPayload['decision_trace_final_guard']
+            : (is_array($finalSnapshot['decision_trace_final_guard'] ?? null) ? $finalSnapshot['decision_trace_final_guard'] : []);
         $understandingMeta = is_array($contextPayload['understanding_meta'] ?? null) ? $contextPayload['understanding_meta'] : [];
         $llmRuntime = $this->resolveLlmRuntimeBundle($contextPayload, $intentResult);
         $runtimeHealth = $this->resolveRuntimeHealthFromBundle($llmRuntime);
+
+        $isHandoff = (bool) ($finalSnapshot['reply_force_handoff'] ?? false);
+        $handoffReason = $finalSnapshot['handoff_reason'] ?? null;
 
         $traceId = $this->resolveTraceId(
             $decisionTrace,
             $understandingMeta,
             $contextPayload,
+            $finalSnapshot,
         );
 
         $traceSummary = $this->buildTraceSummary(
@@ -57,6 +70,7 @@ class CrmOrchestrationSnapshotService
             $understandingMeta,
             $llmRuntime,
             $runtimeHealth,
+            $finalSnapshot,
         );
 
         $snapshot = [
@@ -110,22 +124,28 @@ class CrmOrchestrationSnapshotService
                 'llm_runtime_summary' => $this->buildRuntimeSummary($llmRuntime),
             ]),
 
-            'ai_decision' => $this->clean([
-                'trace_id' => $traceId,
-                'intent' => $intentResult['intent'] ?? null,
-                'confidence' => isset($intentResult['confidence']) ? (float) $intentResult['confidence'] : null,
-                'reasoning_short' => $intentResult['reasoning_short'] ?? null,
-                'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
-                'clarification_question' => $intentResult['clarification_question'] ?? null,
-                'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
-                'entity_result' => $entityResult,
-                'understanding_meta' => $understandingMeta,
-                'llm_runtime' => $llmRuntime,
-                'runtime_health' => $runtimeHealth,
-                'runtime_summary' => $this->buildRuntimeSummary($llmRuntime),
-                'trace_summary' => $traceSummary,
-                'decision_trace' => $decisionTrace,
-            ]),
+            'technical' => $this->buildTechnicalSnapshot(
+                traceId: $traceId,
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                llmRuntime: $llmRuntime,
+                runtimeHealth: $runtimeHealth,
+                decisionTrace: $decisionTrace,
+                finalGuardTrace: $finalGuardTrace,
+                traceSummary: $traceSummary,
+                understandingMeta: $understandingMeta,
+                finalSnapshot: $finalSnapshot,
+            ),
+
+            'admin_summary' => $this->buildAdminSummary(
+                traceId: $traceId,
+                intentResult: $intentResult,
+                runtimeHealth: $runtimeHealth,
+                finalSnapshot: $finalSnapshot,
+                traceSummary: $traceSummary,
+                isHandoff: $isHandoff,
+                handoffReason: $handoffReason,
+            ),
         ];
 
         return $this->clean($snapshot);
@@ -135,13 +155,16 @@ class CrmOrchestrationSnapshotService
      * @param  array<string, mixed>  $decisionTrace
      * @param  array<string, mixed>  $understandingMeta
      * @param  array<string, mixed>  $contextPayload
+     * @param  array<string, mixed>  $finalSnapshot
      */
     private function resolveTraceId(
         array $decisionTrace,
         array $understandingMeta,
         array $contextPayload = [],
+        array $finalSnapshot = [],
     ): string {
         foreach ([
+            $finalSnapshot['trace_id'] ?? null,
             $decisionTrace['trace_id'] ?? null,
             $understandingMeta['trace_id'] ?? null,
             $contextPayload['trace_id'] ?? null,
@@ -159,6 +182,8 @@ class CrmOrchestrationSnapshotService
      * @param  array<string, mixed>  $decisionTrace
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $understandingMeta
+     * @param  array<string, mixed>  $llmRuntime
+     * @param  array<string, mixed>  $finalSnapshot
      * @return array<string, mixed>
      */
     private function buildTraceSummary(
@@ -167,6 +192,7 @@ class CrmOrchestrationSnapshotService
         array $understandingMeta = [],
         array $llmRuntime = [],
         ?string $runtimeHealth = null,
+        array $finalSnapshot = [],
     ): array {
         $outcome = is_array($decisionTrace['outcome'] ?? null) ? $decisionTrace['outcome'] : [];
         $policy = is_array($decisionTrace['policy'] ?? null) ? $decisionTrace['policy'] : [];
@@ -175,10 +201,14 @@ class CrmOrchestrationSnapshotService
         return $this->clean([
             'trace_id' => $decisionTrace['trace_id'] ?? $understandingMeta['trace_id'] ?? null,
             'intent' => $intentResult['intent'] ?? null,
-            'final_decision' => $outcome['final_decision'] ?? null,
-            'reply_action' => $outcome['reply_action'] ?? null,
-            'handoff' => $outcome['handoff'] ?? null,
+            'final_action' => $finalSnapshot['final_guard_action'] ?? $outcome['final_action'] ?? $outcome['final_decision'] ?? null,
+            'decided_by' => $finalSnapshot['decided_by'] ?? $outcome['decided_by'] ?? 'conversation_reply_guard',
+            'reply_action' => $outcome['reply_action'] ?? $finalSnapshot['reply_next_action'] ?? null,
+            'handoff' => $outcome['handoff'] ?? $finalSnapshot['reply_force_handoff'] ?? null,
             'grounded' => $grounding['grounded'] ?? null,
+            'grounding_source' => $grounding['source'] ?? $grounding['grounding_source'] ?? $finalSnapshot['grounding_source'] ?? null,
+            'grounding_verdict' => $grounding['verdict'] ?? $grounding['grounding_verdict'] ?? $finalSnapshot['grounding_verdict'] ?? null,
+            'policy_verdict' => $policy['verdict'] ?? $finalSnapshot['policy_verdict'] ?? null,
             'policy_status' => $policy['status'] ?? null,
             'policy_reason_code' => $policy['reason_code'] ?? null,
             'runtime_health' => $runtimeHealth,
@@ -196,6 +226,137 @@ class CrmOrchestrationSnapshotService
             'grounded_response_model' => $llmRuntime['grounded_response']['model'] ?? null,
             'understanding_mode' => $understandingMeta['mode'] ?? null,
         ]);
+    }
+
+    /**
+     * Snapshot teknis lengkap — untuk mesin, observability, logging, audit trail.
+     *
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $entityResult
+     * @param  array<string, mixed>  $llmRuntime
+     * @param  array<string, mixed>  $decisionTrace
+     * @param  array<string, mixed>  $finalGuardTrace
+     * @param  array<string, mixed>  $traceSummary
+     * @param  array<string, mixed>  $understandingMeta
+     * @param  array<string, mixed>  $finalSnapshot
+     * @return array<string, mixed>
+     */
+    private function buildTechnicalSnapshot(
+        string $traceId,
+        array $intentResult,
+        array $entityResult,
+        array $llmRuntime,
+        string $runtimeHealth,
+        array $decisionTrace,
+        array $finalGuardTrace,
+        array $traceSummary,
+        array $understandingMeta,
+        array $finalSnapshot,
+    ): array {
+        return $this->clean([
+            'trace_id' => $traceId,
+            'intent' => $intentResult['intent'] ?? null,
+            'confidence' => isset($intentResult['confidence']) ? (float) $intentResult['confidence'] : null,
+            'reasoning_short' => $intentResult['reasoning_short'] ?? null,
+            'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
+            'clarification_question' => $intentResult['clarification_question'] ?? null,
+            'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
+            'entity_result' => $entityResult,
+            'understanding_meta' => $understandingMeta,
+            'llm_runtime' => $llmRuntime,
+            'runtime_health' => $runtimeHealth,
+            'runtime_summary' => $this->buildRuntimeSummary($llmRuntime),
+            'trace_summary' => $traceSummary,
+            'decision_trace' => $decisionTrace,
+            'decision_trace_final_guard' => $finalGuardTrace !== [] ? $finalGuardTrace : null,
+            'final_guard_action' => $finalSnapshot['final_guard_action'] ?? null,
+            'final_guard_verdict' => $finalSnapshot['final_guard_verdict'] ?? null,
+            'policy_verdict' => $finalSnapshot['policy_verdict'] ?? null,
+            'grounding_verdict' => $finalSnapshot['grounding_verdict'] ?? null,
+            'grounding_source' => $finalSnapshot['grounding_source'] ?? null,
+            'decided_by' => $finalSnapshot['decided_by'] ?? 'conversation_reply_guard',
+            'orchestrator_role' => 'pipeline_aggregator',
+            'is_final_decider' => false,
+        ]);
+    }
+
+    /**
+     * Snapshot ringkas untuk admin / HubSpot note — bebas dari data teknis besar.
+     *
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $finalSnapshot
+     * @param  array<string, mixed>  $traceSummary
+     * @return array<string, mixed>
+     */
+    private function buildAdminSummary(
+        string $traceId,
+        array $intentResult,
+        string $runtimeHealth,
+        array $finalSnapshot,
+        array $traceSummary,
+        bool $isHandoff,
+        ?string $handoffReason,
+    ): array {
+        $finalAction = $finalSnapshot['final_guard_action'] ?? $traceSummary['final_action'] ?? null;
+        $policyVerdict = $finalSnapshot['policy_verdict'] ?? $traceSummary['policy_verdict'] ?? null;
+        $groundingSource = $finalSnapshot['grounding_source'] ?? $traceSummary['grounding_source'] ?? null;
+        $groundingVerdict = $finalSnapshot['grounding_verdict'] ?? $traceSummary['grounding_verdict'] ?? null;
+        $confidence = isset($intentResult['confidence']) ? round((float) $intentResult['confidence'] * 100, 1) : null;
+
+        return $this->clean([
+            'trace_id' => $traceId,
+            'intent' => $intentResult['intent'] ?? null,
+            'confidence_pct' => $confidence !== null ? $confidence.'%' : null,
+            'final_action' => $finalAction,
+            'decided_by' => 'conversation_reply_guard',
+            'runtime_health' => $runtimeHealth,
+            'grounding_source' => $groundingSource,
+            'grounding_verdict' => $groundingVerdict,
+            'policy_verdict' => $policyVerdict,
+            'handoff' => $isHandoff,
+            'handoff_reason' => $handoffReason,
+            'note' => $this->buildAdminNote(
+                finalAction: $finalAction,
+                runtimeHealth: $runtimeHealth,
+                policyVerdict: $policyVerdict,
+                groundingSource: $groundingSource,
+                isHandoff: $isHandoff,
+            ),
+        ]);
+    }
+
+    private function buildAdminNote(
+        ?string $finalAction,
+        string $runtimeHealth,
+        ?string $policyVerdict,
+        ?string $groundingSource,
+        bool $isHandoff,
+    ): string {
+        $parts = [];
+
+        if ($isHandoff) {
+            $parts[] = 'Diteruskan ke admin.';
+        } elseif ($finalAction === 'ask_clarification') {
+            $parts[] = 'Bot meminta klarifikasi.';
+        } elseif ($finalAction === 'safe_fallback') {
+            $parts[] = 'Bot menggunakan fallback aman.';
+        } else {
+            $parts[] = 'Bot mengirim reply.';
+        }
+
+        if (! in_array($runtimeHealth, ['healthy', 'unknown'], true)) {
+            $parts[] = 'Runtime: '.$runtimeHealth.'.';
+        }
+
+        if ($groundingSource !== null) {
+            $parts[] = 'Grounding: '.$groundingSource.'.';
+        }
+
+        if ($policyVerdict !== null && $policyVerdict !== 'allow') {
+            $parts[] = 'Policy: '.$policyVerdict.'.';
+        }
+
+        return implode(' ', $parts);
     }
 
     /**

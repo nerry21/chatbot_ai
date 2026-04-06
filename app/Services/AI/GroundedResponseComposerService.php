@@ -31,6 +31,24 @@ class GroundedResponseComposerService
         return $this->lastRuntimeMeta;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function composerAuditSnapshot(): array
+    {
+        return [
+            'trace_id' => $this->lastRuntimeMeta['trace_id'] ?? null,
+            'provider' => $this->lastRuntimeMeta['provider'] ?? null,
+            'model' => $this->lastRuntimeMeta['model'] ?? null,
+            'status' => $this->lastRuntimeMeta['status'] ?? null,
+            'degraded_mode' => $this->lastRuntimeMeta['degraded_mode'] ?? null,
+            'schema_valid' => $this->lastRuntimeMeta['schema_valid'] ?? null,
+            'fallback_reason' => $this->lastRuntimeMeta['fallback_reason'] ?? null,
+            'candidate_only' => $this->lastRuntimeMeta['candidate_only'] ?? true,
+            'is_final_decider' => $this->lastRuntimeMeta['is_final_decider'] ?? false,
+        ];
+    }
+
     public function compose(GroundedResponseFacts $facts): GroundedResponseResult
     {
         $this->lastRuntimeMeta = [];
@@ -41,6 +59,20 @@ class GroundedResponseComposerService
                 'openai.tasks.grounded_response.model',
                 config('chatbot.llm.models.grounded_response', config('chatbot.llm.models.reply'))
             );
+
+            $baseRuntimeMeta = [
+                'trace_id' => 'grounded-response-candidate-'.$facts->conversationId.'-'.$facts->messageId,
+                'provider' => 'openai',
+                'task_key' => 'grounded_response',
+                'task_type' => 'grounded_reply_candidate',
+                'conversation_id' => $facts->conversationId,
+                'message_id' => $facts->messageId,
+                'model' => $groundedModel,
+                'candidate_only' => true,
+                'is_final_decider' => false,
+                'prompt_built' => true,
+                'client_called' => false,
+            ];
 
             $raw = $this->llmClient->composeGroundedResponse([
                 'conversation_id' => $facts->conversationId,
@@ -54,7 +86,16 @@ class GroundedResponseComposerService
             ]);
 
             $llmRuntimeMeta = is_array($raw['_llm'] ?? null) ? $raw['_llm'] : [];
-            $this->lastRuntimeMeta = $llmRuntimeMeta;
+            $this->lastRuntimeMeta = array_merge(
+                $baseRuntimeMeta,
+                $llmRuntimeMeta,
+                [
+                    'model' => $llmRuntimeMeta['model'] ?? $groundedModel,
+                    'client_called' => true,
+                    'candidate_only' => true,
+                    'is_final_decider' => false,
+                ],
+            );
 
             $validated = $this->validator->validateAndFill(
                 is_array($raw) ? $raw : [],
@@ -63,11 +104,13 @@ class GroundedResponseComposerService
             );
 
             if ($validated === null) {
-                $this->lastRuntimeMeta = array_merge($llmRuntimeMeta, [
+                $this->lastRuntimeMeta = array_merge($this->lastRuntimeMeta, [
                     'status' => $llmRuntimeMeta['status'] ?? 'fallback',
                     'degraded_mode' => true,
                     'schema_valid' => false,
                     'fallback_reason' => $llmRuntimeMeta['fallback_reason'] ?? 'grounded_response_validation_failed',
+                    'candidate_only' => true,
+                    'is_final_decider' => false,
                 ]);
 
                 return $this->fallback($facts);
@@ -78,10 +121,12 @@ class GroundedResponseComposerService
                 ?? $facts->mode;
 
             if ($text === '') {
-                $this->lastRuntimeMeta = array_merge($llmRuntimeMeta, [
+                $this->lastRuntimeMeta = array_merge($this->lastRuntimeMeta, [
                     'status' => $llmRuntimeMeta['status'] ?? 'fallback',
                     'degraded_mode' => true,
                     'fallback_reason' => $llmRuntimeMeta['fallback_reason'] ?? 'grounded_response_empty_text',
+                    'candidate_only' => true,
+                    'is_final_decider' => false,
                 ]);
 
                 return $this->fallback($facts);
@@ -104,6 +149,8 @@ class GroundedResponseComposerService
                 'degraded_mode' => true,
                 'fallback_reason' => 'grounded_response_exception',
                 'error_message' => $e->getMessage(),
+                'candidate_only' => true,
+                'is_final_decider' => false,
             ]);
 
             return $this->fallback($facts);
@@ -202,18 +249,30 @@ class GroundedResponseComposerService
             $groundingNotes[] = 'Empty draft replaced with grounded fallback';
         }
 
+        $evidenceBundle = $this->buildEvidenceBundle(
+            crm: $crm,
+            knowledgeHits: $knowledgeHits,
+            faqResult: $faqResult,
+            crmGroundingSections: $crmGroundingSections,
+            groundingNotes: array_values(array_unique(array_filter(array_merge(
+                is_array($replyDraft['grounding_notes'] ?? null) ? $replyDraft['grounding_notes'] : [],
+                $groundingNotes,
+            )))),
+            usedFacts: array_values(array_unique(array_filter($usedFacts))),
+            llmRuntime: $llmRuntime,
+        );
+
         $replyDraft['reply'] = $reply;
         $replyDraft['text'] = $reply;
-        $replyDraft['used_crm_facts'] = array_values(array_unique(array_filter($usedFacts)));
-        $replyDraft['grounding_notes'] = array_values(array_unique(array_filter(array_merge(
-            is_array($replyDraft['grounding_notes'] ?? null) ? $replyDraft['grounding_notes'] : [],
-            $groundingNotes,
-        ))));
+        $replyDraft['used_crm_facts'] = $evidenceBundle['used_crm_facts'];
+        $replyDraft['grounding_notes'] = $evidenceBundle['grounding_notes'];
+        $replyDraft['evidence_bundle'] = $evidenceBundle;
+        $replyDraft['evidence_bundle_present'] = true;
         $replyDraft['message_type'] = $replyDraft['message_type'] ?? 'text';
         $replyDraft['outbound_payload'] = is_array($replyDraft['outbound_payload'] ?? null) ? $replyDraft['outbound_payload'] : [];
 
         $existingMeta = is_array($replyDraft['meta'] ?? null) ? $replyDraft['meta'] : [];
-        $groundingSource = $this->detectGroundingSource($faqResult, $knowledgeHits, $crm);
+        $groundingSource = $evidenceBundle['grounding_source'];
 
         $replyDraft['meta'] = array_merge(
             $existingMeta,
@@ -221,24 +280,32 @@ class GroundedResponseComposerService
                 'trace_id' => $traceId,
                 'grounded' => true,
                 'grounding_source' => $groundingSource,
-                'crm_grounding_sections' => $crmGroundingSections,
+                'grounding_verdict' => 'candidate_grounded',
+                'candidate_only' => true,
+                'is_final_decider' => false,
+                'crm_grounding_sections' => $evidenceBundle['crm_grounding_sections'],
+                'used_crm_facts' => $evidenceBundle['used_crm_facts'],
+                'evidence_bundle_present' => true,
                 'llm_runtime' => $llmRuntime,
-                'runtime_health' => $this->resolveRuntimeHealth($llmRuntime),
+                'runtime_health' => $evidenceBundle['runtime_health'],
                 'decision_trace' => $this->mergeDecisionTrace(
                     is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : [],
                     [
                         'trace_id' => $traceId,
                         'grounding' => [
                             'stage' => 'grounded_response_composer',
+                            'verdict' => 'candidate_grounded',
+                            'candidate_only' => true,
+                            'is_final_decider' => false,
                             'grounded' => true,
                             'grounding_source' => $groundingSource,
-                            'crm_grounding_sections' => $crmGroundingSections,
-                            'used_crm_facts' => array_values(array_unique(array_filter($replyDraft['used_crm_facts'] ?? []))),
-                            'knowledge_hit_count' => count($knowledgeHits),
-                            'faq_matched' => (bool) (($faqResult['matched'] ?? false) === true),
-                            'notes' => array_values(array_unique(array_filter($replyDraft['grounding_notes'] ?? []))),
+                            'crm_grounding_sections' => $evidenceBundle['crm_grounding_sections'],
+                            'used_crm_facts' => $evidenceBundle['used_crm_facts'],
+                            'knowledge_hit_count' => $evidenceBundle['knowledge_hit_count'],
+                            'faq_matched' => $evidenceBundle['faq_matched'],
+                            'notes' => $evidenceBundle['grounding_notes'],
                             'evaluated_at' => now()->toIso8601String(),
-                            'runtime_health' => $this->resolveRuntimeHealth($llmRuntime),
+                            'runtime_health' => $evidenceBundle['runtime_health'],
                             'model_used' => $llmRuntime['model'],
                             'provider' => $llmRuntime['provider'],
                             'runtime_status' => $llmRuntime['status'],
@@ -250,11 +317,12 @@ class GroundedResponseComposerService
                             'http_status' => $llmRuntime['http_status'],
                         ],
                         'outcome' => [
-                            'final_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'grounded_response',
+                            'candidate_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'grounded_response_candidate',
                             'reply_action' => $replyDraft['next_action'] ?? null,
                             'handoff' => (bool) ($replyDraft['should_escalate'] ?? false),
                             'handoff_reason' => $replyDraft['handoff_reason'] ?? null,
                             'is_fallback' => (bool) ($replyDraft['is_fallback'] ?? false),
+                            'candidate_only' => true,
                         ],
                     ],
                 ),
@@ -262,6 +330,40 @@ class GroundedResponseComposerService
         );
 
         return $replyDraft;
+    }
+
+    /**
+     * @param  array<string, mixed>  $crm
+     * @param  array<int, mixed>  $knowledgeHits
+     * @param  array<string, mixed>|null  $faqResult
+     * @param  array<int, string>  $crmGroundingSections
+     * @param  array<int, string>  $groundingNotes
+     * @param  array<int, string>  $usedFacts
+     * @param  array<string, mixed>  $llmRuntime
+     * @return array<string, mixed>
+     */
+    private function buildEvidenceBundle(
+        array $crm,
+        array $knowledgeHits,
+        ?array $faqResult,
+        array $crmGroundingSections,
+        array $groundingNotes,
+        array $usedFacts,
+        array $llmRuntime,
+    ): array {
+        return [
+            'grounding_source' => $this->detectGroundingSource($faqResult, $knowledgeHits, $crm),
+            'crm_grounding_present' => $crm !== [],
+            'crm_grounding_sections' => array_values(array_unique($crmGroundingSections)),
+            'used_crm_facts' => array_values(array_unique(array_filter($usedFacts))),
+            'knowledge_hit_count' => count($knowledgeHits),
+            'faq_matched' => (bool) (($faqResult['matched'] ?? false) === true),
+            'grounding_notes' => array_values(array_unique(array_filter($groundingNotes))),
+            'runtime_health' => $this->resolveRuntimeHealth($llmRuntime),
+            'llm_runtime' => $llmRuntime,
+            'candidate_only' => true,
+            'is_final_decider' => false,
+        ];
     }
 
     private function fallback(GroundedResponseFacts $facts): GroundedResponseResult
@@ -289,23 +391,35 @@ class GroundedResponseComposerService
      */
     private function detectGroundingSource(?array $faqResult, array $knowledgeHits, array $crm): string
     {
-        if ($faqResult !== null && ! empty($faqResult['matched']) && $knowledgeHits !== [] && $crm !== []) {
+        $hasFaq = $faqResult !== null && ! empty($faqResult['matched']);
+        $hasKnowledge = $knowledgeHits !== [];
+        $hasCrm = $crm !== [];
+
+        if ($hasFaq && $hasKnowledge && $hasCrm) {
             return 'faq+knowledge+crm';
         }
 
-        if ($faqResult !== null && ! empty($faqResult['matched']) && $knowledgeHits !== []) {
+        if ($hasFaq && $hasKnowledge) {
             return 'faq+knowledge';
         }
 
-        if ($faqResult !== null && ! empty($faqResult['matched'])) {
+        if ($hasFaq && $hasCrm) {
             return 'faq+crm';
         }
 
-        if ($knowledgeHits !== []) {
+        if ($hasKnowledge && $hasCrm) {
             return 'knowledge+crm';
         }
 
-        if ($crm !== []) {
+        if ($hasFaq) {
+            return 'faq';
+        }
+
+        if ($hasKnowledge) {
+            return 'knowledge';
+        }
+
+        if ($hasCrm) {
             return 'crm';
         }
 
@@ -448,7 +562,10 @@ class GroundedResponseComposerService
         }
 
         return [
+            'trace_id' => $this->normalizeNullableString($value['trace_id'] ?? null),
             'provider' => $this->normalizeNullableString($value['provider'] ?? null),
+            'task_key' => $this->normalizeNullableString($value['task_key'] ?? null),
+            'task_type' => $this->normalizeNullableString($value['task_type'] ?? null),
             'model' => $this->normalizeNullableString($value['model'] ?? ($value['primary_model'] ?? null)),
             'status' => $this->normalizeNullableString($value['status'] ?? null),
             'degraded_mode' => (bool) ($value['degraded_mode'] ?? false),
@@ -461,6 +578,8 @@ class GroundedResponseComposerService
             'max_attempts' => isset($value['max_attempts']) ? (int) $value['max_attempts'] : null,
             'fallback_reason' => $this->normalizeNullableString($value['fallback_reason'] ?? null),
             'error_message' => $this->normalizeNullableString($value['error_message'] ?? null),
+            'candidate_only' => (bool) ($value['candidate_only'] ?? false),
+            'is_final_decider' => (bool) ($value['is_final_decider'] ?? false),
         ];
     }
 

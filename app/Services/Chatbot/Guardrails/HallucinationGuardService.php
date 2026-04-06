@@ -13,12 +13,17 @@ class HallucinationGuardService
      * @param  array<string, mixed>  $context
      * @param  array<string, mixed>  $orchestrationSnapshot
      * @return array{
+     *     verdict: string,
      *     risk_level: string,
      *     risk_flags: array<int, string>,
      *     is_safe: bool,
+     *     needs_clarification: bool,
+     *     handoff_required: bool,
      *     grounding_source?: string,
      *     crm_grounding_present?: bool,
-     *     crm_grounding_sections?: array<int, string>
+     *     crm_grounding_sections?: array<int, string>,
+     *     used_crm_facts?: array<int, string>,
+     *     decision_trace_grounding?: array<string, mixed>
      * }
      */
     public function inspectGroundingRisk(
@@ -39,12 +44,35 @@ class HallucinationGuardService
 
         if ($grounding['is_operational_transition_reply'] && $this->looksLikeSafeHandoffReply($reply)) {
             return [
+                'verdict' => 'grounded',
                 'risk_level' => 'low',
                 'risk_flags' => [],
                 'is_safe' => true,
+                'needs_clarification' => false,
+                'handoff_required' => false,
                 'grounding_source' => 'crm_operational_state',
                 'crm_grounding_present' => true,
                 'crm_grounding_sections' => $grounding['crm_grounding_sections'],
+                'used_crm_facts' => array_values(array_unique(array_map(
+                    static fn (string $section): string => 'crm.'.$section,
+                    $grounding['crm_grounding_sections'],
+                ))),
+                'decision_trace_grounding' => $this->groundingDecisionTrace(
+                    traceId: $this->resolveTraceId($replyResult, $context, $orchestrationSnapshot),
+                    verdict: 'grounded',
+                    riskLevel: 'low',
+                    riskFlags: [],
+                    isSafe: true,
+                    needsClarification: false,
+                    handoffRequired: false,
+                    groundingSource: 'crm_operational_state',
+                    crmGroundingPresent: true,
+                    crmGroundingSections: $grounding['crm_grounding_sections'],
+                    usedCrmFacts: array_values(array_unique(array_map(
+                        static fn (string $section): string => 'crm.'.$section,
+                        $grounding['crm_grounding_sections'],
+                    ))),
+                ),
             ];
         }
 
@@ -100,13 +128,39 @@ class HallucinationGuardService
             $riskLevel = $this->elevateRiskLevel($riskLevel, 'high');
         }
 
+        $normalizedRiskFlags = array_values(array_unique($riskFlags));
+        $verdict = $this->groundingVerdictFromRisk($riskLevel, $normalizedRiskFlags);
+        $needsClarification = in_array($verdict, ['partially_grounded', 'needs_clarification'], true);
+        $handoffRequired = $verdict === 'not_grounded';
+        $usedCrmFacts = array_values(array_unique(array_map(
+            static fn (string $section): string => 'crm.'.$section,
+            $grounding['crm_grounding_sections'],
+        )));
+
         return [
+            'verdict' => $verdict,
             'risk_level' => $riskLevel,
-            'risk_flags' => array_values(array_unique($riskFlags)),
-            'is_safe' => $riskLevel !== 'high',
+            'risk_flags' => $normalizedRiskFlags,
+            'is_safe' => $verdict !== 'not_grounded',
+            'needs_clarification' => $needsClarification,
+            'handoff_required' => $handoffRequired,
             'grounding_source' => $grounding['grounding_source'],
             'crm_grounding_present' => $grounding['has_substantial_crm_facts'],
             'crm_grounding_sections' => $grounding['crm_grounding_sections'],
+            'used_crm_facts' => $usedCrmFacts,
+            'decision_trace_grounding' => $this->groundingDecisionTrace(
+                traceId: $this->resolveTraceId($replyResult, $context, $orchestrationSnapshot),
+                verdict: $verdict,
+                riskLevel: $riskLevel,
+                riskFlags: $normalizedRiskFlags,
+                isSafe: $verdict !== 'not_grounded',
+                needsClarification: $needsClarification,
+                handoffRequired: $handoffRequired,
+                groundingSource: $grounding['grounding_source'],
+                crmGroundingPresent: $grounding['has_substantial_crm_facts'],
+                crmGroundingSections: $grounding['crm_grounding_sections'],
+                usedCrmFacts: $usedCrmFacts,
+            ),
         ];
     }
 
@@ -192,8 +246,16 @@ class HallucinationGuardService
      *     meta: array{
      *         guard_group: string,
      *         action: string,
+     *         verdict: string,
      *         blocked: bool,
-     *         reason: string|null
+     *         reason: string|null,
+     *         force_handoff?: bool,
+     *         force_clarification?: bool,
+     *         grounding_source?: string|null,
+     *         crm_grounding_present?: bool,
+     *         crm_grounding_sections?: array<int, string>,
+     *         used_crm_facts?: array<int, string>,
+     *         decision_trace_hallucination?: array<string, mixed>
      *     }
      * }
      */
@@ -273,6 +335,21 @@ class HallucinationGuardService
             'runtime_health' => $runtimeRisk['runtime_health'],
             'runtime_flags' => $runtimeRisk['runtime_flags'],
         ];
+
+        $groundingRiskReport = $this->inspectGroundingRisk(
+            replyResult: $reply,
+            context: $context,
+            orchestrationSnapshot: is_array($context['reply_orchestration'] ?? null) ? $context['reply_orchestration'] : [],
+        );
+
+        $groundingMeta['grounding_verdict'] = $groundingRiskReport['verdict'] ?? null;
+        $groundingMeta['risk_level'] = $groundingRiskReport['risk_level'] ?? 'unknown';
+        $groundingMeta['risk_flags'] = is_array($groundingRiskReport['risk_flags'] ?? null)
+            ? array_values($groundingRiskReport['risk_flags'])
+            : [];
+        $groundingMeta['decision_trace_grounding'] = is_array($groundingRiskReport['decision_trace_grounding'] ?? null)
+            ? $groundingRiskReport['decision_trace_grounding']
+            : [];
 
         $replyText = trim((string) ($reply['text'] ?? $reply['reply'] ?? ''));
         $source = (string) ($reply['meta']['source'] ?? '');
@@ -372,7 +449,10 @@ class HallucinationGuardService
             );
         }
 
-        if (! $hasOperationalFacts && ($faqResult['matched'] ?? false) !== true && empty($knowledgeHits) && $this->looksFactualReply($replyText)) {
+        if (
+            ($groundingRiskReport['verdict'] ?? null) === 'not_grounded'
+            && $this->looksFactualReply($replyText)
+        ) {
             return $this->clarify(
                 reply: $reply,
                 intentResult: $intentResult,
@@ -386,8 +466,23 @@ class HallucinationGuardService
             );
         }
 
+        if (($groundingRiskReport['verdict'] ?? null) === 'partially_grounded') {
+            return $this->clarify(
+                reply: $reply,
+                intentResult: $intentResult,
+                reason: 'Grounding belum cukup kuat untuk menjawab secara langsung tanpa klarifikasi tambahan.',
+                text: $this->clarificationTextForIntent($intent),
+                meta: [
+                    ...$groundingMeta,
+                    'action' => 'clarify_partially_grounded_reply',
+                    'risk_level' => $groundingRiskReport['risk_level'] ?? 'medium',
+                ],
+            );
+        }
+
         return $this->allow($reply, $intentResult, [
             ...$groundingMeta,
+            'grounding_verdict' => $groundingRiskReport['verdict'] ?? 'grounded',
             'action' => 'allow_grounded_reply',
             'risk_level' => $hasSubstantialCrmFacts ? 'low' : 'medium',
         ]);
@@ -509,6 +604,46 @@ class HallucinationGuardService
     }
 
     /**
+     * @param  array<string, mixed>  $meta
+     * @param  array<string, mixed>  $reply
+     * @return array<string, mixed>
+     */
+    private function buildHallucinationMeta(
+        string $traceId,
+        string $action,
+        ?string $reason,
+        bool $blocked,
+        array $meta = [],
+        array $reply = [],
+    ): array {
+        $verdict = match ($action) {
+            'allow' => 'grounded',
+            'clarify' => 'needs_clarification',
+            'handoff' => 'not_grounded',
+            default => $action,
+        };
+
+        return array_merge([
+            'guard_group' => 'hallucination',
+            'action' => $action,
+            'verdict' => $verdict,
+            'blocked' => $blocked,
+            'reason' => $reason,
+            'force_handoff' => $action === 'handoff',
+            'force_clarification' => $action === 'clarify',
+        ], $meta, [
+            'decision_trace_hallucination' => $this->decisionTraceHallucination(
+                traceId: $traceId,
+                action: $action,
+                blocked: $blocked,
+                reason: $reason,
+                meta: $meta,
+                reply: $reply,
+            ),
+        ]);
+    }
+
+    /**
      * @param  array<string, mixed>  $reply
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $meta
@@ -537,6 +672,7 @@ class HallucinationGuardService
                     'original_source' => $reply['meta']['source'] ?? null,
                     'original_action' => $reply['meta']['action'] ?? null,
                     'grounding_source' => $meta['grounding_source'] ?? null,
+                    'grounding_verdict' => $meta['grounding_verdict'] ?? null,
                     'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
                     'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
                         ? array_values($meta['crm_grounding_sections'])
@@ -555,21 +691,14 @@ class HallucinationGuardService
                 ],
             ],
             'intent_result' => $intentResult,
-            'meta' => array_merge([
-                'guard_group' => 'hallucination',
-                'action' => 'clarify',
-                'blocked' => true,
-                'reason' => $reason,
-            ], $meta, [
-                'decision_trace_hallucination' => $this->decisionTraceHallucination(
-                    traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
-                    action: 'clarify',
-                    blocked: true,
-                    reason: $reason,
-                    meta: $meta,
-                    reply: $reply,
-                ),
-            ]),
+            'meta' => $this->buildHallucinationMeta(
+                traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
+                action: 'clarify',
+                reason: $reason,
+                blocked: true,
+                meta: $meta,
+                reply: $reply,
+            ),
         ];
     }
 
@@ -606,6 +735,7 @@ class HallucinationGuardService
                     'original_action' => $reply['meta']['action'] ?? null,
                     'force_handoff' => true,
                     'grounding_source' => $meta['grounding_source'] ?? null,
+                    'grounding_verdict' => $meta['grounding_verdict'] ?? null,
                     'crm_grounding_present' => (bool) ($meta['crm_grounding_present'] ?? false),
                     'crm_grounding_sections' => is_array($meta['crm_grounding_sections'] ?? null)
                         ? array_values($meta['crm_grounding_sections'])
@@ -624,21 +754,14 @@ class HallucinationGuardService
                 ],
             ],
             'intent_result' => $intentResult,
-            'meta' => array_merge([
-                'guard_group' => 'hallucination',
-                'action' => 'handoff',
-                'blocked' => true,
-                'reason' => $reason,
-            ], $meta, [
-                'decision_trace_hallucination' => $this->decisionTraceHallucination(
-                    traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
-                    action: 'handoff',
-                    blocked: true,
-                    reason: $reason,
-                    meta: $meta,
-                    reply: $reply,
-                ),
-            ]),
+            'meta' => $this->buildHallucinationMeta(
+                traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
+                action: 'handoff',
+                reason: $reason,
+                blocked: true,
+                meta: $meta,
+                reply: $reply,
+            ),
         ];
     }
 
@@ -657,21 +780,14 @@ class HallucinationGuardService
         return [
             'reply' => $reply,
             'intent_result' => $intentResult,
-            'meta' => array_merge([
-                'guard_group' => 'hallucination',
-                'action' => 'allow',
-                'blocked' => false,
-                'reason' => null,
-            ], $meta, [
-                'decision_trace_hallucination' => $this->decisionTraceHallucination(
-                    traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
-                    action: 'allow',
-                    blocked: false,
-                    reason: null,
-                    meta: $meta,
-                    reply: $reply,
-                ),
-            ]),
+            'meta' => $this->buildHallucinationMeta(
+                traceId: (string) ($meta['trace_id'] ?? $this->resolveTraceId($reply, $intentResult)),
+                action: 'allow',
+                reason: null,
+                blocked: false,
+                meta: $meta,
+                reply: $reply,
+            ),
         ];
     }
 
@@ -773,6 +889,64 @@ class HallucinationGuardService
         ];
     }
 
+    private function groundingVerdictFromRisk(string $riskLevel, array $riskFlags = []): string
+    {
+        if ($riskLevel === 'high') {
+            if (in_array('ungrounded_factual_reply', $riskFlags, true)
+                || in_array('unsupported_operational_certainty', $riskFlags, true)
+                || in_array('booking_claim_while_data_incomplete', $riskFlags, true)
+                || in_array('reply_conflicts_with_handoff', $riskFlags, true)) {
+                return 'not_grounded';
+            }
+
+            return 'needs_clarification';
+        }
+
+        if ($riskLevel === 'medium') {
+            return 'partially_grounded';
+        }
+
+        return 'grounded';
+    }
+
+    /**
+     * @param  array<int, string>  $riskFlags
+     * @param  array<int, string>  $crmGroundingSections
+     * @param  array<int, string>  $usedCrmFacts
+     * @return array<string, mixed>
+     */
+    private function groundingDecisionTrace(
+        string $traceId,
+        string $verdict,
+        string $riskLevel,
+        array $riskFlags = [],
+        bool $isSafe = true,
+        bool $needsClarification = false,
+        bool $handoffRequired = false,
+        ?string $groundingSource = null,
+        bool $crmGroundingPresent = false,
+        array $crmGroundingSections = [],
+        array $usedCrmFacts = [],
+    ): array {
+        return [
+            'trace_id' => $traceId,
+            'grounding' => [
+                'stage' => 'hallucination_guard',
+                'verdict' => $verdict,
+                'risk_level' => $riskLevel,
+                'risk_flags' => array_values(array_unique($riskFlags)),
+                'is_safe' => $isSafe,
+                'needs_clarification' => $needsClarification,
+                'handoff_required' => $handoffRequired,
+                'grounding_source' => $groundingSource,
+                'crm_grounding_present' => $crmGroundingPresent,
+                'crm_grounding_sections' => array_values(array_unique($crmGroundingSections)),
+                'used_crm_facts' => array_values(array_unique($usedCrmFacts)),
+                'evaluated_at' => now()->toIso8601String(),
+            ],
+        ];
+    }
+
     private function elevateRiskLevel(string $currentLevel, string $candidateLevel): string
     {
         $priority = [
@@ -824,6 +998,12 @@ class HallucinationGuardService
             'grounding' => [
                 'stage' => 'hallucination_guard',
                 'action' => $action,
+                'verdict' => match ($action) {
+                    'allow' => 'grounded',
+                    'clarify' => 'needs_clarification',
+                    'handoff' => 'not_grounded',
+                    default => $action,
+                },
                 'blocked' => $blocked,
                 'reason' => $reason,
                 'risk_level' => (string) ($meta['risk_level'] ?? 'unknown'),
@@ -837,6 +1017,7 @@ class HallucinationGuardService
             ],
             'outcome' => [
                 'handoff' => $action === 'handoff',
+                'clarify' => $action === 'clarify',
                 'reply_action' => $action === 'clarify' ? 'ask_clarification' : ($action === 'handoff' ? 'handoff_admin' : 'allow'),
                 'is_fallback' => (bool) ($reply['is_fallback'] ?? false),
             ],
@@ -908,6 +1089,10 @@ class HallucinationGuardService
             || in_array('grounded_response_fallback_model', $flags, true)
         ) {
             $health = 'fallback_model';
+        }
+
+        if (count($flags) >= 4 && $health === 'healthy') {
+            $health = 'unhealthy';
         }
 
         return [

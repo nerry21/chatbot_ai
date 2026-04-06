@@ -73,114 +73,341 @@ class ConversationReplyGuardService
     /**
      * @param  array<string, mixed>  $replyResult
      * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $orchestrationSnapshot
-     * @return array<string, mixed>
+     * @return array{
+     *     text: string,
+     *     is_fallback: bool,
+     *     next_action?: string,
+     *     should_escalate?: bool,
+     *     handoff_reason?: string|null,
+     *     clarification_question?: string|null,
+     *     meta: array<string, mixed>
+     * }
      */
     public function guardConversationReply(
         array $replyResult,
         array $context,
+        array $intentResult = [],
         array $orchestrationSnapshot = [],
     ): array {
         $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
-        $conversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
         $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
 
         $reply = trim((string) ($replyResult['reply'] ?? $replyResult['text'] ?? ''));
-        $nextAction = (string) ($replyResult['next_action'] ?? 'answer_question');
         $notes = is_array($replyResult['safety_notes'] ?? null) ? $replyResult['safety_notes'] : [];
 
         $llmRuntimeBundle = $this->resolveLlmRuntimeBundle($replyResult, $context);
         $runtimeHealth = $this->resolveRuntimeHealthFromBundle($llmRuntimeBundle);
 
-        if ($reply === '') {
-            $reply = 'Baik, saya bantu dulu ya. Mohon jelaskan sedikit lebih detail agar saya bisa menindaklanjuti dengan tepat.';
-            $notes[] = 'Conversation guard filled empty reply';
-        }
+        $signals = $this->collectFinalGuardSignals(
+            context: $context,
+            intentResult: $intentResult,
+            snapshot: $orchestrationSnapshot,
+        );
+        $signals['runtime_health'] = $runtimeHealth;
 
-        if (mb_strlen($reply, 'UTF-8') > 1200) {
-            $reply = mb_substr($reply, 0, 1200, 'UTF-8');
-            $notes[] = 'Conversation guard trimmed long reply';
-        }
+        $finalAction = $this->resolveFinalAction($signals);
 
-        if (in_array($runtimeHealth, ['fallback', 'schema_invalid'], true)) {
-            $reply = 'Izin Bapak/Ibu, agar informasinya tetap akurat, percakapan ini saya teruskan ke admin kami terlebih dahulu ya.';
-            $replyResult['should_escalate'] = true;
-            $replyResult['handoff_reason'] = $replyResult['handoff_reason'] ?? 'LLM runtime unhealthy at final guard';
-            $replyResult['next_action'] = 'handoff_admin';
-            $replyResult['meta']['force_handoff'] = true;
-            $notes[] = 'Conversation guard enforced handoff due to unhealthy LLM runtime';
-        } elseif ($runtimeHealth === 'degraded') {
-            if (($replyResult['should_escalate'] ?? false) !== true && $nextAction === 'answer_question') {
-                $replyResult['next_action'] = 'ask_missing_data';
-                $notes[] = 'Conversation guard downgraded answer to clarification due to degraded LLM runtime';
-            }
-
-            if (! str_contains(mb_strtolower($reply, 'UTF-8'), 'izin')) {
-                $reply = 'Izin Bapak/Ibu, agar saya pastikan jawabannya tepat, boleh dibantu jelaskan sedikit lebih rinci ya.';
-            }
-        }
+        $replyResult['meta'] = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        $replyResult['meta']['llm_runtime'] = $llmRuntimeBundle;
+        $replyResult['meta']['runtime_health'] = $runtimeHealth;
 
         if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
-            if ($nextAction === 'answer_question') {
+            if (($replyResult['next_action'] ?? 'answer_question') === 'answer_question' && $finalAction === 'send_reply') {
                 $replyResult['next_action'] = 'ask_missing_data';
                 $replyResult['data_requests'] = array_values($booking['missing_fields']);
                 $notes[] = 'Conversation guard aligned reply with booking missing fields';
             }
         }
 
-        $replyResult['meta'] = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+        if ($finalAction === 'escalate_to_human') {
+            $handoffText = $this->normalizeText($reply) ?? 'Baik, saya teruskan dulu ke admin agar dibantu lebih tepat ya.';
+            $reason = $signals['policy_reason']
+                ?? $signals['grounding_reason']
+                ?? 'Final guard memutuskan eskalasi ke admin.';
 
-        if (($conversation['needs_human'] ?? false) === true) {
+            $replyResult['text'] = $handoffText;
+            $replyResult['reply'] = $handoffText;
+            $replyResult['next_action'] = 'handoff_admin';
             $replyResult['should_escalate'] = true;
-            $replyResult['handoff_reason'] = $replyResult['handoff_reason'] ?? 'Conversation requires human follow-up';
-            $replyResult['meta']['force_handoff'] = true;
-            $notes[] = 'Conversation guard enforced human follow-up';
+            $replyResult['handoff_reason'] = $reason;
+            $replyResult['is_fallback'] = (bool) ($replyResult['is_fallback'] ?? false);
+
+            $existingMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+            $replyResult['meta'] = array_merge(
+                $existingMeta,
+                $this->buildFinalGuardMeta(
+                    action: 'escalate_to_human',
+                    signals: $signals,
+                    context: $context,
+                    snapshot: $orchestrationSnapshot,
+                    reason: $reason,
+                ),
+            );
+            $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
+
+            return $replyResult;
         }
 
-        if (($orchestrationSnapshot['reply_force_handoff'] ?? false) === true) {
-            $replyResult['should_escalate'] = true;
-            $replyResult['meta']['force_handoff'] = true;
-            $notes[] = 'Conversation guard respected orchestration handoff';
+        if ($finalAction === 'ask_clarification') {
+            $clarificationText = $signals['clarification_question'] ?? $this->safeFallbackText();
+            $reason = $signals['policy_reason']
+                ?? $signals['grounding_reason']
+                ?? 'Final guard memutuskan klarifikasi tambahan diperlukan.';
+
+            $replyResult['text'] = $clarificationText;
+            $replyResult['reply'] = $clarificationText;
+            $replyResult['clarification_question'] = $clarificationText;
+            $replyResult['next_action'] = 'ask_clarification';
+            $replyResult['should_escalate'] = false;
+            $replyResult['handoff_reason'] = null;
+            $replyResult['is_fallback'] = false;
+
+            $existingMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+            $replyResult['meta'] = array_merge(
+                $existingMeta,
+                $this->buildFinalGuardMeta(
+                    action: 'ask_clarification',
+                    signals: $signals,
+                    context: $context,
+                    snapshot: $orchestrationSnapshot,
+                    reason: $reason,
+                ),
+            );
+            $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
+
+            return $replyResult;
         }
 
-        $replyResult['meta']['llm_runtime'] = $llmRuntimeBundle;
-        $replyResult['meta']['runtime_health'] = $runtimeHealth;
+        if ($this->normalizeText($reply) === null) {
+            $replyResult['text'] = $this->safeFallbackText();
+            $replyResult['reply'] = $replyResult['text'];
+            $replyResult['next_action'] = 'safe_fallback';
+            $replyResult['should_escalate'] = false;
+            $replyResult['is_fallback'] = true;
 
-        $replyResult['reply'] = $reply;
-        $replyResult['text'] = $reply;
-        $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
+            $existingMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
+            $replyResult['meta'] = array_merge(
+                $existingMeta,
+                $this->buildFinalGuardMeta(
+                    action: 'safe_fallback',
+                    signals: $signals,
+                    context: $context,
+                    snapshot: $orchestrationSnapshot,
+                    reason: 'Reply kosong diganti fallback aman.',
+                ),
+            );
+            $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
+
+            return $replyResult;
+        }
+
+        $replyResult['text'] = $this->trimReplyIfNeeded($reply);
+        $replyResult['reply'] = $replyResult['text'];
+
+        $replyResult['next_action'] = $replyResult['next_action'] ?? 'send_reply';
+        $replyResult['should_escalate'] = false;
+        $replyResult['handoff_reason'] = null;
 
         $existingMeta = is_array($replyResult['meta'] ?? null) ? $replyResult['meta'] : [];
-        $traceId = $this->resolveTraceId($replyResult, $context, $orchestrationSnapshot, $existingMeta);
-
-        $replyResult['meta'] = array_merge($existingMeta, [
-            'trace_id' => $traceId,
-            'conversation_guard_applied' => true,
-            'decision_trace' => $this->mergeDecisionTrace(
-                is_array($existingMeta['decision_trace'] ?? null) ? $existingMeta['decision_trace'] : [],
-                [
-                    'trace_id' => $traceId,
-                    'outcome' => [
-                        'final_decision' => ($replyResult['should_escalate'] ?? false) ? 'conversation_guard_handoff_or_safe_reply' : 'conversation_guard_allow',
-                        'reply_action' => $replyResult['next_action'] ?? null,
-                        'handoff' => (bool) ($replyResult['should_escalate'] ?? false),
-                        'handoff_reason' => $replyResult['handoff_reason'] ?? null,
-                        'is_fallback' => (bool) ($replyResult['is_fallback'] ?? false),
-                    ],
-                    'conversation_guard' => [
-                        'stage' => 'conversation_reply_guard',
-                        'action' => ($replyResult['should_escalate'] ?? false) ? 'handoff_or_safe_reply' : 'allow',
-                        'blocked' => false,
-                        'notes' => array_values(array_unique(array_filter($notes))),
-                        'runtime_health' => $runtimeHealth,
-                        'llm_runtime' => $llmRuntimeBundle,
-                        'evaluated_at' => now()->toIso8601String(),
-                    ],
-                ],
+        $replyResult['meta'] = array_merge(
+            $existingMeta,
+            $this->buildFinalGuardMeta(
+                action: 'send_reply',
+                signals: $signals,
+                context: $context,
+                snapshot: $orchestrationSnapshot,
+                reason: 'Reply lolos final guard.',
             ),
-        ]);
+        );
+        $replyResult['safety_notes'] = array_values(array_unique(array_filter($notes)));
 
         return $replyResult;
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $snapshot
+     * @return array<string, mixed>
+     */
+    private function collectFinalGuardSignals(
+        array $context,
+        array $intentResult,
+        array $snapshot,
+    ): array {
+        $policy = is_array($context['policy_guard'] ?? null) ? $context['policy_guard'] : [];
+        $grounding = is_array($context['hallucination_guard'] ?? null) ? $context['hallucination_guard'] : [];
+        $understandingRuntime = is_array($context['understanding_runtime'] ?? null) ? $context['understanding_runtime'] : [];
+        $replyOrchestration = is_array($context['reply_orchestration'] ?? null) ? $context['reply_orchestration'] : [];
+        $crm = is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [];
+        $crmConversation = is_array($crm['conversation'] ?? null) ? $crm['conversation'] : [];
+
+        $policyVerdict = $this->normalizeText(
+            $policy['verdict']
+                ?? $policy['policy_verdict']
+                ?? $intentResult['policy_verdict']
+                ?? null
+        ) ?? 'allow';
+
+        $groundingVerdict = $this->normalizeText(
+            $grounding['verdict']
+                ?? $grounding['grounding_verdict']
+                ?? null
+        ) ?? 'grounded';
+
+        $runtimeHealth = $this->normalizeText(
+            $policy['runtime_health']
+                ?? $understandingRuntime['status']
+                ?? $intentResult['runtime_health']
+                ?? null
+        ) ?? 'healthy';
+
+        $replyAction = $this->normalizeText(
+            $replyOrchestration['reply_guard_action']
+                ?? $replyOrchestration['reply_action']
+                ?? $snapshot['reply_action']
+                ?? null
+        );
+
+        return [
+            'policy_verdict' => $policyVerdict,
+            'grounding_verdict' => $groundingVerdict,
+            'runtime_health' => $runtimeHealth,
+            'reply_action' => $replyAction,
+            'policy_force_handoff' => (bool) ($policy['force_handoff'] ?? false),
+            'policy_force_clarification' => (bool) ($policy['force_clarification'] ?? false),
+            'grounding_force_handoff' => (bool) ($grounding['force_handoff'] ?? false),
+            'grounding_force_clarification' => (bool) ($grounding['force_clarification'] ?? false),
+            'orchestration_force_handoff' => (bool) ($replyOrchestration['reply_force_handoff'] ?? false),
+            'needs_human' => (bool) (
+                ($replyOrchestration['needs_human'] ?? false)
+                || ($snapshot['needs_human'] ?? false)
+                || ($intentResult['handoff_recommended'] ?? false)
+                || ($crmConversation['needs_human'] ?? false)
+            ),
+            'clarification_question' => $this->normalizeText(
+                $intentResult['clarification_question']
+                    ?? $replyOrchestration['clarification_question']
+                    ?? null
+            ),
+            'grounding_reason' => $this->normalizeText($grounding['reason'] ?? null),
+            'policy_reason' => $this->normalizeText(
+                $policy['reason_code']
+                    ?? ($policy['reasons'][0] ?? null)
+            ),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $signals
+     */
+    private function resolveFinalAction(array $signals): string
+    {
+        if (
+            ($signals['policy_verdict'] ?? 'allow') === 'blocked'
+            || ($signals['policy_verdict'] ?? 'allow') === 'handoff'
+            || ($signals['policy_force_handoff'] ?? false) === true
+            || ($signals['grounding_force_handoff'] ?? false) === true
+            || ($signals['orchestration_force_handoff'] ?? false) === true
+            || ($signals['needs_human'] ?? false) === true
+            || in_array(($signals['runtime_health'] ?? 'healthy'), ['fallback', 'schema_invalid'], true)
+        ) {
+            return 'escalate_to_human';
+        }
+
+        if (
+            ($signals['policy_verdict'] ?? 'allow') === 'clarify'
+            || ($signals['grounding_verdict'] ?? 'grounded') === 'needs_clarification'
+            || ($signals['grounding_verdict'] ?? 'grounded') === 'partially_grounded'
+            || ($signals['policy_force_clarification'] ?? false) === true
+            || ($signals['grounding_force_clarification'] ?? false) === true
+            || ($signals['reply_action'] ?? null) === 'ask_clarification'
+            || ($signals['runtime_health'] ?? 'healthy') === 'degraded'
+        ) {
+            return 'ask_clarification';
+        }
+
+        return 'send_reply';
+    }
+
+    private function safeFallbackText(): string
+    {
+        return 'Baik, agar saya tidak keliru, boleh dijelaskan lagi detail kebutuhan atau pertanyaannya ya?';
+    }
+
+    /**
+     * @param  array<string, mixed>  $signals
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $snapshot
+     * @return array<string, mixed>
+     */
+    private function buildFinalGuardMeta(
+        string $action,
+        array $signals,
+        array $context,
+        array $snapshot,
+        ?string $reason = null,
+    ): array {
+        $traceId = $this->normalizeText(
+            $context['job_trace_id']
+                ?? $context['trace_id']
+                ?? $snapshot['decision_trace_id']
+                ?? null
+        );
+
+        return [
+            'guard_group' => 'conversation_reply',
+            'action' => $action,
+            'verdict' => $action,
+            'reason' => $reason,
+            'policy_verdict' => $signals['policy_verdict'] ?? null,
+            'grounding_verdict' => $signals['grounding_verdict'] ?? null,
+            'runtime_health' => $signals['runtime_health'] ?? null,
+            'trace_id' => $traceId,
+            'force_handoff' => $action === 'escalate_to_human',
+            'force_clarification' => $action === 'ask_clarification',
+            'candidate_only' => false,
+            'is_final_decider' => true,
+            'decision_trace_final_guard' => [
+                'trace_id' => $traceId,
+                'final_guard' => [
+                    'stage' => 'conversation_reply_guard',
+                    'action' => $action,
+                    'policy_verdict' => $signals['policy_verdict'] ?? null,
+                    'grounding_verdict' => $signals['grounding_verdict'] ?? null,
+                    'runtime_health' => $signals['runtime_health'] ?? null,
+                    'reason' => $reason,
+                    'evaluated_at' => now()->toIso8601String(),
+                ],
+                'outcome' => [
+                    'final_action' => $action,
+                    'handoff' => $action === 'escalate_to_human',
+                    'clarify' => $action === 'ask_clarification',
+                    'safe_fallback' => $action === 'safe_fallback',
+                    'send_reply' => $action === 'send_reply',
+                ],
+            ],
+        ];
+    }
+
+    private function normalizeText(mixed $value): ?string
+    {
+        if (! is_string($value) && ! is_numeric($value)) {
+            return null;
+        }
+
+        $normalized = trim(preg_replace('/\s+/u', ' ', (string) $value) ?? '');
+
+        return $normalized !== '' ? $normalized : null;
+    }
+
+    private function trimReplyIfNeeded(string $text, int $limit = 1500): string
+    {
+        return mb_strlen($text) > $limit
+            ? mb_substr($text, 0, $limit - 3).'...'
+            : $text;
     }
 
     private function resolveTraceId(array ...$sources): string

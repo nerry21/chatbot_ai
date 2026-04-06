@@ -31,8 +31,18 @@ final readonly class ConversationContextPayload
 
     /**
      * Penting:
-     * Tahap understanding awal TIDAK lagi menerima full crm_context.
-     * Hanya pesan, history, state, known entities, summary, dan admin flag.
+     * Tahap understanding awal TIDAK menerima full crm_context.
+     * Input understanding harus tetap ramping:
+     * - latest message
+     * - recent history
+     * - conversation state ringkas
+     * - known entities ringkas
+     * - summary ringkas
+     * - crm_hints yang sudah dibatasi
+     * - admin flag
+     *
+     * Tidak boleh memasukkan customer_memory penuh, resolved_context mentah besar,
+     * atau crm_context penuh ke tahap ini.
      *
      * @return array{
      *     conversation_id: int,
@@ -57,7 +67,7 @@ final readonly class ConversationContextPayload
             'recent_history' => $this->recentHistoryForUnderstanding(),
             'conversation_state' => $this->conversationStateForUnderstanding(),
             'known_entities' => $this->knownEntitiesForUnderstanding(),
-            'conversation_summary' => $this->conversationSummary,
+            'conversation_summary' => $this->conversationSummaryForUnderstanding(),
             'crm_hints' => $this->crmHintsForUnderstanding(),
             'admin_takeover' => $this->adminTakeover,
         ];
@@ -75,17 +85,31 @@ final readonly class ConversationContextPayload
             'message_id' => $this->messageId,
             'job_trace_id' => $this->jobTraceId,
             'trace_id' => $this->jobTraceId,
+
             'message_text' => $this->latestMessageText,
+            'admin_takeover' => $this->adminTakeover,
+
+            // full context for post-understanding stages
             'customer_memory' => $this->customerMemory,
             'crm_context' => $this->crmContext,
             'crm_hints' => $this->crmHints,
+
             'active_states' => $this->conversationState,
-            'recent_messages' => $this->recentMessagesForLegacyAiContext(),
-            'context_messages' => $this->recentHistoryForUnderstanding(),
             'known_entities' => $this->knownEntities,
             'resolved_context' => $this->resolvedContext,
             'conversation_summary' => $this->conversationSummary,
-            'admin_takeover' => $this->adminTakeover,
+
+            // legacy and structured history variants
+            'recent_messages' => $this->recentMessagesForLegacyAiContext(),
+            'context_messages' => $this->recentHistoryForUnderstanding(),
+
+            // audit helpers
+            'understanding_input' => $this->toUnderstandingInput(),
+            'context_contract' => [
+                'understanding_uses_full_crm' => false,
+                'full_context_available_post_understanding' => true,
+            ],
+            'context_boundary_audit' => $this->contextBoundaryAudit(),
         ];
     }
 
@@ -112,6 +136,8 @@ final readonly class ConversationContextPayload
             'crm_context' => $this->crmContext,
             'crm_hints' => $this->crmHints,
             'admin_takeover' => $this->adminTakeover,
+            'understanding_input' => $this->toUnderstandingInput(),
+            'context_boundary_audit' => $this->contextBoundaryAudit(),
         ];
     }
 
@@ -144,11 +170,20 @@ final readonly class ConversationContextPayload
     {
         return array_filter(
             $this->crmHints,
-            static fn (mixed $value): bool => match (true) {
-                is_bool($value) => $value === true,
-                is_string($value) => $value !== '',
-                default => $value !== null,
+            static function (mixed $value, string|int $key): bool {
+                if ($key === '_meta') {
+                    return is_array($value) && $value !== [];
+                }
+
+                return match (true) {
+                    is_bool($value) => $value === true,
+                    is_string($value) => trim($value) !== '',
+                    is_int($value), is_float($value) => true,
+                    is_array($value) => $value !== [],
+                    default => $value !== null,
+                };
             },
+            ARRAY_FILTER_USE_BOTH,
         );
     }
 
@@ -173,10 +208,14 @@ final readonly class ConversationContextPayload
     {
         return array_filter([
             ...$this->conversationState,
-            'resolved_context' => $this->resolvedContext !== [] ? $this->resolvedContext : null,
-            'conversation_summary' => $this->conversationSummary,
+            'resolved_context_keys' => $this->resolvedContextKeysForUnderstanding(),
+            'conversation_summary_present' => $this->conversationSummary !== null && trim($this->conversationSummary) !== '',
             'admin_takeover' => $this->adminTakeover,
-        ], static fn (mixed $value): bool => $value !== null);
+        ], static fn (mixed $value): bool => match (true) {
+            is_bool($value) => true,
+            is_array($value) => $value !== [],
+            default => $value !== null && $value !== '',
+        });
     }
 
     /**
@@ -186,8 +225,55 @@ final readonly class ConversationContextPayload
     {
         return array_filter(
             $this->knownEntities,
-            static fn (mixed $value): bool => $value !== null && $value !== '',
+            static fn (mixed $value): bool => match (true) {
+                is_string($value) => trim($value) !== '',
+                is_array($value) => $value !== [],
+                default => $value !== null,
+            },
         );
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function resolvedContextKeysForUnderstanding(): array
+    {
+        return array_values(array_filter(
+            array_keys($this->resolvedContext),
+            static fn (mixed $key): bool => is_string($key) && trim($key) !== '',
+        ));
+    }
+
+    private function conversationSummaryForUnderstanding(int $limit = 220): ?string
+    {
+        if ($this->conversationSummary === null) {
+            return null;
+        }
+
+        $summary = trim($this->conversationSummary);
+
+        if ($summary === '') {
+            return null;
+        }
+
+        return mb_substr($summary, 0, $limit);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function contextBoundaryAudit(): array
+    {
+        return [
+            'conversation_id' => $this->conversationId,
+            'message_id' => $this->messageId,
+            'job_trace_id' => $this->jobTraceId,
+            'understanding_uses_full_crm' => false,
+            'understanding_crm_hint_keys' => array_keys($this->crmHintsForUnderstanding()),
+            'understanding_state_keys' => array_keys($this->conversationStateForUnderstanding()),
+            'understanding_known_entity_keys' => array_keys($this->knownEntitiesForUnderstanding()),
+            'resolved_context_keys_for_understanding' => $this->resolvedContextKeysForUnderstanding(),
+        ];
     }
 
     /**

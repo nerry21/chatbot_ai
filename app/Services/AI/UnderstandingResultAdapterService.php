@@ -10,18 +10,8 @@ class UnderstandingResultAdapterService
     /**
      * @param  array<string, mixed>  $legacyIntentResult
      * @param  array<string, mixed>  $legacyEntityResult
-     * @return array{
-     *     intent_result: array<string, mixed>,
-     *     entity_result: array<string, mixed>,
-     *     meta: array{
-     *         llm_primary: bool,
-     *         understanding_source: string,
-     *         crm_hints_used: bool,
-     *         used_legacy_intent_fallback: bool,
-     *         used_legacy_entity_fallback: bool,
-     *         legacy_fallback_reason: string|null
-     *     }
-     * }
+     * @param  array<string, mixed>  $llmRuntimeMeta
+     * @return array<string, mixed>
      */
     public function adapt(
         LlmUnderstandingResult $understanding,
@@ -29,126 +19,180 @@ class UnderstandingResultAdapterService
         array $legacyEntityResult = [],
         array $llmRuntimeMeta = [],
     ): array {
-        $usedLegacyIntentFallback = $this->needsLegacyFallback($understanding) && $legacyIntentResult !== [];
-        $usedLegacyEntityFallback = $legacyEntityResult !== [];
-        $runtimeMeta = $this->normalizeRuntimeMeta($llmRuntimeMeta);
-        $traceId = $this->resolveTraceId($runtimeMeta, $legacyIntentResult, $legacyEntityResult);
+        $normalizedRuntimeMeta = $this->normalizeRuntimeMeta($llmRuntimeMeta);
+        $usedLegacyFallback = $legacyIntentResult !== [] && $this->needsLegacyFallback($understanding);
 
-        $intent = $this->resolveIntent($understanding, $legacyIntentResult, $usedLegacyIntentFallback);
-        $confidence = $usedLegacyIntentFallback
-            ? (float) ($legacyIntentResult['confidence'] ?? $understanding->confidence)
-            : $understanding->confidence;
-        $reasoning = $usedLegacyIntentFallback
-            ? (string) ($legacyIntentResult['reasoning_short'] ?? $understanding->reasoningSummary)
-            : $understanding->reasoningSummary;
+        $finalIntentResult = $this->buildIntentResult(
+            understanding: $understanding,
+            legacyIntentResult: $legacyIntentResult,
+            normalizedRuntimeMeta: $normalizedRuntimeMeta,
+            usedLegacyFallback: $usedLegacyFallback,
+        );
 
-        $intentResult = [
-            'trace_id' => $traceId,
-            'intent' => $intent,
-            'confidence' => min(1.0, max(0.0, $confidence)),
-            'reasoning_short' => $reasoning !== '' ? $reasoning : 'Understanding LLM-first dengan CRM hints aktif.',
-            'sub_intent' => $understanding->subIntent,
-            'needs_clarification' => $understanding->needsClarification,
-            'clarification_question' => $understanding->clarificationQuestion,
-            'handoff_recommended' => $understanding->handoffRecommended,
-            'uses_previous_context' => $understanding->usesPreviousContext,
-            'llm_primary' => true,
-            'understanding_source' => 'llm_first_understanding_with_crm_hints',
-            'crm_hints_used' => true,
-            'model_used' => $runtimeMeta['model'],
-            'provider' => $runtimeMeta['provider'],
-            'runtime_status' => $runtimeMeta['status'],
-            'degraded_mode' => $runtimeMeta['degraded_mode'],
-            'used_fallback_model' => $runtimeMeta['used_fallback_model'],
-            'schema_valid' => $runtimeMeta['schema_valid'],
-            'cache_hit' => $runtimeMeta['cache_hit'],
-            'runtime_health' => $this->resolveRuntimeHealth($runtimeMeta),
-        ];
-
-        $entityResult = $this->mergeLegacyEntities(
-            $this->buildEntityResult($understanding),
-            $legacyEntityResult,
+        $finalEntityResult = $this->buildEntityResult(
+            understanding: $understanding,
+            legacyEntityResult: $legacyEntityResult,
+            usedLegacyFallback: $usedLegacyFallback,
         );
 
         $usedCrmFacts = $this->buildUsedCrmFacts($understanding);
 
+        $meta = [
+            'source' => 'llm_understanding',
+            'used_legacy_fallback' => $usedLegacyFallback,
+            'llm_runtime' => $normalizedRuntimeMeta,
+            'understanding' => [
+                'intent' => $understanding->intent,
+                'confidence' => $understanding->confidence,
+                'uses_previous_context' => $understanding->usesPreviousContext,
+                'needs_clarification' => $understanding->needsClarification,
+                'handoff_recommended' => $understanding->handoffRecommended,
+                'reasoning_summary' => $understanding->reasoningSummary,
+            ],
+            'legacy' => [
+                'intent_result_present' => $legacyIntentResult !== [],
+                'entity_result_present' => $legacyEntityResult !== [],
+            ],
+            'crm_facts' => $usedCrmFacts,
+            'adapter_decision' => [
+                'used_legacy_fallback' => $usedLegacyFallback,
+                'primary_source' => $usedLegacyFallback ? 'legacy_fallback' : 'llm_understanding',
+                'runtime_health' => $this->deriveRuntimeHealth($normalizedRuntimeMeta),
+            ],
+        ];
+
         return [
-            'intent_result' => $intentResult,
-            'entity_result' => $entityResult,
-            'meta' => [
-                'trace_id' => $traceId,
-                'llm_primary' => true,
-                'understanding_source' => 'llm_first_understanding_with_crm_hints',
-                'crm_hints_used' => true,
-                'used_legacy_intent_fallback' => $usedLegacyIntentFallback,
-                'used_legacy_entity_fallback' => $usedLegacyEntityFallback,
-                'legacy_fallback_reason' => $usedLegacyIntentFallback || $usedLegacyEntityFallback
-                    ? 'LLM understanding tidak cukup kuat sehingga legacy fallback dipakai sebagai backup.'
-                    : null,
-                'llm_runtime' => $runtimeMeta,
-                'runtime_health' => $this->resolveRuntimeHealth($runtimeMeta),
-                'degraded_mode' => (bool) ($runtimeMeta['degraded_mode'] ?? false),
-                'schema_valid' => (bool) ($runtimeMeta['schema_valid'] ?? true),
-                'used_fallback_model' => (bool) ($runtimeMeta['used_fallback_model'] ?? false),
-                'crm_awareness' => [
-                    'used_crm_hints' => true,
-                    'uses_previous_context' => (bool) $understanding->usesPreviousContext,
-                    'handoff_recommended' => (bool) $understanding->handoffRecommended,
-                    'needs_clarification' => (bool) $understanding->needsClarification,
-                    'used_crm_facts' => $usedCrmFacts,
-                ],
-                'confidence_explanation' => $reasoning !== ''
-                    ? $reasoning
-                    : 'Confidence dibentuk dari hasil understanding utama dengan fallback legacy bila perlu.',
-                'decision_trace' => [
-                    'trace_id' => $traceId,
-                    'understanding' => [
-                        'stage' => 'understanding_result_adapter',
-                        'intent' => $intent,
-                        'confidence' => min(1.0, max(0.0, $confidence)),
-                        'reasoning_short' => $reasoning !== '' ? $reasoning : null,
-                        'sub_intent' => $understanding->subIntent,
-                        'needs_clarification' => (bool) $understanding->needsClarification,
-                        'clarification_question' => $understanding->clarificationQuestion,
-                        'handoff_recommended' => (bool) $understanding->handoffRecommended,
-                        'uses_previous_context' => (bool) $understanding->usesPreviousContext,
-                        'used_legacy_intent_fallback' => $usedLegacyIntentFallback,
-                        'used_legacy_entity_fallback' => $usedLegacyEntityFallback,
-                        'understanding_source' => 'llm_first_understanding_with_crm_hints',
-                        'crm_hints_used' => true,
-                        'provider' => $runtimeMeta['provider'],
-                        'model_used' => $runtimeMeta['model'],
-                        'runtime_status' => $runtimeMeta['status'],
-                        'degraded_mode' => (bool) ($runtimeMeta['degraded_mode'] ?? false),
-                        'used_fallback_model' => (bool) ($runtimeMeta['used_fallback_model'] ?? false),
-                        'schema_valid' => (bool) ($runtimeMeta['schema_valid'] ?? true),
-                        'cache_hit' => (bool) ($runtimeMeta['cache_hit'] ?? false),
-                        'latency_ms' => $runtimeMeta['latency_ms'],
-                        'http_status' => $runtimeMeta['http_status'],
-                        'attempt' => $runtimeMeta['attempt'],
-                        'max_attempts' => $runtimeMeta['max_attempts'],
-                        'runtime_health' => $this->resolveRuntimeHealth($runtimeMeta),
-                    ],
-                    'grounding' => [
-                        'used_crm_facts' => $usedCrmFacts,
-                    ],
-                    'outcome' => [
-                        'final_decision' => 'understanding_prepared',
-                        'reply_action' => $understanding->needsClarification ? 'ask_clarification' : null,
-                        'handoff' => (bool) $understanding->handoffRecommended,
-                    ],
-                ],
+            'intent_result' => $finalIntentResult,
+            'entity_result' => $finalEntityResult,
+            'meta' => $meta,
+            'raw_understanding' => $this->rawUnderstandingSnapshot($understanding),
+            'normalized_understanding' => [
+                'intent_result' => $finalIntentResult,
+                'entity_result' => $finalEntityResult,
+            ],
+            'legacy_projection' => [
+                'intent_result' => $legacyIntentResult,
+                'entity_result' => $legacyEntityResult,
             ],
         ];
     }
 
     public function needsLegacyFallback(LlmUnderstandingResult $understanding): bool
     {
-        return $understanding->intent === IntentType::Unknown->value
-            && $understanding->confidence <= 0.0
-            && ! $understanding->handoffRecommended
-            && ! $this->hasMeaningfulEntities($understanding)
-            && $understanding->needsClarification;
+        if ($understanding->intent === '' || $understanding->intent === 'unknown') {
+            return true;
+        }
+
+        if ($understanding->confidence <= 0.20) {
+            return true;
+        }
+
+        if ($understanding->needsClarification && $understanding->clarificationQuestion === null) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function rawUnderstandingSnapshot(LlmUnderstandingResult $understanding): array
+    {
+        return [
+            'intent' => $understanding->intent,
+            'sub_intent' => $understanding->subIntent,
+            'confidence' => $understanding->confidence,
+            'uses_previous_context' => $understanding->usesPreviousContext,
+            'entities' => $understanding->entities,
+            'needs_clarification' => $understanding->needsClarification,
+            'clarification_question' => $understanding->clarificationQuestion,
+            'handoff_recommended' => $understanding->handoffRecommended,
+            'reasoning_summary' => $understanding->reasoningSummary,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $legacyIntentResult
+     * @param  array<string, mixed>  $normalizedRuntimeMeta
+     * @return array<string, mixed>
+     */
+    private function buildIntentResult(
+        LlmUnderstandingResult $understanding,
+        array $legacyIntentResult,
+        array $normalizedRuntimeMeta,
+        bool $usedLegacyFallback,
+    ): array {
+        $finalIntent = $this->resolveIntent($understanding, $legacyIntentResult, $usedLegacyFallback);
+
+        $finalConfidence = $usedLegacyFallback
+            ? min(1.0, max(0.0, (float) ($legacyIntentResult['confidence'] ?? $understanding->confidence)))
+            : min(1.0, max(0.0, $understanding->confidence));
+
+        $reasoningShort = $this->normalizeText(
+            $usedLegacyFallback
+                ? ($legacyIntentResult['reasoning_short'] ?? $understanding->reasoningSummary)
+                : $understanding->reasoningSummary
+        ) ?? 'Reasoning summary tidak tersedia.';
+
+        if ($usedLegacyFallback && ! str_contains(strtolower($reasoningShort), 'fallback')) {
+            $reasoningShort = 'Legacy fallback used. '.$reasoningShort;
+        }
+
+        return [
+            'intent' => $finalIntent,
+            'confidence' => $finalConfidence,
+            'reasoning_short' => $reasoningShort,
+            'source' => $usedLegacyFallback ? 'legacy_fallback' : 'llm_understanding',
+            'needs_clarification' => $understanding->needsClarification,
+            'clarification_question' => $understanding->clarificationQuestion,
+            'handoff_recommended' => $understanding->handoffRecommended,
+            'uses_previous_context' => $understanding->usesPreviousContext,
+            'runtime_health' => $this->deriveRuntimeHealth($normalizedRuntimeMeta),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $legacyEntityResult
+     * @return array<string, mixed>
+     */
+    private function buildEntityResult(
+        LlmUnderstandingResult $understanding,
+        array $legacyEntityResult,
+        bool $usedLegacyFallback,
+    ): array {
+        $selectedSeats = $this->seatList($understanding->entities->seatNumber);
+
+        $finalEntities = [
+            'customer_name' => $understanding->entities->passengerName,
+            'passenger_name' => $understanding->entities->passengerName,
+            'pickup_location' => $understanding->entities->origin,
+            'destination' => $understanding->entities->destination,
+            'departure_date' => $understanding->entities->travelDate,
+            'departure_time' => $understanding->entities->departureTime,
+            'passenger_count' => $understanding->entities->passengerCount,
+            'seat_number' => $understanding->entities->seatNumber,
+            'selected_seats' => $selectedSeats,
+            'payment_method' => $understanding->entities->paymentMethod,
+            'notes' => null,
+            'missing_fields' => $this->missingFields($understanding),
+        ];
+
+        if ($legacyEntityResult !== []) {
+            $finalEntities = $this->mergeLegacyEntities($finalEntities, $legacyEntityResult);
+        }
+
+        return [
+            ...$finalEntities,
+            '_meta' => [
+                'source' => $usedLegacyFallback ? 'legacy_fallback' : 'llm_understanding',
+                'legacy_entity_result_present' => $legacyEntityResult !== [],
+                'entity_key_count' => count(array_filter(
+                    $finalEntities,
+                    static fn ($value) => $value !== null && $value !== ''
+                )),
+            ],
+        ];
     }
 
     /**
@@ -157,9 +201,9 @@ class UnderstandingResultAdapterService
     private function resolveIntent(
         LlmUnderstandingResult $understanding,
         array $legacyIntentResult,
-        bool $usedLegacyIntentFallback,
+        bool $usedLegacyFallback,
     ): string {
-        if ($usedLegacyIntentFallback) {
+        if ($usedLegacyFallback) {
             $legacyIntent = trim((string) ($legacyIntentResult['intent'] ?? ''));
 
             if ($legacyIntent !== '') {
@@ -183,39 +227,12 @@ class UnderstandingResultAdapterService
     }
 
     /**
-     * @return array<string, mixed>
-     */
-    private function buildEntityResult(LlmUnderstandingResult $understanding): array
-    {
-        $selectedSeats = $this->seatList($understanding->entities->seatNumber);
-
-        return [
-            'customer_name' => $understanding->entities->passengerName,
-            'passenger_name' => $understanding->entities->passengerName,
-            'pickup_location' => $understanding->entities->origin,
-            'destination' => $understanding->entities->destination,
-            'departure_date' => $understanding->entities->travelDate,
-            'departure_time' => $understanding->entities->departureTime,
-            'passenger_count' => $understanding->entities->passengerCount,
-            'seat_number' => $understanding->entities->seatNumber,
-            'selected_seats' => $selectedSeats,
-            'payment_method' => $understanding->entities->paymentMethod,
-            'notes' => null,
-            'missing_fields' => $this->missingFields($understanding),
-        ];
-    }
-
-    /**
      * @param  array<string, mixed>  $entityResult
      * @param  array<string, mixed>  $legacyEntityResult
      * @return array<string, mixed>
      */
     private function mergeLegacyEntities(array $entityResult, array $legacyEntityResult): array
     {
-        if ($legacyEntityResult === []) {
-            return $entityResult;
-        }
-
         foreach ([
             'customer_name',
             'passenger_name',
@@ -298,17 +315,6 @@ class UnderstandingResultAdapterService
         )));
     }
 
-    private function hasMeaningfulEntities(LlmUnderstandingResult $understanding): bool
-    {
-        foreach ($understanding->entities->toArray() as $value) {
-            if (! $this->isBlank($value)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /**
      * @return array<int, string>
      */
@@ -317,46 +323,75 @@ class UnderstandingResultAdapterService
         $facts = [];
 
         if ($understanding->usesPreviousContext) {
-            $facts[] = 'crm.previous_context';
+            $facts[] = 'used_previous_context';
         }
 
         if ($understanding->handoffRecommended) {
-            $facts[] = 'crm.handoff_signal';
+            $facts[] = 'handoff_recommended';
         }
 
         if ($understanding->needsClarification) {
-            $facts[] = 'crm.clarification_signal';
+            $facts[] = 'needs_clarification';
         }
 
-        return array_values(array_unique($facts));
+        return array_values(array_unique(array_filter(
+            $facts,
+            static fn ($value) => is_string($value) && trim($value) !== ''
+        )));
     }
 
-    private function resolveTraceId(array ...$sources): string
+    /**
+     * @param  array<string, mixed>  $llmRuntimeMeta
+     * @return array<string, mixed>
+     */
+    private function normalizeRuntimeMeta(array $llmRuntimeMeta): array
     {
-        foreach ($sources as $source) {
-            foreach ([
-                $source['trace_id'] ?? null,
-                $source['_llm']['trace_id'] ?? null,
-                $source['meta']['trace_id'] ?? null,
-                $source['decision_trace']['trace_id'] ?? null,
-                $source['job_trace_id'] ?? null,
-            ] as $candidate) {
-                if (is_scalar($candidate) && trim((string) $candidate) !== '') {
-                    return trim((string) $candidate);
-                }
-            }
+        return [
+            'trace_id' => $this->normalizeText($llmRuntimeMeta['trace_id'] ?? null),
+            'provider' => $this->normalizeText($llmRuntimeMeta['provider'] ?? null),
+            'model' => $this->normalizeText($llmRuntimeMeta['model'] ?? ($llmRuntimeMeta['primary_model'] ?? null)),
+            'status' => $this->normalizeText($llmRuntimeMeta['status'] ?? null),
+            'degraded_mode' => (bool) ($llmRuntimeMeta['degraded_mode'] ?? false),
+            'schema_valid' => array_key_exists('schema_valid', $llmRuntimeMeta)
+                ? (bool) $llmRuntimeMeta['schema_valid']
+                : true,
+            'used_fallback_model' => (bool) ($llmRuntimeMeta['used_fallback_model'] ?? false),
+            'fallback_reason' => $this->normalizeText($llmRuntimeMeta['fallback_reason'] ?? null),
+            'task_key' => $this->normalizeText($llmRuntimeMeta['task_key'] ?? null),
+            'task_type' => $this->normalizeText($llmRuntimeMeta['task_type'] ?? null),
+            'understanding_mode' => $this->normalizeText($llmRuntimeMeta['understanding_mode'] ?? null),
+            'conversation_id' => $llmRuntimeMeta['conversation_id'] ?? null,
+            'message_id' => $llmRuntimeMeta['message_id'] ?? null,
+            'input_contract' => is_array($llmRuntimeMeta['input_contract'] ?? null)
+                ? $llmRuntimeMeta['input_contract']
+                : [],
+        ];
+    }
+
+    private function deriveRuntimeHealth(array $runtimeMeta): string
+    {
+        if (($runtimeMeta['status'] ?? null) === 'fallback') {
+            return 'fallback';
         }
 
-        return 'trace-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+        if (($runtimeMeta['schema_valid'] ?? true) === false) {
+            return 'schema_invalid';
+        }
+
+        if (($runtimeMeta['degraded_mode'] ?? false) === true) {
+            return 'degraded';
+        }
+
+        return 'healthy';
     }
 
     private function normalizeText(mixed $value): ?string
     {
-        if (! is_scalar($value)) {
+        if (! is_string($value) && ! is_numeric($value)) {
             return null;
         }
 
-        $normalized = trim((string) $value);
+        $normalized = trim(preg_replace('/\s+/u', ' ', (string) $value) ?? '');
 
         return $normalized !== '' ? $normalized : null;
     }
@@ -376,74 +411,5 @@ class UnderstandingResultAdapterService
         }
 
         return false;
-    }
-
-    /**
-     * @param  mixed  $value
-     * @return array<string, mixed>
-     */
-    private function normalizeRuntimeMeta(mixed $value): array
-    {
-        if (! is_array($value)) {
-            return [
-                'provider' => null,
-                'model' => null,
-                'status' => null,
-                'degraded_mode' => false,
-                'used_fallback_model' => false,
-                'schema_valid' => true,
-                'cache_hit' => false,
-                'latency_ms' => null,
-                'http_status' => null,
-                'attempt' => null,
-                'max_attempts' => null,
-                'fallback_reason' => null,
-                'error_message' => null,
-            ];
-        }
-
-        return [
-            'provider' => $this->normalizeText($value['provider'] ?? null),
-            'model' => $this->normalizeText($value['model'] ?? ($value['primary_model'] ?? null)),
-            'status' => $this->normalizeText($value['status'] ?? null),
-            'degraded_mode' => (bool) ($value['degraded_mode'] ?? false),
-            'used_fallback_model' => (bool) ($value['used_fallback_model'] ?? false),
-            'schema_valid' => array_key_exists('schema_valid', $value) ? (bool) $value['schema_valid'] : true,
-            'cache_hit' => (bool) ($value['cache_hit'] ?? false),
-            'latency_ms' => isset($value['latency_ms']) ? (int) $value['latency_ms'] : null,
-            'http_status' => isset($value['http_status']) ? (int) $value['http_status'] : null,
-            'attempt' => isset($value['attempt']) ? (int) $value['attempt'] : null,
-            'max_attempts' => isset($value['max_attempts']) ? (int) $value['max_attempts'] : null,
-            'fallback_reason' => $this->normalizeText($value['fallback_reason'] ?? null),
-            'error_message' => $this->normalizeText($value['error_message'] ?? null),
-        ];
-    }
-
-    /**
-     * @param  array<string, mixed>  $runtimeMeta
-     */
-    private function resolveRuntimeHealth(array $runtimeMeta): string
-    {
-        if (($runtimeMeta['status'] ?? null) === 'fallback') {
-            return 'fallback';
-        }
-
-        if (($runtimeMeta['schema_valid'] ?? true) === false) {
-            return 'schema_invalid';
-        }
-
-        if (($runtimeMeta['degraded_mode'] ?? false) === true) {
-            return 'degraded';
-        }
-
-        if (($runtimeMeta['used_fallback_model'] ?? false) === true) {
-            return 'fallback_model';
-        }
-
-        if (($runtimeMeta['status'] ?? null) === 'success') {
-            return 'healthy';
-        }
-
-        return 'unknown';
     }
 }

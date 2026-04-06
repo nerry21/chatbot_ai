@@ -121,33 +121,56 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         }
 
         $customer = $conversation->customer;
+
         $contextPayload = null;
-        $aiContext = [];
+
+        $aiContext = [
+            'job_trace_id' => WaLog::traceId(),
+            'conversation_id' => $conversation->id,
+            'message_id' => $message->id,
+            'pipeline_stage' => 'boot',
+        ];
+
         $knowledgeHits = [];
-        $policyGuardResult = ['meta' => []];
-        $hallucinationGuardResult = ['meta' => []];
+        $policyGuardResult = [
+            'intent_result' => [],
+            'entity_result' => [],
+            'meta' => [],
+        ];
+        $hallucinationGuardResult = [
+            'meta' => [],
+        ];
         $guardResult = [];
-        $ruleEvaluation = ['rule_hits' => [], 'actions' => []];
+        $ruleEvaluation = [
+            'rule_hits' => [],
+            'actions' => [],
+        ];
         $replyAuditSnapshot = [];
         $orchestrationSnapshot = [];
         $crmSnapshot = [];
         $summaryResult = ['summary' => ''];
+
         $replyResult = [
             'text' => '',
             'is_fallback' => false,
             'used_knowledge' => false,
             'used_faq' => false,
+            'meta' => [],
         ];
+
         $finalReply = [
             'text' => '',
             'is_fallback' => false,
             'meta' => [],
         ];
+
         $intentResult = [
             'intent' => IntentType::Unknown->value,
             'confidence' => 0.0,
             'reasoning_short' => 'Learning signal default state.',
+            'runtime_health' => 'unknown',
         ];
+
         $entityResult = [];
         $understandingRuntimeMeta = [];
         $booking = null;
@@ -237,6 +260,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             }
 
             // ── 2. Build base AI context ────────────────────────────────────
+            $aiContext['pipeline_stage'] = 'context_loading';
+
             $contextPayload = $contextLoader->load($conversation, $message);
             $messageText = $contextPayload->latestMessageText;
 
@@ -251,9 +276,15 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             );
 
             $contextPayload = $contextPayload->withCrmContext($crmSnapshot);
-            $aiContext = $contextPayload->toAiContext();
-            $aiContext['crm_context'] = $crmSnapshot;
-            $aiContext['understanding_mode'] = 'llm_first_with_crm_hints_only';
+
+            $aiContext = array_merge($contextPayload->toAiContext(), [
+                'job_trace_id' => WaLog::traceId(),
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'pipeline_stage' => 'context_loaded',
+                'crm_context' => $crmSnapshot,
+                'understanding_mode' => 'llm_first_with_crm_hints_only',
+            ]);
 
             // ── 2.5 Knowledge retrieval (Tahap 10) ──────────────────────────
             // Fetch once, reuse across all AI steps.
@@ -268,80 +299,36 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             $aiContext['knowledge_hint'] = $knowledgeHint;
 
             // ── 3. LLM-first understanding ─────────────────────────────────
-            $stepStart = (int) round(microtime(true) * 1000);
-            WaLog::debug('[Job:ProcessIncoming] AI:understanding START', [
-                'conversation_id' => $conversation->id,
-                'message_preview' => mb_substr($messageText, 0, 60),
-                'knowledge_hits' => count($knowledgeHits),
-                'understanding_mode' => 'llm_first_with_crm_hints_only',
-            ]);
-            $understandingResult = $understandingEngine->understandFromContext(
+            $aiContext['pipeline_stage'] = 'understanding';
+
+            [$understandingResult, $understandingRuntimeMeta] = $this->runUnderstandingStage(
+                conversation: $conversation,
+                messageText: $messageText,
+                knowledgeHits: $knowledgeHits,
                 contextPayload: $contextPayload,
-                allowedIntents: IntentType::cases(),
+                understandingEngine: $understandingEngine,
             );
-            $understandingRuntimeMeta = $understandingEngine->lastRuntimeMeta();
+
             $aiContext['understanding_result'] = $understandingResult->toArray();
             $aiContext['understanding_runtime'] = $understandingRuntimeMeta;
 
-            WaLog::info('[Job:ProcessIncoming] AI:understanding END', [
-                'conversation_id' => $conversation->id,
-                'intent' => $understandingResult->intent,
-                'confidence' => $understandingResult->confidence,
-                'needs_clarification' => $understandingResult->needsClarification,
-                'handoff_recommended' => $understandingResult->handoffRecommended,
-                'understanding_mode' => 'llm_first_with_crm_hints_only',
-                'llm_model' => $understandingRuntimeMeta['model'] ?? null,
-                'llm_status' => $understandingRuntimeMeta['status'] ?? null,
-                'llm_degraded_mode' => $understandingRuntimeMeta['degraded_mode'] ?? null,
-                'llm_schema_valid' => $understandingRuntimeMeta['schema_valid'] ?? null,
-                'llm_used_fallback_model' => $understandingRuntimeMeta['used_fallback_model'] ?? null,
-                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
-            ]);
+            // ── 3.5 Adapt understanding + legacy fallback if required ──────
+            $aiContext['pipeline_stage'] = 'understanding_adaptation';
 
-            // ── 3.5 FAQ resolver (Tahap 10) ─────────────────────────────────
-            // Runs after intent is known so caller has full context.
-            // FaqResolverService is conservative: only matches when score is very high.
-            $legacyIntentResult = [];
-            $legacyEntityResult = [];
-
-            if ($understandingAdapter->needsLegacyFallback($understandingResult)) {
-                WaLog::warning('[Job:ProcessIncoming] Understanding fallback triggered - using legacy backup', [
-                    'conversation_id' => $conversation->id,
-                    'message_id' => $message->id,
-                ]);
-
-                $stepStart = (int) round(microtime(true) * 1000);
-                $legacyIntentResult = $intentClassifier->classify($aiContext);
-                WaLog::info('[Job:ProcessIncoming] AI:intent fallback END', [
-                    'conversation_id' => $conversation->id,
-                    'intent' => $legacyIntentResult['intent'] ?? null,
-                    'confidence' => $legacyIntentResult['confidence'] ?? null,
-                    'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
-                ]);
-
-                $stepStart = (int) round(microtime(true) * 1000);
-                $legacyEntityResult = $entityExtractor->extract(array_merge($aiContext, [
-                    'intent_result' => $legacyIntentResult,
-                ]));
-                WaLog::info('[Job:ProcessIncoming] AI:extraction fallback END', [
-                    'conversation_id' => $conversation->id,
-                    'entity_keys' => array_keys($legacyEntityResult),
-                    'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
-                ]);
-            }
-
-            $adaptedUnderstanding = $understandingAdapter->adapt(
-                understanding: $understandingResult,
-                legacyIntentResult: $legacyIntentResult,
-                legacyEntityResult: $legacyEntityResult,
-                llmRuntimeMeta: $understandingRuntimeMeta,
+            [$intentResult, $entityResult, $adaptedUnderstanding] = $this->adaptUnderstandingStage(
+                conversation: $conversation,
+                message: $message,
+                aiContext: $aiContext,
+                understandingResult: $understandingResult,
+                understandingRuntimeMeta: $understandingRuntimeMeta,
+                understandingAdapter: $understandingAdapter,
+                intentClassifier: $intentClassifier,
+                entityExtractor: $entityExtractor,
             );
 
-            $intentResult = $adaptedUnderstanding['intent_result'];
-            $entityResult = $adaptedUnderstanding['entity_result'];
             $aiContext['intent_result'] = $intentResult;
             $aiContext['entity_result'] = $entityResult;
-            $aiContext['understanding_meta'] = $adaptedUnderstanding['meta'];
+            $aiContext['understanding_meta'] = $adaptedUnderstanding['meta'] ?? [];
             $aiContext['understanding_runtime'] = $adaptedUnderstanding['meta']['llm_runtime'] ?? $understandingRuntimeMeta;
 
             WaLog::debug('[Job:ProcessIncoming] AI:understanding ADAPTED', [
@@ -357,48 +344,32 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'llm_used_fallback_model' => $intentResult['used_fallback_model'] ?? null,
             ]);
 
-            $crmSnapshot = $crmSnapshotService->build(
+            $aiContext['pipeline_stage'] = 'policy_and_faq';
+
+            [$intentResult, $entityResult, $policyGuardResult, $policyStageMeta] = $this->runPolicyAndFaqStage(
+                conversation: $conversation,
+                message: $message,
+                messageText: $messageText,
+                contextPayload: $contextPayload,
                 customer: $customer,
-                conversation: $conversation,
-                booking: null,
-                contextPayload: $contextPayload->toArray(),
                 intentResult: $intentResult,
                 entityResult: $entityResult,
-                bookingDecision: null,
+                crmSnapshot: $crmSnapshot,
+                knowledgeHits: $knowledgeHits,
+                policyGuard: $policyGuard,
+                crmSnapshotService: $crmSnapshotService,
+                faqResolver: $faqResolver,
             );
+
+            $crmSnapshot = $policyStageMeta['crm_snapshot'] ?? $crmSnapshot;
+            $faqResult = $policyStageMeta['faq_result'] ?? [];
+
             $aiContext['crm_context'] = $crmSnapshot;
-
-            $faqResult = $faqResolver->resolve($messageText, $knowledgeHits);
             $aiContext['faq_result'] = $faqResult;
-            $aiContext['understanding_runtime'] = $adaptedUnderstanding['meta']['llm_runtime'] ?? $understandingRuntimeMeta;
-
-            $policyGuardResult = $policyGuard->guard(
-                conversation: $conversation,
-                intentResult: $intentResult,
-                entityResult: $entityResult,
-                understandingResult: $aiContext['understanding_result'] ?? [],
-                resolvedContext: $contextPayload->resolvedContext,
-                conversationState: $contextPayload->conversationState,
-                crmContext: $crmSnapshot,
-            );
-            $intentResult = $policyGuardResult['intent_result'];
-            $entityResult = $policyGuardResult['entity_result'];
             $aiContext['intent_result'] = $intentResult;
             $aiContext['entity_result'] = $entityResult;
-            $aiContext['policy_guard'] = $policyGuardResult['meta'];
-            if ($faqResult['matched'] ?? false) {
-                $updated = AiLog::where('conversation_id', $conversation->id)
-                    ->where('message_id', $message->id)
-                    ->whereIn('task_type', ['reply_generation', 'grounded_response_composition'])
-                    ->latest()
-                    ->limit(1)
-                    ->update(['quality_label' => 'faq_direct']);
-                WaLog::info('[Job:ProcessIncoming] FAQ matched — LLM reply may be skipped', [
-                    'conversation_id' => $conversation->id,
-                    'faq_id' => $faqResult['id'] ?? null,
-                    'score' => $faqResult['score'] ?? null,
-                ]);
-            }
+            $aiContext['policy_guard'] = $policyGuardResult['meta'] ?? [];
+            $aiContext['understanding_runtime'] = $adaptedUnderstanding['meta']['llm_runtime'] ?? $understandingRuntimeMeta;
 
             // ── 4. Entity payload prepared from understanding ───────────────
             $stepStart = (int) round(microtime(true) * 1000);
@@ -443,6 +414,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             ]);
 
             // ── 7. Rule-guided validation + business action selection ───────
+            $aiContext['pipeline_stage'] = 'business_action_selection';
+
             $flowDecision = $bookingFlow->handle(
                 conversation : $conversation,
                 customer     : $customer,
@@ -516,6 +489,16 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             } else {
                 $replyResult = $this->replyResultFromFinalReply($finalReply);
             }
+
+            $aiContext['pipeline_stage'] = 'reply_orchestration';
+            $aiContext['pre_orchestration'] = [
+                'intent_result' => $intentResult,
+                'entity_result' => $entityResult,
+                'reply_result' => $replyResult,
+                'booking_decision' => $bookingDecision,
+                'policy_guard' => $policyGuardResult['meta'] ?? [],
+                'faq_result' => $faqResult ?? [],
+            ];
 
             $orchestratedReply = $replyOrchestrator->orchestrate(array_merge($aiContext, [
                 'intent_result' => $intentResult,
@@ -621,6 +604,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 finalReply: $finalReply,
             );
 
+            $aiContext['pipeline_stage'] = 'final_reply_hardening';
+
             $finalReply = $replyOrchestrator->finalizeReplyWithHardening(
                 replyDraft: $finalReply,
                 context: $aiContext,
@@ -671,7 +656,15 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 orchestrationSnapshot: $orchestrationSnapshot,
                 finalReply: $finalReply,
                 crmSnapshot: $crmSnapshot,
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                understandingRuntime: is_array($aiContext['understanding_runtime'] ?? null) ? $aiContext['understanding_runtime'] : [],
+                bookingDecision: $bookingDecision,
+                faqResult: $faqResult ?? null,
             );
+
+            $orchestrationSnapshot['decision_trace_id'] = $aiContext['decision_trace']['trace_id'] ?? WaLog::traceId();
+            $orchestrationSnapshot['decision_trace_version'] = $aiContext['decision_trace']['version'] ?? 'job_trace_v2';
 
             $outboundMessage = $this->persistResults(
                 conversation        : $conversation,
@@ -767,20 +760,30 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 snapshot: $orchestrationSnapshot,
             );
 
+            $aiContext['pipeline_stage'] = 'crm_writeback';
+
+            $crmWritebackSnapshot = $this->buildCrmWritebackSnapshot(
+                conversation: $conversation,
+                message: $message,
+                crmSnapshot: $crmSnapshot,
+                orchestrationSnapshot: $orchestrationSnapshot,
+                decisionTrace: is_array($aiContext['decision_trace'] ?? null) ? $aiContext['decision_trace'] : [],
+                understandingRuntime: is_array($aiContext['understanding_runtime'] ?? null) ? $aiContext['understanding_runtime'] : [],
+                policyGuardMeta: is_array($policyGuardResult['meta'] ?? null) ? $policyGuardResult['meta'] : [],
+                hallucinationGuardMeta: is_array($hallucinationGuardResult['meta'] ?? null) ? $hallucinationGuardResult['meta'] : [],
+                intentResult: $intentResult,
+                entityResult: $entityResult,
+                bookingDecision: $bookingDecision,
+                faqResult: $faqResult ?? null,
+            );
+
             $this->runCrmOperations(
                 conversation   : $conversation,
                 booking        : $booking,
                 intentResult   : $intentResult,
                 summaryResult  : $summaryResult,
                 finalReply     : $finalReply,
-                contextSnapshot: [
-                    'crm_context' => $crmSnapshot,
-                    'orchestration' => $orchestrationSnapshot,
-                    'decision_trace' => $aiContext['decision_trace'] ?? [],
-                    'job_trace_id' => WaLog::traceId(),
-                    'message_id' => $message->id,
-                    'conversation_id' => $conversation->id,
-                ],
+                contextSnapshot: $crmWritebackSnapshot,
                 crmWriteback   : $crmWriteback,
             );
 
@@ -789,6 +792,8 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             WaLog::info('[Job:ProcessIncoming] Pipeline complete', [
                 'conversation_id' => $conversation->id,
                 'message_id' => $message->id,
+                'job_trace_id' => WaLog::traceId(),
+                'decision_trace_id' => $aiContext['decision_trace']['trace_id'] ?? null,
                 'intent' => $intentResult['intent'],
                 'confidence' => $intentResult['confidence'],
                 'booking_action' => $bookingDecision['action'] ?? null,
@@ -806,9 +811,12 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         } catch (\Throwable $e) {
             $durationMs = (int) round(microtime(true) * 1000) - $jobStartMs;
 
+            $aiContext['pipeline_stage'] = $aiContext['pipeline_stage'] ?? 'unknown_failure_stage';
+
             WaLog::error('[Job:ProcessIncoming] Pipeline error — emergency fallback triggered', [
                 'conversation_id' => $this->conversationId,
                 'message_id' => $this->messageId,
+                'pipeline_stage' => $aiContext['pipeline_stage'] ?? null,
                 'error' => $e->getMessage(),
                 'file' => $e->getFile().':'.$e->getLine(),
                 'duration_ms' => $durationMs,
@@ -872,6 +880,178 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     // -------------------------------------------------------------------------
     // Tahap 10: Knowledge helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * @param  array<int, array<string, mixed>>  $knowledgeHits
+     * @return array{0: mixed, 1: array<string, mixed>}
+     */
+    private function runUnderstandingStage(
+        Conversation $conversation,
+        string $messageText,
+        array $knowledgeHits,
+        \App\Data\Chatbot\ConversationContextPayload $contextPayload,
+        LlmUnderstandingEngine $understandingEngine,
+    ): array {
+        $stepStart = (int) round(microtime(true) * 1000);
+
+        WaLog::debug('[Job:ProcessIncoming] AI:understanding START', [
+            'conversation_id' => $conversation->id,
+            'message_preview' => mb_substr($messageText, 0, 60),
+            'knowledge_hits' => count($knowledgeHits),
+            'understanding_mode' => 'llm_first_with_crm_hints_only',
+        ]);
+
+        $understandingResult = $understandingEngine->understandFromContext(
+            contextPayload: $contextPayload,
+            allowedIntents: IntentType::cases(),
+        );
+
+        $runtimeMeta = $understandingEngine->lastRuntimeMeta();
+
+        WaLog::info('[Job:ProcessIncoming] AI:understanding END', [
+            'conversation_id' => $conversation->id,
+            'intent' => $understandingResult->intent,
+            'confidence' => $understandingResult->confidence,
+            'needs_clarification' => $understandingResult->needsClarification,
+            'handoff_recommended' => $understandingResult->handoffRecommended,
+            'understanding_mode' => 'llm_first_with_crm_hints_only',
+            'llm_model' => $runtimeMeta['model'] ?? null,
+            'llm_status' => $runtimeMeta['status'] ?? null,
+            'llm_degraded_mode' => $runtimeMeta['degraded_mode'] ?? null,
+            'llm_schema_valid' => $runtimeMeta['schema_valid'] ?? null,
+            'llm_used_fallback_model' => $runtimeMeta['used_fallback_model'] ?? null,
+            'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
+        ]);
+
+        return [$understandingResult, $runtimeMeta];
+    }
+
+    /**
+     * @param  array<string, mixed>  $aiContext
+     * @param  array<string, mixed>  $understandingRuntimeMeta
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>, 2: array<string, mixed>}
+     */
+    private function adaptUnderstandingStage(
+        Conversation $conversation,
+        ConversationMessage $message,
+        array $aiContext,
+        mixed $understandingResult,
+        array $understandingRuntimeMeta,
+        UnderstandingResultAdapterService $understandingAdapter,
+        IntentClassifierService $intentClassifier,
+        EntityExtractorService $entityExtractor,
+    ): array {
+        $legacyIntentResult = [];
+        $legacyEntityResult = [];
+
+        if ($understandingAdapter->needsLegacyFallback($understandingResult)) {
+            WaLog::warning('[Job:ProcessIncoming] Understanding fallback triggered - using legacy backup', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+            ]);
+
+            $stepStart = (int) round(microtime(true) * 1000);
+            $legacyIntentResult = $intentClassifier->classify($aiContext);
+            WaLog::info('[Job:ProcessIncoming] AI:intent fallback END', [
+                'conversation_id' => $conversation->id,
+                'intent' => $legacyIntentResult['intent'] ?? null,
+                'confidence' => $legacyIntentResult['confidence'] ?? null,
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
+            ]);
+
+            $stepStart = (int) round(microtime(true) * 1000);
+            $legacyEntityResult = $entityExtractor->extract(array_merge($aiContext, [
+                'intent_result' => $legacyIntentResult,
+            ]));
+            WaLog::info('[Job:ProcessIncoming] AI:extraction fallback END', [
+                'conversation_id' => $conversation->id,
+                'entity_keys' => array_keys($legacyEntityResult),
+                'duration_ms' => (int) round(microtime(true) * 1000) - $stepStart,
+            ]);
+        }
+
+        $adaptedUnderstanding = $understandingAdapter->adapt(
+            understanding: $understandingResult,
+            legacyIntentResult: $legacyIntentResult,
+            legacyEntityResult: $legacyEntityResult,
+            llmRuntimeMeta: $understandingRuntimeMeta,
+        );
+
+        return [
+            $adaptedUnderstanding['intent_result'] ?? [],
+            $adaptedUnderstanding['entity_result'] ?? [],
+            $adaptedUnderstanding,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $entityResult
+     * @param  array<string, mixed>  $crmSnapshot
+     * @param  array<int, array<string, mixed>>  $knowledgeHits
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>, 2: array<string, mixed>, 3: array<string, mixed>}
+     */
+    private function runPolicyAndFaqStage(
+        Conversation $conversation,
+        ConversationMessage $message,
+        string $messageText,
+        \App\Data\Chatbot\ConversationContextPayload $contextPayload,
+        Customer $customer,
+        array $intentResult,
+        array $entityResult,
+        array $crmSnapshot,
+        array $knowledgeHits,
+        PolicyGuardService $policyGuard,
+        CrmOrchestrationSnapshotService $crmSnapshotService,
+        FaqResolverService $faqResolver,
+    ): array {
+        $updatedCrmSnapshot = $crmSnapshotService->build(
+            customer: $customer,
+            conversation: $conversation,
+            booking: null,
+            contextPayload: $contextPayload->toArray(),
+            intentResult: $intentResult,
+            entityResult: $entityResult,
+            bookingDecision: null,
+        );
+
+        $faqResult = $faqResolver->resolve($messageText, $knowledgeHits);
+
+        $policyGuardResult = $policyGuard->guard(
+            conversation: $conversation,
+            intentResult: $intentResult,
+            entityResult: $entityResult,
+            understandingResult: [],
+            resolvedContext: $contextPayload->resolvedContext,
+            conversationState: $contextPayload->conversationState,
+            crmContext: $updatedCrmSnapshot,
+        );
+
+        if ($faqResult['matched'] ?? false) {
+            AiLog::where('conversation_id', $conversation->id)
+                ->where('message_id', $message->id)
+                ->whereIn('task_type', ['reply_generation', 'grounded_response_composition'])
+                ->latest()
+                ->limit(1)
+                ->update(['quality_label' => 'faq_direct']);
+
+            WaLog::info('[Job:ProcessIncoming] FAQ matched — LLM reply may be skipped', [
+                'conversation_id' => $conversation->id,
+                'faq_id' => $faqResult['id'] ?? null,
+                'score' => $faqResult['score'] ?? null,
+            ]);
+        }
+
+        return [
+            $policyGuardResult['intent_result'] ?? $intentResult,
+            $policyGuardResult['entity_result'] ?? $entityResult,
+            $policyGuardResult,
+            [
+                'crm_snapshot' => $updatedCrmSnapshot,
+                'faq_result' => $faqResult,
+            ],
+        ];
+    }
 
     /**
      * Fetch knowledge articles relevant to the current message.
@@ -980,6 +1160,67 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
     // CRM layer
     // -------------------------------------------------------------------------
 
+    /**
+     * @param  array<string, mixed>  $crmSnapshot
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @param  array<string, mixed>  $decisionTrace
+     * @param  array<string, mixed>  $understandingRuntime
+     * @param  array<string, mixed>  $policyGuardMeta
+     * @param  array<string, mixed>  $hallucinationGuardMeta
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $entityResult
+     * @param  array<string, mixed>|null  $bookingDecision
+     * @param  array<string, mixed>|null  $faqResult
+     * @return array<string, mixed>
+     */
+    private function buildCrmWritebackSnapshot(
+        Conversation $conversation,
+        ConversationMessage $message,
+        array $crmSnapshot,
+        array $orchestrationSnapshot,
+        array $decisionTrace,
+        array $understandingRuntime,
+        array $policyGuardMeta,
+        array $hallucinationGuardMeta,
+        array $intentResult,
+        array $entityResult,
+        ?array $bookingDecision = null,
+        ?array $faqResult = null,
+    ): array {
+        return [
+            'job_trace_id' => WaLog::traceId(),
+            'conversation_id' => $conversation->id,
+            'message_id' => $message->id,
+            'pipeline_stage' => 'crm_writeback',
+            'crm_context' => $crmSnapshot,
+            'orchestration' => $orchestrationSnapshot,
+            'decision_trace' => $decisionTrace,
+            'understanding_runtime' => $understandingRuntime,
+            'policy_guard' => $policyGuardMeta,
+            'hallucination_guard' => $hallucinationGuardMeta,
+            'intent_result' => [
+                'intent' => $intentResult['intent'] ?? null,
+                'confidence' => $intentResult['confidence'] ?? null,
+                'reasoning_short' => $intentResult['reasoning_short'] ?? null,
+                'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
+                'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
+            ],
+            'entity_result' => [
+                'keys' => array_values(array_keys($entityResult)),
+                'count' => count($entityResult),
+            ],
+            'booking_decision' => [
+                'action' => $bookingDecision['action'] ?? null,
+                'status' => $bookingDecision['status'] ?? null,
+            ],
+            'faq_result' => [
+                'matched' => (bool) ($faqResult['matched'] ?? false),
+                'id' => $faqResult['id'] ?? null,
+                'score' => $faqResult['score'] ?? null,
+            ],
+        ];
+    }
+
     private function runCrmOperations(
         Conversation $conversation,
         ?BookingRequest $booking,
@@ -990,6 +1231,12 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         CRMWritebackService $crmWriteback,
     ): void {
         if (! config('chatbot.crm.enabled', true)) {
+            WaLog::info('[Job:ProcessIncoming] CRM writeback skipped — disabled by config', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $contextSnapshot['message_id'] ?? null,
+                'job_trace_id' => $contextSnapshot['job_trace_id'] ?? null,
+            ]);
+
             return;
         }
 
@@ -1007,6 +1254,9 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'conversation_id' => $conversation->id,
                 'message_id' => $contextSnapshot['message_id'] ?? null,
                 'job_trace_id' => $contextSnapshot['job_trace_id'] ?? null,
+                'pipeline_stage' => $contextSnapshot['pipeline_stage'] ?? null,
+                'intent' => $contextSnapshot['intent_result']['intent'] ?? ($intentResult['intent'] ?? null),
+                'intent_confidence' => $contextSnapshot['intent_result']['confidence'] ?? ($intentResult['confidence'] ?? null),
                 'result_status' => $result['status'] ?? null,
                 'lead_stage' => $result['lead_stage'] ?? null,
                 'needs_escalation' => $result['needs_escalation'] ?? false,
@@ -1014,12 +1264,21 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 'contact_sync' => $result['contact_sync']['status'] ?? null,
                 'summary_sync' => $result['summary_sync']['status'] ?? null,
                 'decision_note_sync' => $result['decision_note_sync']['status'] ?? null,
-                'decision_trace_id' => $result['decision_trace']['trace_id'] ?? null,
+                'escalation_sync' => $result['escalation_sync']['status'] ?? null,
+                'decision_trace_id' => $result['decision_trace']['trace_id'] ?? ($contextSnapshot['decision_trace']['trace_id'] ?? null),
+                'understanding_model' => $contextSnapshot['understanding_runtime']['model'] ?? null,
+                'understanding_status' => $contextSnapshot['understanding_runtime']['status'] ?? null,
+                'policy_action' => $contextSnapshot['policy_guard']['action'] ?? null,
+                'hallucination_action' => $contextSnapshot['hallucination_guard']['action'] ?? null,
+                'crm_context_sections' => $contextSnapshot['decision_trace']['crm']['context_sections'] ?? [],
             ]);
         } catch (\Throwable $e) {
             WaLog::error('[Job:ProcessIncoming] CRM integrated writeback failed (non-fatal)', [
                 'conversation_id' => $conversation->id,
+                'message_id' => $contextSnapshot['message_id'] ?? null,
                 'job_trace_id' => $contextSnapshot['job_trace_id'] ?? null,
+                'pipeline_stage' => $contextSnapshot['pipeline_stage'] ?? null,
+                'decision_trace_id' => $contextSnapshot['decision_trace']['trace_id'] ?? null,
                 'error' => $e->getMessage(),
                 'file' => $e->getFile().':'.$e->getLine(),
             ]);
@@ -1165,24 +1424,74 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
         array $orchestrationSnapshot = [],
         array $finalReply = [],
         array $crmSnapshot = [],
+        array $intentResult = [],
+        array $entityResult = [],
+        array $understandingRuntime = [],
+        ?array $bookingDecision = null,
+        ?array $faqResult = null,
     ): array {
         $replyMeta = is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [];
 
+        $crmContextSections = array_keys(array_filter(
+            $crmSnapshot,
+            static fn (mixed $value): bool => is_array($value) ? $value !== [] : ! empty($value)
+        ));
+
+        $usedCrmFacts = is_array($replyMeta['used_crm_facts'] ?? null)
+            ? array_values(array_filter($replyMeta['used_crm_facts'], static fn ($item) => is_scalar($item) && trim((string) $item) !== ''))
+            : [];
+
         return [
+            'trace_id' => WaLog::traceId(),
+            'version' => 'job_trace_v2',
+            'intent' => [
+                'name' => $intentResult['intent'] ?? null,
+                'confidence' => isset($intentResult['confidence']) ? (float) $intentResult['confidence'] : null,
+                'reasoning_short' => $intentResult['reasoning_short'] ?? null,
+                'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
+                'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
+            ],
+            'entities' => [
+                'keys' => array_values(array_keys($entityResult)),
+                'count' => count($entityResult),
+            ],
+            'understanding_runtime' => [
+                'provider' => $understandingRuntime['provider'] ?? null,
+                'model' => $understandingRuntime['model'] ?? null,
+                'status' => $understandingRuntime['status'] ?? null,
+                'degraded_mode' => $understandingRuntime['degraded_mode'] ?? null,
+                'schema_valid' => $understandingRuntime['schema_valid'] ?? null,
+                'used_fallback_model' => $understandingRuntime['used_fallback_model'] ?? null,
+                'task_key' => $understandingRuntime['task_key'] ?? null,
+                'task_type' => $understandingRuntime['task_type'] ?? null,
+            ],
             'policy_guard' => $policyGuardMeta,
             'hallucination_guard' => $hallucinationGuardMeta,
-            'orchestration' => $orchestrationSnapshot,
+            'orchestration' => [
+                'reply_source' => $orchestrationSnapshot['reply_source'] ?? null,
+                'reply_action' => $orchestrationSnapshot['reply_action'] ?? null,
+                'reply_force_handoff' => (bool) ($orchestrationSnapshot['reply_force_handoff'] ?? false),
+                'needs_human' => (bool) ($orchestrationSnapshot['needs_human'] ?? false),
+                'reply_guard_action' => $orchestrationSnapshot['reply_guard_action'] ?? null,
+                'used_faq' => (bool) ($faqResult['matched'] ?? false),
+            ],
+            'booking_decision' => [
+                'action' => $bookingDecision['action'] ?? null,
+                'status' => $bookingDecision['status'] ?? null,
+            ],
             'final_reply' => [
                 'source' => $replyMeta['source'] ?? null,
                 'action' => $replyMeta['action'] ?? null,
                 'force_handoff' => (bool) ($replyMeta['force_handoff'] ?? false),
                 'is_fallback' => (bool) ($finalReply['is_fallback'] ?? false),
                 'grounding_source' => $replyMeta['grounding_source'] ?? null,
-                'used_crm_facts' => is_array($replyMeta['used_crm_facts'] ?? null)
-                    ? array_values($replyMeta['used_crm_facts'])
-                    : [],
+                'hallucination_risk_level' => $replyMeta['hallucination_risk_level'] ?? null,
+                'used_crm_facts' => $usedCrmFacts,
             ],
-            'crm_context_sections' => array_keys(array_filter($crmSnapshot, static fn (mixed $value): bool => is_array($value) ? $value !== [] : ! empty($value))),
+            'crm' => [
+                'context_present' => ! empty($crmSnapshot),
+                'context_sections' => $crmContextSections,
+            ],
         ];
     }
 

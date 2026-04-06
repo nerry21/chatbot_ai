@@ -8,6 +8,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Support\WaLog;
 
 class HubSpotService
 {
@@ -26,6 +27,157 @@ class HubSpotService
     public function isEnabled(): bool
     {
         return $this->enabled && $this->token !== '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>
+     */
+    private function providerResult(
+        string $status,
+        ?string $reason = null,
+        array $details = [],
+    ): array {
+        return [
+            'status' => $status,
+            'reason' => $reason,
+            'details' => $details,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function successResult(?string $reason = null, array $details = []): array
+    {
+        return $this->providerResult('success', $reason, $details);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function skippedResult(?string $reason = null, array $details = []): array
+    {
+        return $this->providerResult('skipped', $reason, $details);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function retryableFailureResult(?string $reason = null, array $details = []): array
+    {
+        return $this->providerResult('retryable_failure', $reason, $details);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function nonRetryableFailureResult(?string $reason = null, array $details = []): array
+    {
+        return $this->providerResult('non_retryable_failure', $reason, $details);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function classifyHubSpotException(\Throwable $e): array
+    {
+        $message = strtolower($e->getMessage());
+
+        $retryableNeedles = [
+            'timeout',
+            'timed out',
+            'temporarily unavailable',
+            'temporary failure',
+            'rate limit',
+            '429',
+            '502',
+            '503',
+            '504',
+            'connection reset',
+            'could not connect',
+            'network',
+        ];
+
+        foreach ($retryableNeedles as $needle) {
+            if (str_contains($message, $needle)) {
+                return [
+                    'status' => 'retryable_failure',
+                    'error_type' => 'retryable_provider_error',
+                ];
+            }
+        }
+
+        $invalidPropertyNeedles = [
+            'property does not exist',
+            'invalid property',
+            'unknown property',
+        ];
+
+        foreach ($invalidPropertyNeedles as $needle) {
+            if (str_contains($message, $needle)) {
+                return [
+                    'status' => 'non_retryable_failure',
+                    'error_type' => 'invalid_property',
+                ];
+            }
+        }
+
+        $authNeedles = [
+            '401',
+            '403',
+            'unauthorized',
+            'forbidden',
+            'invalid authentication',
+            'access denied',
+        ];
+
+        foreach ($authNeedles as $needle) {
+            if (str_contains($message, $needle)) {
+                return [
+                    'status' => 'non_retryable_failure',
+                    'error_type' => 'auth_error',
+                ];
+            }
+        }
+
+        $validationNeedles = [
+            'validation',
+            'invalid input',
+            'bad request',
+            '400',
+        ];
+
+        foreach ($validationNeedles as $needle) {
+            if (str_contains($message, $needle)) {
+                return [
+                    'status' => 'non_retryable_failure',
+                    'error_type' => 'validation_error',
+                ];
+            }
+        }
+
+        return [
+            'status' => 'non_retryable_failure',
+            'error_type' => 'unknown_provider_error',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>
+     */
+    private function finalizeProviderResult(
+        string $status,
+        ?string $reason = null,
+        array $details = [],
+    ): array {
+        return match ($status) {
+            'success' => $this->successResult($reason, $details),
+            'skipped' => $this->skippedResult($reason, $details),
+            'retryable_failure' => $this->retryableFailureResult($reason, $details),
+            default => $this->nonRetryableFailureResult($reason, $details),
+        };
     }
 
     /**
@@ -62,11 +214,23 @@ class HubSpotService
         } catch (ConnectionException $e) {
             Log::error('[HubSpot] upsertContact connection exception', ['error' => $e->getMessage()]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return [
+                'status' => 'retryable_failure',
+                'error' => $e->getMessage(),
+                'reason_code' => 'connection_exception',
+                'retryable' => true,
+            ];
         } catch (\Throwable $e) {
             Log::error('[HubSpot] upsertContact exception', ['error' => $e->getMessage()]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            $classified = $this->classifyHubSpotException($e);
+
+            return [
+                'status' => $classified['status'] ?? 'retryable_failure',
+                'error' => $e->getMessage(),
+                'reason_code' => $classified['error_type'] ?? 'unexpected_exception',
+                'retryable' => ($classified['status'] ?? 'retryable_failure') === 'retryable_failure',
+            ];
         }
     }
 
@@ -118,14 +282,26 @@ class HubSpotService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return [
+                'status' => 'retryable_failure',
+                'error' => $e->getMessage(),
+                'reason_code' => 'connection_exception',
+                'retryable' => true,
+            ];
         } catch (\Throwable $e) {
             Log::error('[HubSpot] getContactById exception', [
                 'contact_id' => $contactId,
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            $classified = $this->classifyHubSpotException($e);
+
+            return [
+                'status' => $classified['status'] ?? 'non_retryable_failure',
+                'error' => $e->getMessage(),
+                'reason_code' => $classified['error_type'] ?? 'unexpected_exception',
+                'retryable' => ($classified['status'] ?? 'non_retryable_failure') === 'retryable_failure',
+            ];
         }
     }
 
@@ -139,20 +315,20 @@ class HubSpotService
         }
 
         $externalContactId = trim($externalContactId);
-        $note = trim($note);
+        $noteBody = $this->normalizeText($note);
 
         if ($externalContactId === '') {
             return $this->skipped('empty_contact_id');
         }
 
-        if ($note === '') {
+        if ($noteBody === null) {
             return $this->skipped('empty_note');
         }
 
         try {
             $response = $this->http()->post(self::BASE_URL.'/objects/notes', [
                 'properties' => [
-                    'hs_note_body' => $note,
+                    'hs_note_body' => $noteBody,
                     'hs_timestamp' => now()->toIso8601String(),
                 ],
                 'associations' => [[
@@ -165,6 +341,11 @@ class HubSpotService
             ]);
 
             if ($response->successful()) {
+                WaLog::info('[HubSpotService] Note appended', [
+                    'contact_id' => $externalContactId,
+                    'note_length' => mb_strlen($noteBody),
+                ]);
+
                 return [
                     'status' => 'success',
                     'note_id' => (string) $response->json('id'),
@@ -183,8 +364,14 @@ class HubSpotService
                 'body' => $response->body(),
             ]);
 
+            WaLog::error('[HubSpotService] Note append failed', [
+                'contact_id' => $externalContactId,
+                'error_type' => $reasonCode,
+                'message' => $response->body(),
+            ]);
+
             return [
-                'status' => 'failed',
+                'status' => $retryable ? 'retryable_failure' : 'non_retryable_failure',
                 'error' => $response->body(),
                 'http_status' => $response->status(),
                 'reason_code' => $reasonCode,
@@ -196,8 +383,14 @@ class HubSpotService
                 'error' => $e->getMessage(),
             ]);
 
+            WaLog::error('[HubSpotService] Note append failed', [
+                'contact_id' => $externalContactId,
+                'error_type' => 'connection_exception',
+                'message' => $e->getMessage(),
+            ]);
+
             return [
-                'status' => 'error',
+                'status' => 'retryable_failure',
                 'error' => $e->getMessage(),
                 'reason_code' => 'connection_exception',
                 'retryable' => true,
@@ -208,11 +401,19 @@ class HubSpotService
                 'error' => $e->getMessage(),
             ]);
 
+            $classified = $this->classifyHubSpotException($e);
+
+            WaLog::error('[HubSpotService] Note append failed', [
+                'contact_id' => $externalContactId,
+                'error_type' => $classified['error_type'] ?? 'unexpected_exception',
+                'message' => $e->getMessage(),
+            ]);
+
             return [
-                'status' => 'error',
+                'status' => $classified['status'] ?? 'retryable_failure',
                 'error' => $e->getMessage(),
-                'reason_code' => 'unexpected_exception',
-                'retryable' => true,
+                'reason_code' => $classified['error_type'] ?? 'unexpected_exception',
+                'retryable' => ($classified['status'] ?? 'retryable_failure') === 'retryable_failure',
             ];
         }
     }
@@ -229,6 +430,7 @@ class HubSpotService
 
         $externalContactId = trim($externalContactId);
         $payload = $this->sanitizeProperties($properties);
+        [$payload, $droppedProperties] = $this->filterUnsupportedProperties($payload);
 
         if ($externalContactId === '') {
             return $this->skipped('empty_contact_id');
@@ -242,6 +444,13 @@ class HubSpotService
             $initial = $this->patchContact($externalContactId, $payload);
 
             if (($initial['status'] ?? null) !== 'failed') {
+                if (($initial['status'] ?? null) === 'success') {
+                    WaLog::info('[HubSpotService] Contact properties updated', [
+                        'contact_id' => $externalContactId,
+                        'property_keys' => array_keys($payload),
+                        'dropped_properties' => $droppedProperties,
+                    ]);
+                }
                 return $initial;
             }
 
@@ -277,6 +486,12 @@ class HubSpotService
                     'removed_properties' => $unknownProperties,
                     'applied_properties' => array_keys($filteredPayload),
                 ]);
+
+                WaLog::info('[HubSpotService] Contact properties updated', [
+                    'contact_id' => $externalContactId,
+                    'property_keys' => array_keys($filteredPayload),
+                    'dropped_properties' => $unknownProperties,
+                ]);
             }
 
             return $retry;
@@ -286,14 +501,32 @@ class HubSpotService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            WaLog::error('[HubSpotService] Contact properties update failed', [
+                'contact_id' => $externalContactId,
+                'error_type' => 'connection_exception',
+                'message' => $e->getMessage(),
+            ]);
+
+            return ['status' => 'retryable_failure', 'error' => $e->getMessage(), 'retryable' => true];
         } catch (\Throwable $e) {
             Log::error('[HubSpot] updateContactProperties exception', [
                 'contact_id' => $externalContactId,
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            $classified = $this->classifyHubSpotException($e);
+
+            WaLog::error('[HubSpotService] Contact properties update failed', [
+                'contact_id' => $externalContactId,
+                'error_type' => $classified['error_type'] ?? null,
+                'message' => $e->getMessage(),
+            ]);
+
+            return [
+                'status' => $classified['status'] ?? 'retryable_failure',
+                'error' => $e->getMessage(),
+                'retryable' => ($classified['status'] ?? 'retryable_failure') === 'retryable_failure',
+            ];
         }
     }
 
@@ -363,11 +596,18 @@ class HubSpotService
             'body' => $response->body(),
         ]);
 
+        $statusCode = $response->status();
+        $retryable = ($statusCode >= 500) || in_array($statusCode, [408, 429], true);
+        $classification = $retryable
+            ? 'retryable_failure'
+            : (in_array($statusCode, [400, 401, 403, 404, 422], true) ? 'non_retryable_failure' : 'non_retryable_failure');
+
         return [
-            'status' => 'failed',
+            'status' => $classification,
             'error' => $response->body(),
-            'http_status' => $response->status(),
+            'http_status' => $statusCode,
             'unknown_properties' => $unknownProperties,
+            'retryable' => $retryable,
         ];
     }
 
@@ -425,23 +665,61 @@ class HubSpotService
      */
     private function sanitizeProperties(array $properties): array
     {
-        $out = [];
+        $sanitized = [];
 
         foreach ($properties as $key => $value) {
-            if (! is_string($key) || trim($key) === '') {
+            $normalizedKey = $this->normalizeText($key);
+
+            if ($normalizedKey === null) {
                 continue;
             }
 
-            $normalized = $this->normalizePropertyValue($value);
+            if (is_string($value)) {
+                $value = trim($value);
+                if ($value === '') {
+                    continue;
+                }
+            }
 
-            if ($normalized === null || $normalized === '') {
+            if ($value === null) {
                 continue;
             }
 
-            $out[$key] = $normalized;
+            if (is_array($value) || is_object($value)) {
+                continue;
+            }
+
+            $sanitized[$normalizedKey] = $value;
         }
 
-        return $out;
+        return $sanitized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $properties
+     * @return array{0: array<string, mixed>, 1: array<int, string>}
+     */
+    private function filterUnsupportedProperties(array $properties): array
+    {
+        $filtered = [];
+        $dropped = [];
+
+        foreach ($properties as $key => $value) {
+            $normalizedKey = $this->normalizeText($key);
+
+            if ($normalizedKey === null) {
+                continue;
+            }
+
+            if (! preg_match('/^[a-zA-Z0-9_]+$/', $normalizedKey)) {
+                $dropped[] = $normalizedKey;
+                continue;
+            }
+
+            $filtered[$normalizedKey] = $value;
+        }
+
+        return [$filtered, array_values(array_unique($dropped))];
     }
 
     private function normalizePropertyValue(mixed $value): string|int|float|bool|null

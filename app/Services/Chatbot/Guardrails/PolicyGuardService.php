@@ -18,17 +18,26 @@ class PolicyGuardService
      * @param  array<string, mixed>  $understandingResult
      * @param  array<string, mixed>  $resolvedContext
      * @param  array<string, mixed>  $conversationState
+     * @param  array<string, mixed>  $crmContext
      * @return array{
      *     intent_result: array<string, mixed>,
      *     entity_result: array<string, mixed>,
      *     meta: array{
      *         guard_group: string,
      *         action: string,
+     *         verdict: string,
+     *         allow: bool,
      *         block_auto_reply: bool,
+     *         force_handoff: bool,
+     *         force_clarification: bool,
      *         reasons: array<int, string>,
+     *         reason_code?: string|null,
      *         hydrated_context_fields: array<int, string>,
+     *         runtime_health?: string,
+     *         llm_runtime?: array<string, mixed>,
      *         crm_policy_source?: string,
-     *         crm_policy_snapshot?: array<string, mixed>
+     *         crm_policy_snapshot?: array<string, mixed>,
+     *         decision_trace_policy?: array<string, mixed>
      *     }
      * }
      */
@@ -89,28 +98,18 @@ class PolicyGuardService
                     reasoning: 'Bot sedang dipause dari konteks CRM/runtime.',
                 ),
                 'entity_result' => $entityResult,
-                'meta' => [
-                    'guard_group' => 'policy',
-                    'action' => 'blocked_bot_paused',
-                    'block_auto_reply' => true,
-                    'reasons' => $reasons,
-                    'hydrated_context_fields' => $hydratedContextFields,
-                    'crm_policy_source' => 'business_flags.bot_paused',
-                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
-                        crmBusinessFlags: $crmBusinessFlags,
-                        crmEscalation: $crmEscalation,
-                        crmLeadPipeline: $crmLeadPipeline,
-                    ),
-                    'decision_trace_policy' => $this->decisionTracePolicy(
-                        traceId: $traceId,
-                        action: 'blocked_bot_paused',
-                        reasons: $reasons,
-                        crmBusinessFlags: $crmBusinessFlags,
-                        crmEscalation: $crmEscalation,
-                        crmLeadPipeline: $crmLeadPipeline,
-                        crmSource: 'business_flags.bot_paused',
-                    ),
-                ],
+                'meta' => $this->buildPolicyMeta(
+                    traceId: $traceId,
+                    action: 'blocked_bot_paused',
+                    reasons: $reasons,
+                    hydratedContextFields: $hydratedContextFields,
+                    crmBusinessFlags: $crmBusinessFlags,
+                    crmEscalation: $crmEscalation,
+                    crmLeadPipeline: $crmLeadPipeline,
+                    llmRuntime: $llmRuntime,
+                    runtimeHealth: $runtimeHealth,
+                    crmPolicySource: 'business_flags.bot_paused',
+                ),
             ];
         }
 
@@ -126,28 +125,18 @@ class PolicyGuardService
                     reasoning: 'Admin takeover aktif, balasan AI dihentikan.',
                 ),
                 'entity_result' => $entityResult,
-                'meta' => [
-                    'guard_group' => 'policy',
-                    'action' => 'blocked_admin_takeover',
-                    'block_auto_reply' => true,
-                    'reasons' => $reasons,
-                    'hydrated_context_fields' => $hydratedContextFields,
-                    'crm_policy_source' => 'business_flags.admin_takeover_active',
-                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
-                        crmBusinessFlags: $crmBusinessFlags,
-                        crmEscalation: $crmEscalation,
-                        crmLeadPipeline: $crmLeadPipeline,
-                    ),
-                    'decision_trace_policy' => $this->decisionTracePolicy(
-                        traceId: $traceId,
-                        action: 'blocked_admin_takeover',
-                        reasons: $reasons,
-                        crmBusinessFlags: $crmBusinessFlags,
-                        crmEscalation: $crmEscalation,
-                        crmLeadPipeline: $crmLeadPipeline,
-                        crmSource: 'business_flags.admin_takeover_active',
-                    ),
-                ],
+                'meta' => $this->buildPolicyMeta(
+                    traceId: $traceId,
+                    action: 'blocked_admin_takeover',
+                    reasons: $reasons,
+                    hydratedContextFields: $hydratedContextFields,
+                    crmBusinessFlags: $crmBusinessFlags,
+                    crmEscalation: $crmEscalation,
+                    crmLeadPipeline: $crmLeadPipeline,
+                    llmRuntime: $llmRuntime,
+                    runtimeHealth: $runtimeHealth,
+                    crmPolicySource: 'business_flags.admin_takeover_active',
+                ),
             ];
         }
 
@@ -185,28 +174,18 @@ class PolicyGuardService
                     reasoning: 'Admin takeover aktif; bot tidak boleh membalas otomatis.',
                 ),
                 'entity_result' => $entityResult,
-                'meta' => [
-                    'guard_group' => 'policy',
-                    'action' => 'blocked_takeover',
-                    'block_auto_reply' => true,
-                    'reasons' => $reasons,
-                    'hydrated_context_fields' => $hydratedContextFields,
-                    'crm_policy_source' => 'runtime.admin_takeover',
-                    'crm_policy_snapshot' => $this->crmPolicySnapshot(
-                        crmBusinessFlags: $crmBusinessFlags,
-                        crmEscalation: $crmEscalation,
-                        crmLeadPipeline: $crmLeadPipeline,
-                    ),
-                    'decision_trace_policy' => $this->decisionTracePolicy(
-                        traceId: $traceId,
-                        action: 'blocked_takeover',
-                        reasons: $reasons,
-                        crmBusinessFlags: $crmBusinessFlags,
-                        crmEscalation: $crmEscalation,
-                        crmLeadPipeline: $crmLeadPipeline,
-                        crmSource: 'runtime.admin_takeover',
-                    ),
-                ],
+                'meta' => $this->buildPolicyMeta(
+                    traceId: $traceId,
+                    action: 'blocked_takeover',
+                    reasons: $reasons,
+                    hydratedContextFields: $hydratedContextFields,
+                    crmBusinessFlags: $crmBusinessFlags,
+                    crmEscalation: $crmEscalation,
+                    crmLeadPipeline: $crmLeadPipeline,
+                    llmRuntime: $llmRuntime,
+                    runtimeHealth: $runtimeHealth,
+                    crmPolicySource: 'runtime.admin_takeover',
+                ),
             ];
         }
 
@@ -250,6 +229,8 @@ class PolicyGuardService
             $intentResult['degraded_mode'] = (bool) ($llmRuntime['degraded_mode'] ?? false);
             $intentResult['used_fallback_model'] = (bool) ($llmRuntime['used_fallback_model'] ?? false);
             $intentResult['schema_valid'] = (bool) ($llmRuntime['schema_valid'] ?? true);
+            $intentResult['policy_action'] = 'handoff';
+            $intentResult['policy_verdict'] = 'handoff';
         } elseif ($runtimeHealth === 'degraded') {
             $reasons[] = 'llm_runtime_degraded';
 
@@ -263,6 +244,8 @@ class PolicyGuardService
 
             $intentResult['runtime_health'] = $runtimeHealth;
             $intentResult['degraded_mode'] = true;
+            $intentResult['policy_action'] = 'clarify';
+            $intentResult['policy_verdict'] = 'clarify';
         } elseif ($runtimeHealth === 'fallback_model') {
             $reasons[] = 'llm_runtime_fallback_model';
             $intentResult['runtime_health'] = $runtimeHealth;
@@ -296,6 +279,8 @@ class PolicyGuardService
             }
             $intentResult['clarification_question'] = $clarificationQuestion;
             $intentResult['reasoning_short'] = 'Understanding masih ambigu; bot meminta klarifikasi yang aman.';
+            $intentResult['policy_action'] = 'clarify';
+            $intentResult['policy_verdict'] = 'clarify';
         }
 
         if ($this->requiresPriceRouteClarification($intentResult, $entityResult)) {
@@ -324,31 +309,18 @@ class PolicyGuardService
         return [
             'intent_result' => $intentResult,
             'entity_result' => $entityResult,
-            'meta' => [
-                'guard_group' => 'policy',
-                'action' => $action,
-                'block_auto_reply' => $action !== 'allow',
-                'reasons' => array_values(array_unique($reasons)),
-                'hydrated_context_fields' => $hydratedContextFields,
-                'llm_runtime' => $llmRuntime,
-                'runtime_health' => $runtimeHealth,
-                'crm_policy_snapshot' => $this->crmPolicySnapshot(
-                    crmBusinessFlags: $crmBusinessFlags,
-                    crmEscalation: $crmEscalation,
-                    crmLeadPipeline: $crmLeadPipeline,
-                ),
-                'decision_trace_policy' => $this->decisionTracePolicy(
-                    traceId: $traceId,
-                    action: $action,
-                    reasons: $reasons,
-                    crmBusinessFlags: $crmBusinessFlags,
-                    crmEscalation: $crmEscalation,
-                    crmLeadPipeline: $crmLeadPipeline,
-                    crmSource: $action !== 'allow' ? 'policy_guard' : null,
-                    llmRuntime: $llmRuntime,
-                    runtimeHealth: $runtimeHealth,
-                ),
-            ],
+            'meta' => $this->buildPolicyMeta(
+                traceId: $traceId,
+                action: $action,
+                reasons: $reasons,
+                hydratedContextFields: $hydratedContextFields,
+                crmBusinessFlags: $crmBusinessFlags,
+                crmEscalation: $crmEscalation,
+                crmLeadPipeline: $crmLeadPipeline,
+                llmRuntime: $llmRuntime,
+                runtimeHealth: $runtimeHealth,
+                crmPolicySource: $action !== 'allow' ? 'policy_guard' : null,
+            ),
         ];
     }
 
@@ -437,21 +409,35 @@ class PolicyGuardService
             $violations[] = 'llm_runtime_degraded';
         }
 
+        $normalizedViolations = array_values(array_unique($violations));
+        $traceId = $this->resolveTraceId(
+            $meta,
+            $context,
+            ['business_flags' => $flags, 'escalation' => $escalation, 'lead_pipeline' => $leadPipeline],
+        );
+
         return [
-            'is_compliant' => $violations === [],
-            'violations' => array_values(array_unique($violations)),
+            'is_compliant' => $normalizedViolations === [],
+            'violations' => $normalizedViolations,
+            'verdict' => $this->policyVerdictFromAction($decisionAction),
+            'action' => $decisionAction,
+            'allow' => $decisionAction === 'allow',
+            'block_auto_reply' => $blockAutoReply,
+            'force_handoff' => $decisionAction === 'handoff',
+            'force_clarification' => $decisionAction === 'clarify',
+            'runtime_health' => $runtimeHealth,
+            'llm_runtime' => $llmRuntime,
             'decision_trace_policy' => [
-                'trace_id' => $this->resolveTraceId(
-                    $meta,
-                    $context,
-                    ['business_flags' => $flags, 'escalation' => $escalation, 'lead_pipeline' => $leadPipeline],
-                ),
+                'trace_id' => $traceId,
                 'policy' => [
                     'stage' => 'policy_guard',
                     'action' => $decisionAction,
+                    'verdict' => $this->policyVerdictFromAction($decisionAction),
                     'blocked' => $blockAutoReply,
                     'force_handoff' => $decisionAction === 'handoff',
-                    'reasons' => array_values(array_unique($violations)),
+                    'force_clarification' => $decisionAction === 'clarify',
+                    'reasons' => $normalizedViolations,
+                    'reason_code' => $normalizedViolations[0] ?? null,
                     'reply_source' => $meta['decision_source'] ?? $meta['source'] ?? null,
                     'crm_policy_snapshot' => $this->crmPolicySnapshot(
                         crmBusinessFlags: $flags,
@@ -465,6 +451,7 @@ class PolicyGuardService
                 'outcome' => [
                     'reply_action' => $replyResult['next_action'] ?? null,
                     'handoff' => $decisionAction === 'handoff',
+                    'clarify' => $decisionAction === 'clarify',
                 ],
             ],
         ];
@@ -500,7 +487,9 @@ class PolicyGuardService
             'is_fallback' => true,
             'meta' => [
                 'force_handoff' => true,
+                'force_clarification' => false,
                 'source' => 'policy_guard_fallback',
+                'policy_verdict' => 'handoff',
                 'llm_runtime' => $this->resolveLlmRuntime(
                     understandingResult: $context['intent_result'] ?? [],
                     resolvedContext: $context,
@@ -510,9 +499,12 @@ class PolicyGuardService
                     'policy' => [
                         'stage' => 'policy_guard',
                         'action' => 'handoff',
+                        'verdict' => 'handoff',
                         'blocked' => true,
                         'force_handoff' => true,
+                        'force_clarification' => false,
                         'reasons' => array_values($policyReport['violations'] ?? []),
+                        'reason_code' => $policyReport['violations'][0] ?? null,
                         'runtime_health' => $this->resolveRuntimeHealth(
                             $this->resolveLlmRuntime(
                                 understandingResult: $context['intent_result'] ?? [],
@@ -531,6 +523,82 @@ class PolicyGuardService
                 ],
             ],
         ];
+    }
+
+    /**
+     * @param  array<int, string>  $reasons
+     * @param  array<int, string>  $hydratedContextFields
+     * @param  array<string, mixed>  $crmBusinessFlags
+     * @param  array<string, mixed>  $crmEscalation
+     * @param  array<string, mixed>  $crmLeadPipeline
+     * @param  array<string, mixed>  $llmRuntime
+     * @return array<string, mixed>
+     */
+    private function buildPolicyMeta(
+        string $traceId,
+        string $action,
+        array $reasons,
+        array $hydratedContextFields,
+        array $crmBusinessFlags,
+        array $crmEscalation,
+        array $crmLeadPipeline,
+        array $llmRuntime = [],
+        ?string $runtimeHealth = null,
+        ?string $crmPolicySource = null,
+    ): array {
+        $normalizedReasons = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $reason): string => trim((string) $reason),
+            $reasons,
+        ))));
+
+        $verdict = $this->policyVerdictFromAction($action);
+
+        return [
+            'guard_group' => 'policy',
+            'action' => $action,
+            'verdict' => $verdict,
+            'allow' => $action === 'allow',
+            'block_auto_reply' => $action !== 'allow',
+            'force_handoff' => in_array($action, [
+                'handoff',
+                'blocked_takeover',
+                'blocked_admin_takeover',
+                'blocked_bot_paused',
+            ], true),
+            'force_clarification' => $action === 'clarify',
+            'reasons' => $normalizedReasons,
+            'reason_code' => $normalizedReasons[0] ?? null,
+            'hydrated_context_fields' => $hydratedContextFields,
+            'llm_runtime' => $llmRuntime,
+            'runtime_health' => $runtimeHealth,
+            'crm_policy_source' => $crmPolicySource,
+            'crm_policy_snapshot' => $this->crmPolicySnapshot(
+                crmBusinessFlags: $crmBusinessFlags,
+                crmEscalation: $crmEscalation,
+                crmLeadPipeline: $crmLeadPipeline,
+            ),
+            'decision_trace_policy' => $this->decisionTracePolicy(
+                traceId: $traceId,
+                action: $action,
+                reasons: $normalizedReasons,
+                crmBusinessFlags: $crmBusinessFlags,
+                crmEscalation: $crmEscalation,
+                crmLeadPipeline: $crmLeadPipeline,
+                crmSource: $crmPolicySource,
+                llmRuntime: $llmRuntime,
+                runtimeHealth: $runtimeHealth,
+            ),
+        ];
+    }
+
+    private function policyVerdictFromAction(string $action): string
+    {
+        return match ($action) {
+            'allow' => 'allow',
+            'clarify' => 'clarify',
+            'handoff' => 'handoff',
+            default => str_starts_with($action, 'blocked_') ? 'blocked' : $action,
+        };
     }
 
     /**
@@ -746,6 +814,8 @@ class PolicyGuardService
         $intentResult['needs_clarification'] = false;
         $intentResult['clarification_question'] = null;
         $intentResult['reasoning_short'] = $reasoning;
+        $intentResult['policy_action'] = 'handoff';
+        $intentResult['policy_verdict'] = 'handoff';
 
         return $intentResult;
     }
@@ -859,8 +929,10 @@ class PolicyGuardService
             'policy' => [
                 'stage' => 'policy_guard',
                 'action' => $action,
+                'verdict' => $this->policyVerdictFromAction($action),
                 'blocked' => str_starts_with($action, 'blocked_'),
-                'force_handoff' => in_array($action, ['handoff', 'clarify', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+                'force_handoff' => in_array($action, ['handoff', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+                'force_clarification' => $action === 'clarify',
                 'reasons' => $normalizedReasons,
                 'reason_code' => $normalizedReasons[0] ?? null,
                 'crm_policy_source' => $crmSource,
@@ -874,7 +946,8 @@ class PolicyGuardService
                 'evaluated_at' => now()->toIso8601String(),
             ],
             'outcome' => [
-                'handoff' => in_array($action, ['handoff', 'clarify', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+                'handoff' => in_array($action, ['handoff', 'blocked_takeover', 'blocked_admin_takeover', 'blocked_bot_paused'], true),
+                'clarify' => $action === 'clarify',
                 'reply_action' => $action === 'clarify' ? 'ask_clarification' : ($action === 'allow' ? 'allow' : 'handoff_admin'),
             ],
         ];
@@ -911,14 +984,18 @@ class PolicyGuardService
             $understandingResult['meta']['llm_runtime'] ?? null,
             $resolvedContext['understanding_runtime'] ?? null,
             $resolvedContext['llm_runtime']['understanding'] ?? null,
+            $resolvedContext['meta']['llm_runtime'] ?? null,
+            $resolvedContext['context_boundary_audit'] ?? null,
         ];
 
         foreach ($candidates as $candidate) {
             if (is_array($candidate) && $candidate !== []) {
                 return [
+                    'trace_id' => $this->normalizeText($candidate['trace_id'] ?? null),
                     'provider' => $this->normalizeText($candidate['provider'] ?? null),
                     'model' => $this->normalizeText($candidate['model'] ?? ($candidate['primary_model'] ?? null)),
                     'status' => $this->normalizeText($candidate['status'] ?? null),
+                    'understanding_mode' => $this->normalizeText($candidate['understanding_mode'] ?? null),
                     'degraded_mode' => (bool) ($candidate['degraded_mode'] ?? false),
                     'used_fallback_model' => (bool) ($candidate['used_fallback_model'] ?? false),
                     'schema_valid' => array_key_exists('schema_valid', $candidate) ? (bool) $candidate['schema_valid'] : true,

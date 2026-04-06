@@ -14,7 +14,15 @@ class CrmSyncService
     ) {}
 
     /**
-     * @return array{status:string, external_id?:string, error?:string, reason?:string}
+     * @return array{
+     *   status: 'success'|'retryable_failure'|'non_retryable_failure'|'skipped',
+     *   external_id?: string,
+     *   error?: string,
+     *   reason?: string,
+     *   retryable?: bool,
+     *   reason_code?: string,
+     *   http_status?: int
+     * }
      */
     public function syncCustomer(Customer $customer): array
     {
@@ -27,7 +35,7 @@ class CrmSyncService
             if (! $this->hubspot->isEnabled()) {
                 $crmContact->markLocalOnly();
 
-                return ['status' => 'local_only', 'reason' => 'hubspot_disabled'];
+                return ['status' => 'skipped', 'reason' => 'hubspot_disabled'];
             }
 
             $payload = $this->buildContactPayload($customer);
@@ -45,13 +53,23 @@ class CrmSyncService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return ['status' => 'retryable_failure', 'error' => $e->getMessage(), 'retryable' => true];
         }
     }
 
     /**
      * @param  array<string, mixed>  $context
-     * @return array{status:string, reason?:string, error?:string, unknown_properties?:array<int,string>, applied_properties?:array<string,mixed>, removed_properties?:array<int,string>}
+     * @return array{
+     *   status: 'success'|'retryable_failure'|'non_retryable_failure'|'skipped',
+     *   reason?: string,
+     *   error?: string,
+     *   retryable?: bool,
+     *   reason_code?: string,
+     *   http_status?: int,
+     *   unknown_properties?: array<int,string>,
+     *   applied_properties?: array<string,mixed>,
+     *   removed_properties?: array<int,string>
+     * }
      */
     public function syncCustomerSnapshot(Customer $customer, array $context = []): array
     {
@@ -99,9 +117,12 @@ class CrmSyncService
 
             $crmContact->markFailed($result['error'] ?? 'unknown');
 
+            $classification = $this->classifyFailure($result);
+
             return [
-                'status' => 'failed',
+                'status' => $classification,
                 'error' => $result['error'] ?? 'unknown',
+                'retryable' => ($classification === 'retryable_failure'),
                 'unknown_properties' => is_array($result['unknown_properties'] ?? null) ? $result['unknown_properties'] : [],
             ];
         } catch (\Throwable $e) {
@@ -110,12 +131,19 @@ class CrmSyncService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage()];
+            return ['status' => 'retryable_failure', 'error' => $e->getMessage(), 'retryable' => true];
         }
     }
 
     /**
-     * @return array{status:string, reason?:string, error?:string, retryable?:bool}
+     * @return array{
+     *   status: 'success'|'retryable_failure'|'non_retryable_failure'|'skipped',
+     *   reason?: string,
+     *   error?: string,
+     *   retryable?: bool,
+     *   reason_code?: string,
+     *   http_status?: int
+     * }
      */
     public function syncConversationSummary(Customer $customer, Conversation $conversation): array
     {
@@ -148,13 +176,21 @@ class CrmSyncService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage(), 'retryable' => true];
+            return ['status' => 'retryable_failure', 'error' => $e->getMessage(), 'retryable' => true];
         }
     }
 
     /**
      * @param  array<string, mixed>  $decisionTrace
-     * @return array{status:string, reason?:string, error?:string, retryable?:bool, note_id?:string}
+     * @return array{
+     *   status: 'success'|'retryable_failure'|'non_retryable_failure'|'skipped',
+     *   reason?: string,
+     *   error?: string,
+     *   retryable?: bool,
+     *   reason_code?: string,
+     *   http_status?: int,
+     *   note_id?: string
+     * }
      */
     public function appendConversationDecisionNote(
         Customer $customer,
@@ -212,7 +248,7 @@ class CrmSyncService
                 'error' => $e->getMessage(),
             ]);
 
-            return ['status' => 'error', 'error' => $e->getMessage(), 'retryable' => true];
+            return ['status' => 'retryable_failure', 'error' => $e->getMessage(), 'retryable' => true];
         }
     }
 
@@ -245,11 +281,11 @@ class CrmSyncService
      */
     private function normalizeNoteWriteResult(array $result, int $customerId, array $context = []): array
     {
-        $status = (string) ($result['status'] ?? 'failed');
+        $providerStatus = (string) ($result['status'] ?? '');
 
-        if (in_array($status, ['success', 'skipped'], true)) {
+        if ($providerStatus === 'success') {
             return [
-                'status' => $status,
+                'status' => 'success',
                 'reason' => $result['reason'] ?? null,
                 'note_id' => $result['note_id'] ?? null,
                 'retryable' => (bool) ($result['retryable'] ?? false),
@@ -257,9 +293,22 @@ class CrmSyncService
             ];
         }
 
+        if ($providerStatus === 'skipped') {
+            return [
+                'status' => 'skipped',
+                'reason' => $result['reason'] ?? 'unknown',
+                'note_id' => $result['note_id'] ?? null,
+                'retryable' => (bool) ($result['retryable'] ?? false),
+                'runtime_health' => $context['runtime_health'] ?? null,
+            ];
+        }
+
+        $classification = $this->classifyFailure($result);
+
         Log::warning('[CrmSync] note write failed', [
             'customer_id' => $customerId,
-            'status' => $status,
+            'status' => $providerStatus,
+            'classification' => $classification,
             'context' => $context,
             'http_status' => $result['http_status'] ?? null,
             'reason_code' => $result['reason_code'] ?? null,
@@ -268,12 +317,12 @@ class CrmSyncService
         ]);
 
         return [
-            'status' => $status === 'error' ? 'error' : 'failed',
+            'status' => $classification,
             'error' => $result['error'] ?? 'unknown',
             'reason' => $result['reason'] ?? null,
             'reason_code' => $result['reason_code'] ?? null,
             'http_status' => $result['http_status'] ?? null,
-            'retryable' => (bool) ($result['retryable'] ?? false),
+            'retryable' => ($classification === 'retryable_failure'),
             'runtime_health' => $context['runtime_health'] ?? null,
         ];
     }
@@ -348,7 +397,15 @@ class CrmSyncService
     /**
      * @param  array<string, mixed>  $result
      * @param  array<string, mixed>  $fallbackPayload
-     * @return array{status:string, external_id?:string, error?:string, reason?:string}
+     * @return array{
+     *   status: 'success'|'retryable_failure'|'non_retryable_failure'|'skipped',
+     *   external_id?: string,
+     *   error?: string,
+     *   reason?: string,
+     *   retryable?: bool,
+     *   reason_code?: string,
+     *   http_status?: int
+     * }
      */
     private function handleContactSyncResult(
         Customer $customer,
@@ -363,8 +420,9 @@ class CrmSyncService
             );
 
             return [
-                'status' => 'synced',
+                'status' => 'success',
                 'external_id' => (string) ($result['contact_id'] ?? ''),
+                'external_contact_id' => (string) ($result['contact_id'] ?? ''),
             ];
         }
 
@@ -372,20 +430,32 @@ class CrmSyncService
             $crmContact->markLocalOnly();
 
             return [
-                'status' => 'local_only',
+                'status' => 'skipped',
                 'reason' => $result['reason'] ?? 'skipped',
             ];
         }
 
         $crmContact->markFailed($result['error'] ?? 'unknown');
 
+        $classification = $this->classifyFailure($result);
+
         Log::warning('[CrmSync] contact sync failed', [
             'customer_id' => $customer->id,
             'status' => $result['status'] ?? null,
+            'classification' => $classification,
             'error' => $result['error'] ?? null,
+            'http_status' => $result['http_status'] ?? null,
+            'reason_code' => $result['reason_code'] ?? null,
         ]);
 
-        return ['status' => 'failed', 'error' => $result['error'] ?? 'unknown'];
+        return [
+            'status' => $classification,
+            'error' => $result['error'] ?? 'unknown',
+            'reason' => $result['reason'] ?? null,
+            'reason_code' => $result['reason_code'] ?? null,
+            'http_status' => $result['http_status'] ?? null,
+            'retryable' => ($classification === 'retryable_failure'),
+        ];
     }
 
     /**
@@ -413,6 +483,42 @@ class CrmSyncService
             (string) $crmContact->external_contact_id,
             $payload,
         );
+    }
+
+    private function extractHttpStatus(array $result): ?int
+    {
+        $code = $result['http_status'] ?? $result['status_code'] ?? null;
+        if (is_numeric($code)) {
+            $n = (int) $code;
+            return $n > 0 ? $n : null;
+        }
+
+        return null;
+    }
+
+    private function classifyFailure(array $result): string
+    {
+        $http = $this->extractHttpStatus($result);
+
+        if (($result['retryable'] ?? false) === true) {
+            return 'retryable_failure';
+        }
+
+        if ($http !== null) {
+            if ($http >= 500 || in_array($http, [408, 429], true)) {
+                return 'retryable_failure';
+            }
+
+            if (in_array($http, [400, 401, 403, 404, 422], true)) {
+                return 'non_retryable_failure';
+            }
+        }
+
+        if (! empty($result['unknown_properties'] ?? []) || ! empty($result['reason_code'] ?? null)) {
+            return 'non_retryable_failure';
+        }
+
+        return 'retryable_failure';
     }
 
     private function normalizeCrmValue(mixed $value): string|bool|int|float|null

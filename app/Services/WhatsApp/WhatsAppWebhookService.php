@@ -23,110 +23,198 @@ class WhatsAppWebhookService
         private readonly WhatsAppCallWebhookService $callWebhookService,
         private readonly PhoneNumberService $phoneService,
         private readonly ConversationManagerService $conversationManager,
+        private readonly WhatsAppWebhookDedupService $dedupService,
     ) {
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
      */
-    public function handle(array $payload): array
+    private function blankWebhookReport(string $traceId): array
+    {
+        return [
+            'trace_id' => $traceId,
+            'status' => 'processed',
+            'message_count' => 0,
+            'status_count' => 0,
+            'call_count' => 0,
+            'queued_jobs' => 0,
+            'duplicates' => 0,
+            'errors' => [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $report
+     * @return array<string, mixed>
+     */
+    private function appendWebhookError(array $report, string $message): array
+    {
+        $report['errors'][] = $message;
+        $report['status'] = 'partial';
+
+        return $report;
+    }
+
+    private function buildWebhookTraceId(): string
+    {
+        return 'wa-webhook-'.now()->format('YmdHis').'-'.substr(md5((string) microtime(true)), 0, 8);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{
+     *     messages: array<int, array<string, mixed>>,
+     *     statuses: array<int, array<string, mixed>>,
+     *     calls: array<int, array<string, mixed>>
+     * }
+     */
+    private function parseWebhookPayload(array $payload): array
     {
         if (! $this->parser->isValidWebhookPayload($payload)) {
-            WaLog::warning('[WebhookService] Invalid or unsupported payload structure', [
-                'object' => $payload['object'] ?? null,
-            ]);
-
             return [
-                'accepted' => false,
-                'message_count' => 0,
-                'status_count' => 0,
-                'call_count' => 0,
-                'processed_messages' => 0,
-                'processed_statuses' => 0,
-                'processed_calls' => 0,
-                'ignored_calls' => 0,
-                'errored_calls' => 0,
-                'call_results' => [],
+                'messages' => [],
+                'statuses' => [],
+                'calls' => [],
             ];
         }
 
-        $statuses = $this->parser->extractStatuses($payload);
         $messages = $this->parser->extractMessages($payload);
+        $statuses = $this->parser->extractStatuses($payload);
         $calls = $this->parser->extractCalls($payload);
-        $summary = [
-            'accepted' => true,
-            'message_count' => count($messages),
-            'status_count' => count($statuses),
-            'call_count' => count($calls),
-            'processed_messages' => 0,
-            'processed_statuses' => 0,
-            'processed_calls' => 0,
-            'ignored_calls' => 0,
-            'errored_calls' => 0,
-            'call_results' => [],
+
+        return [
+            'messages' => is_array($messages ?? null) ? $messages : [],
+            'statuses' => is_array($statuses ?? null) ? $statuses : [],
+            'calls' => is_array($calls ?? null) ? $calls : [],
         ];
+    }
 
-        WaLog::info('[WebhookService] Payload parsed - processing webhook events', [
-            'message_count' => count($messages),
-            'status_count' => count($statuses),
-            'call_count' => count($calls),
-        ]);
-
+    /**
+     * @param  array<int, array<string, mixed>>  $statuses
+     * @param  array<string, mixed>  $report
+     * @return array<string, mixed>
+     */
+    private function processStatusesBatch(array $statuses, array $report): array
+    {
         foreach ($statuses as $parsedStatus) {
             try {
                 $this->processSingleStatus($parsedStatus);
-                $summary['processed_statuses']++;
-            } catch (Throwable $e) {
-                WaLog::error('[WebhookService] Failed to process outbound status', [
-                    'wa_message_id' => $parsedStatus['wa_message_id'] ?? null,
-                    'status' => $parsedStatus['status'] ?? null,
-                    'error' => $e->getMessage(),
-                    'file' => $e->getFile() . ':' . $e->getLine(),
-                ]);
+                $report['status_count']++;
+            } catch (\Throwable $e) {
+                $report = $this->appendWebhookError(
+                    $report,
+                    '[status] '.$e->getMessage(),
+                );
             }
         }
 
+        return $report;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $messages
+     * @param  array<string, mixed>  $report
+     * @return array<string, mixed>
+     */
+    private function processMessagesBatch(array $messages, array $report): array
+    {
         foreach ($messages as $parsedMessage) {
             try {
-                $this->processSingleMessage($parsedMessage);
-                $summary['processed_messages']++;
-            } catch (Throwable $e) {
-                WaLog::error('[WebhookService] Failed to process single message', [
-                    'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,
-                    'from' => WaLog::maskPhone((string) ($parsedMessage['from_wa_id'] ?? '')),
-                    'error' => $e->getMessage(),
-                    'file' => $e->getFile() . ':' . $e->getLine(),
-                    'trace' => $e->getTraceAsString(),
-                ]);
+                $result = $this->processSingleMessage($parsedMessage);
+
+                $report['message_count']++;
+
+                if (($result['duplicate'] ?? false) === true) {
+                    $report['duplicates']++;
+                }
+
+                if (($result['queued'] ?? false) === true) {
+                    $report['queued_jobs']++;
+                }
+            } catch (\Throwable $e) {
+                $report = $this->appendWebhookError(
+                    $report,
+                    '[message] '.$e->getMessage(),
+                );
             }
         }
 
-        if ($calls !== []) {
-            $summary['call_results'] = $this->handleCalls($calls, [
-                'trace_id' => WaLog::traceId(),
-                'object' => $payload['object'] ?? null,
+        return $report;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $calls
+     * @param  array<string, mixed>  $report
+     * @return array<string, mixed>
+     */
+    private function processCallsBatch(array $calls, array $report): array
+    {
+        foreach ($calls as $parsedCall) {
+            try {
+                $this->processSingleCall($parsedCall);
+                $report['call_count']++;
+            } catch (\Throwable $e) {
+                $report = $this->appendWebhookError(
+                    $report,
+                    '[call] '.$e->getMessage(),
+                );
+            }
+        }
+
+        return $report;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{
+     *     trace_id: string,
+     *     status: string,
+     *     message_count: int,
+     *     status_count: int,
+     *     call_count: int,
+     *     queued_jobs: int,
+     *     duplicates: int,
+     *     errors: array<int, string>
+     * }
+     */
+    public function handle(array $payload): array
+    {
+        $traceId = $this->buildWebhookTraceId();
+        $report = $this->blankWebhookReport($traceId);
+
+        try {
+            $parsed = $this->parseWebhookPayload($payload);
+
+            WaLog::info('[WebhookService] Payload parsed - processing webhook events', [
+                'message_count' => count($parsed['messages']),
+                'status_count' => count($parsed['statuses']),
+                'call_count' => count($parsed['calls']),
+                '_trace' => $traceId,
+                '_source' => 'WhatsAppWebhookService::handle',
             ]);
 
-            foreach ($summary['call_results'] as $result) {
-                $outcome = (string) ($result['result'] ?? '');
+            $report = $this->processStatusesBatch($parsed['statuses'], $report);
+            $report = $this->processMessagesBatch($parsed['messages'], $report);
+            $report = $this->processCallsBatch($parsed['calls'], $report);
 
-                if ($outcome === 'processed' || $outcome === 'noop_already_synced') {
-                    $summary['processed_calls']++;
-                    continue;
-                }
-
-                if (str_starts_with($outcome, 'ignored_')) {
-                    $summary['ignored_calls']++;
-                    continue;
-                }
-
-                if ($outcome === 'error') {
-                    $summary['errored_calls']++;
-                }
+            if ($report['errors'] === []) {
+                $report['status'] = 'processed';
             }
-        }
 
-        return $summary;
+            return $report;
+        } catch (\Throwable $e) {
+            return [
+                'trace_id' => $traceId,
+                'status' => 'failed',
+                'message_count' => $report['message_count'],
+                'status_count' => $report['status_count'],
+                'call_count' => $report['call_count'],
+                'queued_jobs' => $report['queued_jobs'],
+                'duplicates' => $report['duplicates'],
+                'errors' => [$e->getMessage()],
+            ];
+        }
     }
 
     /**
@@ -169,6 +257,16 @@ class WhatsAppWebhookService
      */
     private function processSingleStatus(array $parsedStatus): void
     {
+        $dedup = $this->dedupService->claimStatusEvent($parsedStatus);
+
+        if (($dedup['duplicate'] ?? false) === true) {
+            WaLog::info('[WebhookService] Status event skipped as duplicate', [
+                'dedup_key' => $dedup['dedup_key'] ?? null,
+            ]);
+
+            return;
+        }
+
         $waMessageId = $this->normalizeWaMessageId($parsedStatus['wa_message_id'] ?? null);
         $status = trim((string) ($parsedStatus['status'] ?? ''));
         $timestamp = $this->parseTimestamp($parsedStatus['timestamp'] ?? null);
@@ -243,9 +341,124 @@ class WhatsAppWebhookService
     }
 
     /**
-     * @param array<string, mixed> $parsedMessage
+     * @param  array<string, mixed>  $parsedCall
      */
-    private function processSingleMessage(array $parsedMessage): void
+    private function processSingleCall(array $parsedCall): void
+    {
+        $dedup = $this->dedupService->claimCallEvent($parsedCall);
+
+        if (($dedup['duplicate'] ?? false) === true) {
+            WaLog::info('[WebhookService] Call event skipped as duplicate', [
+                'dedup_key' => $dedup['dedup_key'] ?? null,
+            ]);
+
+            return;
+        }
+
+        $context = [
+            '_source' => 'WhatsAppWebhookService::processSingleCall',
+            '_trace' => WaLog::traceId(),
+        ];
+
+        $this->callWebhookService->handleCallEvent($parsedCall, $context);
+    }
+
+    /**
+     * @param  array<string, mixed>  $parsedMessage
+     * @return array<string, mixed>
+     */
+    private function claimMessageDedup(array $parsedMessage): array
+    {
+        if (! config('chatbot.webhook.dedup_enabled', true)) {
+            return ['duplicate' => false];
+        }
+
+        return $this->dedupService->claimIncomingMessage($parsedMessage);
+    }
+
+    /**
+     * @param  mixed $persisted
+     */
+    private function dispatchIncomingMessageJob(mixed $persisted): void
+    {
+        if ($persisted === null) {
+            return;
+        }
+
+        if (
+            isset($persisted->conversation_id)
+            && isset($persisted->id)
+        ) {
+            ProcessIncomingWhatsAppMessage::dispatch(
+                $persisted->id,
+                $persisted->conversation_id,
+                WaLog::traceId(),
+            );
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $parsedMessage
+     * @return mixed
+     */
+    private function persistIncomingMessage(array $parsedMessage): mixed
+    {
+        try {
+            return DB::transaction(function () use ($parsedMessage) {
+                $rawWaId = $parsedMessage['from_wa_id'] ?? null;
+                $fromName = $parsedMessage['from_name'] ?? null;
+                $messageId = $this->normalizeWaMessageId($parsedMessage['wa_message_id'] ?? null);
+                $text = $parsedMessage['message_text'] ?? null;
+                $type = (string) ($parsedMessage['message_type'] ?? 'text');
+                $sentAt = $this->parseTimestamp($parsedMessage['timestamp'] ?? null);
+
+                if ($messageId === null || $rawWaId === null) {
+                    return null;
+                }
+
+                $phoneE164 = $this->phoneService->toE164((string) $rawWaId);
+
+                if ($phoneE164 === '') {
+                    return null;
+                }
+
+                $ingressSeed = $this->buildIngressSeed(
+                    parsedMessage: $parsedMessage,
+                    messageText: is_string($text) ? $text : null,
+                    sentAt: $sentAt,
+                );
+
+                $customer = $this->findOrCreateCustomer($phoneE164, is_string($fromName) ? $fromName : null);
+                $conversation = $this->conversationManager->findOrCreateActive($customer);
+
+                return $this->persistMessage(
+                    conversation: $conversation,
+                    waMessageId: $messageId,
+                    messageType: $type,
+                    messageText: $text !== null ? (string) $text : null,
+                    sentAt: $sentAt,
+                    rawPayload: is_array($parsedMessage['raw_payload'] ?? null)
+                        ? $parsedMessage['raw_payload']
+                        : (is_array($parsedMessage['raw_message'] ?? null) ? $parsedMessage['raw_message'] : []),
+                    ingressSeed: $ingressSeed,
+                );
+            });
+        } catch (QueryException $e) {
+            $messageId = $this->normalizeWaMessageId($parsedMessage['wa_message_id'] ?? null);
+
+            if ($this->isDuplicateWaMessageException($e, $messageId)) {
+                return null;
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $parsedMessage
+     * @return array<string, mixed>
+     */
+    private function processSingleMessage(array $parsedMessage): array
     {
         $rawWaId = $parsedMessage['from_wa_id'] ?? null;
         $fromName = $parsedMessage['from_name'] ?? null;
@@ -260,7 +473,10 @@ class WhatsAppWebhookService
                 'type' => $type,
             ]);
 
-            return;
+            return [
+                'queued' => false,
+                'duplicate' => false,
+            ];
         }
 
         if ($rawWaId === null || trim((string) $rawWaId) === '') {
@@ -269,7 +485,10 @@ class WhatsAppWebhookService
                 'type' => $type,
             ]);
 
-            return;
+            return [
+                'queued' => false,
+                'duplicate' => false,
+            ];
         }
 
         $phoneE164 = $this->phoneService->toE164((string) $rawWaId);
@@ -281,111 +500,49 @@ class WhatsAppWebhookService
                 'type' => $type,
             ]);
 
-            return;
+            return [
+                'queued' => false,
+                'duplicate' => false,
+            ];
         }
 
-        $existingMessage = $this->findExistingInboundMessage($messageId);
+        // Dedup claim (configurable + service hook + DB check)
+        $dedupResult = $this->claimMessageDedup($parsedMessage);
 
-        if ($existingMessage !== null) {
-            WaLog::info('[WebhookService] Duplicate inbound skipped - wa_message_id already processed', [
+        if (($dedupResult['duplicate'] ?? false) === true || $this->findExistingInboundMessage($messageId) !== null) {
+            WaLog::info('[WebhookService] Incoming message skipped as duplicate', [
                 'wa_message_id' => $messageId,
-                'existing_message_id' => $existingMessage->id,
-                'existing_conversation_id' => $existingMessage->conversation_id,
-                'from' => WaLog::maskPhone($phoneE164),
             ]);
 
-            return;
+            return [
+                'queued' => false,
+                'duplicate' => true,
+            ];
         }
 
-        WaLog::info('[WebhookService] Inbound message accepted', [
-            'wa_message_id' => $messageId,
-            'from' => WaLog::maskPhone($phoneE164),
-            'type' => $type,
-            'has_text' => ! empty($text),
-            'text_preview' => $text ? mb_substr((string) $text, 0, 80) : null,
+        // Persist inbound
+        $persisted = $this->persistIncomingMessage($parsedMessage);
+
+        if ($persisted === null) {
+            return [
+                'queued' => false,
+                'duplicate' => false,
+            ];
+        }
+
+        // Enqueue downstream job
+        $this->dispatchIncomingMessageJob($persisted);
+
+        WaLog::info('[WebhookService] Incoming message queued for processing', [
+            'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,
+            'conversation_id' => $persisted->conversation_id ?? null,
+            'message_id' => $persisted->id ?? null,
         ]);
 
-        $ingressSeed = $this->buildIngressSeed(
-            parsedMessage: $parsedMessage,
-            messageText: is_string($text) ? $text : null,
-            sentAt: $sentAt,
-        );
-
-        try {
-            DB::transaction(function () use (
-                $phoneE164,
-                $fromName,
-                $messageId,
-                $text,
-                $type,
-                $sentAt,
-                $parsedMessage,
-                $ingressSeed,
-            ): void {
-                $customer = $this->findOrCreateCustomer($phoneE164, $fromName);
-
-                WaLog::debug('[WebhookService] Customer resolved', [
-                    'customer_id' => $customer->id,
-                    'is_new' => $customer->wasRecentlyCreated,
-                    'phone' => WaLog::maskPhone($phoneE164),
-                ]);
-
-                $conversation = $this->conversationManager->findOrCreateActive($customer);
-
-                WaLog::debug('[WebhookService] Conversation resolved', [
-                    'conversation_id' => $conversation->id,
-                    'status' => $conversation->status?->value ?? null,
-                ]);
-
-                $message = $this->persistMessage(
-                    conversation: $conversation,
-                    waMessageId: $messageId,
-                    messageType: $type,
-                    messageText: $text !== null ? (string) $text : null,
-                    sentAt: $sentAt,
-                    rawPayload: is_array($parsedMessage['raw_payload'] ?? null)
-                        ? $parsedMessage['raw_payload']
-                        : (is_array($parsedMessage['raw_message'] ?? null) ? $parsedMessage['raw_message'] : []),
-                    ingressSeed: $ingressSeed,
-                );
-
-                WaLog::info('[WebhookService] Inbound message persisted', [
-                    'message_id' => $message->id,
-                    'conversation_id' => $conversation->id,
-                    'customer_id' => $customer->id,
-                    'ingress_seed_present' => ! empty($ingressSeed),
-                    'openai_seed_present' => false,
-                    'message_ai_intent' => $message->ai_intent,
-                    'message_ai_confidence' => $message->ai_confidence,
-                ]);
-
-                ProcessIncomingWhatsAppMessage::dispatch(
-                    $message->id,
-                    $conversation->id,
-                    WaLog::traceId(),
-                );
-
-                WaLog::debug('[WebhookService] ProcessIncomingWhatsAppMessage dispatched', [
-                    'message_id' => $message->id,
-                    'conversation_id' => $conversation->id,
-                ]);
-            });
-        } catch (QueryException $e) {
-            if ($this->isDuplicateWaMessageException($e, $messageId)) {
-                $duplicateMessage = $this->findExistingInboundMessage($messageId);
-
-                WaLog::info('[WebhookService] Duplicate inbound skipped - unique constraint hit', [
-                    'wa_message_id' => $messageId,
-                    'existing_message_id' => $duplicateMessage?->id,
-                    'existing_conversation_id' => $duplicateMessage?->conversation_id,
-                    'from' => WaLog::maskPhone($phoneE164),
-                ]);
-
-                return;
-            }
-
-            throw $e;
-        }
+        return [
+            'queued' => true,
+            'duplicate' => false,
+        ];
     }
 
     private function findOrCreateCustomer(string $phoneE164, ?string $name): Customer

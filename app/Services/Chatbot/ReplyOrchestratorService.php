@@ -138,6 +138,10 @@ class ReplyOrchestratorService
             $replyResult,
         );
 
+        $finalGuardTrace = is_array($replyMeta['decision_trace_final_guard'] ?? null)
+            ? $replyMeta['decision_trace_final_guard']
+            : [];
+
         return [
             'trace_id' => $decisionTrace['trace_id'] ?? null,
             'intent' => $intentResult['intent'] ?? null,
@@ -156,7 +160,14 @@ class ReplyOrchestratorService
             'used_crm_facts' => is_array($replyResult['used_crm_facts'] ?? null)
                 ? array_values(array_unique($replyResult['used_crm_facts']))
                 : [],
+            'final_guard_action' => $replyMeta['final_guard_action'] ?? $replyMeta['action'] ?? null,
+            'final_guard_verdict' => $replyMeta['verdict'] ?? null,
+            'policy_verdict' => $replyMeta['policy_verdict'] ?? null,
+            'grounding_verdict' => $replyMeta['grounding_verdict'] ?? null,
+            'decided_by' => $replyMeta['decided_by'] ?? 'conversation_reply_guard',
+            'orchestrator_role' => 'pipeline_aggregator',
             'decision_trace' => $decisionTrace,
+            'decision_trace_final_guard' => $finalGuardTrace !== [] ? $finalGuardTrace : null,
         ];
     }
 
@@ -230,9 +241,18 @@ class ReplyOrchestratorService
             context: $context,
         );
 
+        $enrichedContext = $this->enrichContextForFinalGuard(
+            context: $context,
+            policyReport: $policyReport,
+            afterHallucination: $afterHallucination,
+            orchestrationSnapshot: $orchestrationSnapshot,
+            intentResult: $intentResult,
+        );
+
         $final = $this->conversationReplyGuardService->guardConversationReply(
             replyResult: $afterPolicy,
-            context: $context,
+            context: $enrichedContext,
+            intentResult: $intentResult,
             orchestrationSnapshot: $orchestrationSnapshot,
         );
 
@@ -251,6 +271,10 @@ class ReplyOrchestratorService
         )));
 
         $existingMeta = is_array($final['meta'] ?? null) ? $final['meta'] : [];
+        $finalGuardAction = $existingMeta['action'] ?? $final['next_action'] ?? null;
+        $finalGuardTrace = is_array($existingMeta['decision_trace_final_guard'] ?? null)
+            ? $existingMeta['decision_trace_final_guard']
+            : [];
 
         $decisionTrace = $this->mergeDecisionTraceParts(
             $existingMeta['decision_trace'] ?? [],
@@ -272,14 +296,16 @@ class ReplyOrchestratorService
                     'grounded_response' => $groundedRuntime,
                 ],
                 'outcome' => [
+                    'final_action' => $finalGuardAction,
+                    'decided_by' => 'conversation_reply_guard',
                     'reply_action' => $final['next_action'] ?? null,
-                    'final_decision' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
                     'handoff' => (bool) ($final['should_escalate'] ?? false),
                     'handoff_reason' => $final['handoff_reason'] ?? null,
                     'is_fallback' => (bool) ($final['is_fallback'] ?? false),
                 ],
                 'policy' => [
                     'violations' => $policyReport['violations'] ?? [],
+                    'verdict' => $policyReport['verdict'] ?? $policyReport['policy_verdict'] ?? null,
                 ],
                 'grounding' => [
                     'source' => $existingMeta['grounding_source'] ?? null,
@@ -297,14 +323,20 @@ class ReplyOrchestratorService
             [
                 'trace_id' => $decisionTrace['trace_id'] ?? null,
                 'hardening_applied' => true,
+                'orchestrator_role' => 'pipeline_aggregator',
+                'is_final_decider' => false,
+                'decided_by' => 'conversation_reply_guard',
+                'final_guard_action' => $finalGuardAction,
                 'decision_source' => $existingMeta['decision_source'] ?? $existingMeta['source'] ?? 'reply_hardening',
                 'policy_violations' => $policyReport['violations'] ?? [],
+                'policy_verdict' => $policyReport['verdict'] ?? $policyReport['policy_verdict'] ?? null,
                 'llm_runtime' => [
                     'understanding' => $understandingRuntime,
                     'reply_draft' => $draftRuntime,
                     'grounded_response' => $groundedRuntime,
                 ],
                 'decision_trace' => $decisionTrace,
+                'decision_trace_final_guard' => $finalGuardTrace,
             ],
         );
 
@@ -352,6 +384,92 @@ class ReplyOrchestratorService
         ]);
 
         return $final;
+    }
+
+    /**
+     * Memperkaya context dengan verdict dari pipeline (policy + hallucination)
+     * sebelum diserahkan ke final guard, agar collectFinalGuardSignals() bisa
+     * membaca semua sinyal secara akurat.
+     *
+     * @param  array<string, mixed>  $context
+     * @param  array<string, mixed>  $policyReport
+     * @param  array<string, mixed>  $afterHallucination
+     * @param  array<string, mixed>  $orchestrationSnapshot
+     * @param  array<string, mixed>  $intentResult
+     * @return array<string, mixed>
+     */
+    private function enrichContextForFinalGuard(
+        array $context,
+        array $policyReport,
+        array $afterHallucination,
+        array $orchestrationSnapshot,
+        array $intentResult,
+    ): array {
+        $hallucinationMeta = is_array($afterHallucination['meta'] ?? null)
+            ? $afterHallucination['meta']
+            : [];
+
+        $hallucinationGuardVerdict = is_array($hallucinationMeta['hallucination_guard'] ?? null)
+            ? $hallucinationMeta['hallucination_guard']
+            : [
+                'verdict' => $hallucinationMeta['verdict'] ?? null,
+                'reason' => $hallucinationMeta['hallucination_reason'] ?? null,
+                'force_handoff' => (bool) ($hallucinationMeta['force_handoff'] ?? false),
+                'force_clarification' => (bool) ($hallucinationMeta['force_clarification'] ?? false),
+            ];
+
+        return array_merge($context, [
+            'policy_guard' => array_merge($policyReport, [
+                'verdict' => $policyReport['verdict'] ?? $policyReport['policy_verdict'] ?? 'allow',
+                'force_handoff' => (bool) ($policyReport['force_handoff'] ?? false),
+                'force_clarification' => (bool) ($policyReport['force_clarification'] ?? false),
+                'reason_code' => $policyReport['reason_code'] ?? null,
+                'reasons' => $policyReport['reasons'] ?? [],
+            ]),
+            'hallucination_guard' => $hallucinationGuardVerdict,
+            'reply_orchestration' => [
+                'reply_force_handoff' => (bool) ($orchestrationSnapshot['reply_force_handoff'] ?? false),
+                'needs_human' => (bool) ($orchestrationSnapshot['needs_human'] ?? false),
+                'reply_action' => $orchestrationSnapshot['reply_action'] ?? null,
+                'reply_guard_action' => $orchestrationSnapshot['reply_guard_action'] ?? null,
+                'clarification_question' => $intentResult['clarification_question'] ?? null,
+            ],
+        ]);
+    }
+
+    /**
+     * Snapshot posisi orchestrator: agregator, bukan pengambil keputusan.
+     * Dapat dipakai untuk audit, CRM writeback, atau observability.
+     *
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $policyReport
+     * @param  array<string, mixed>  $groundedMeta
+     * @param  array<string, mixed>  $hallucinationMeta
+     * @param  array<string, mixed>  $finalGuardMeta
+     * @return array<string, mixed>
+     */
+    public function buildOrchestratorSnapshot(
+        array $intentResult,
+        array $policyReport,
+        array $groundedMeta,
+        array $hallucinationMeta,
+        array $finalGuardMeta,
+    ): array {
+        return [
+            'orchestrator_role' => 'pipeline_aggregator',
+            'is_final_decider' => false,
+            'decided_by' => 'conversation_reply_guard',
+            'intent' => $intentResult['intent'] ?? null,
+            'intent_confidence' => $intentResult['confidence'] ?? null,
+            'policy_verdict' => $policyReport['verdict'] ?? $policyReport['policy_verdict'] ?? null,
+            'grounding_verdict' => $groundedMeta['grounding_verdict'] ?? null,
+            'grounding_source' => $groundedMeta['grounding_source'] ?? null,
+            'hallucination_verdict' => $hallucinationMeta['verdict'] ?? null,
+            'runtime_health' => $hallucinationMeta['runtime_health'] ?? null,
+            'final_guard_action' => $finalGuardMeta['action'] ?? null,
+            'final_guard_verdict' => $finalGuardMeta['verdict'] ?? null,
+            'final_guard_is_final_decider' => (bool) ($finalGuardMeta['is_final_decider'] ?? true),
+        ];
     }
 
     /**
@@ -443,7 +561,8 @@ class ReplyOrchestratorService
                 'runtime' => $understanding['runtime'] ?? null,
             ], fn ($v) => $v !== null && $v !== ''),
             'outcome' => array_filter([
-                'final_decision' => $outcome['final_decision'] ?? ($replyResult['meta']['decision_source'] ?? $replyResult['meta']['source'] ?? null),
+                'final_action' => $outcome['final_action'] ?? $outcome['final_decision'] ?? null,
+                'decided_by' => $outcome['decided_by'] ?? 'conversation_reply_guard',
                 'reply_action' => $outcome['reply_action'] ?? ($replyResult['next_action'] ?? null),
                 'handoff' => $outcome['handoff'] ?? ($replyResult['should_escalate'] ?? null),
                 'handoff_reason' => $outcome['handoff_reason'] ?? ($replyResult['handoff_reason'] ?? null),

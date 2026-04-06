@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Services\Booking\BookingConversationStateService;
 use App\Services\CRM\CRMContextService;
+use App\Support\WaLog;
 
 class ConversationContextLoaderService
 {
@@ -38,7 +39,19 @@ class ConversationContextLoaderService
         $activeStates = $this->stateService->allActive($conversation);
         $bookingSnapshot = $this->bookingStateService->load($conversation);
         $draftBooking = $this->findActiveDraft($conversation);
-        $knownEntities = $this->buildKnownEntities($bookingSnapshot, $draftBooking);
+
+        $knownEntities = $this->buildKnownEntities(
+            bookingSnapshot: $bookingSnapshot,
+            draftBooking: $draftBooking,
+        );
+
+        $conversationState = $this->buildConversationState(
+            conversation: $conversation,
+            activeStates: $activeStates,
+            bookingSnapshot: $bookingSnapshot,
+            draftBooking: $draftBooking,
+        );
+
         $crmContext = $conversation->customer !== null
             ? $this->crmContextService->build(
                 customer: $conversation->customer,
@@ -46,12 +59,6 @@ class ConversationContextLoaderService
                 booking: $draftBooking,
             )
             : [];
-        $conversationState = $this->buildConversationState(
-            conversation: $conversation,
-            activeStates: $activeStates,
-            bookingSnapshot: $bookingSnapshot,
-            draftBooking: $draftBooking,
-        );
 
         $latestMessageText = trim((string) ($message->message_text ?? ''));
         $resolvedContext = $this->memoryResolver->resolve(
@@ -69,7 +76,21 @@ class ConversationContextLoaderService
             adminTakeover: $conversation->isAdminTakeover(),
         );
 
-        $crmHints = $this->buildCrmHints($crmContext);
+        $crmHints = $this->buildCrmHints(
+            $this->crmContextForUnderstanding($crmContext)
+        );
+
+        WaLog::debug('[ConversationContextLoader] Context built', [
+            'conversation_id' => $conversation->id,
+            'message_id' => $message->id,
+            'job_trace_id' => $jobTraceId,
+            'recent_message_count' => count($recentMessages),
+            'omitted_message_count' => $omittedMessageCount,
+            'known_entity_keys' => array_keys($knownEntities),
+            'conversation_state_keys' => array_keys($conversationState),
+            'crm_hint_keys' => array_keys($crmHints),
+            'admin_takeover' => $conversation->isAdminTakeover(),
+        ]);
 
         return new ConversationContextPayload(
             conversationId: $conversation->id,
@@ -85,7 +106,14 @@ class ConversationContextLoaderService
                 : [],
             crmContext: $crmContext,
             adminTakeover: $conversation->isAdminTakeover(),
-            crmHints: $crmHints,
+            crmHints: array_merge($crmHints, [
+                '_meta' => [
+                    'source' => 'ConversationContextLoaderService',
+                    'job_trace_id' => $jobTraceId,
+                    'recent_message_count' => count($recentMessages),
+                    'omitted_message_count' => $omittedMessageCount,
+                ],
+            ]),
             jobTraceId: $jobTraceId,
         );
     }
@@ -148,7 +176,7 @@ class ConversationContextLoaderService
                     ?? $draftBooking?->departure_date?->toDateString(),
             ),
             'departure_time' => $this->normalizeText($bookingSnapshot['travel_time'] ?? $draftBooking?->departure_time),
-            'passenger_count' => $bookingSnapshot['passenger_count'] ?? $draftBooking?->passenger_count,
+            'passenger_count' => $this->normalizePositiveInt($bookingSnapshot['passenger_count'] ?? $draftBooking?->passenger_count),
             'passenger_name' => $this->normalizeText($passengerName),
             'seat_number' => $seatNumber !== '' ? $seatNumber : null,
             'payment_method' => $this->normalizeText($bookingSnapshot['payment_method'] ?? $draftBooking?->payment_method),
@@ -173,22 +201,33 @@ class ConversationContextLoaderService
         return array_filter([
             'conversation_status' => $conversation->status->value,
             'current_intent' => $this->normalizeText($conversation->current_intent),
+
             'booking_intent_status' => $this->normalizeText($bookingSnapshot['booking_intent_status'] ?? null),
             'booking_expected_input' => $this->normalizeText(
                 $activeStates[BookingConversationStateService::EXPECTED_INPUT_KEY]
                     ?? $activeStates['booking_expected_input']
                     ?? null,
             ),
+            'active_booking_status' => $draftBooking?->booking_status?->value,
+
             'route_status' => $this->normalizeText($bookingSnapshot['route_status'] ?? null),
             'route_issue' => $this->normalizeText($bookingSnapshot['route_issue'] ?? null),
+
             'waiting_for' => $this->normalizeText($activeStates['waiting_for'] ?? null),
             'waiting_reason' => $this->normalizeText($activeStates['waiting_reason'] ?? null),
+
             'review_sent' => (bool) ($bookingSnapshot['review_sent'] ?? false),
             'booking_confirmed' => (bool) ($bookingSnapshot['booking_confirmed'] ?? false),
             'needs_human_escalation' => (bool) (($bookingSnapshot['needs_human_escalation'] ?? false) || $conversation->needs_human),
             'waiting_admin_takeover' => (bool) ($bookingSnapshot['waiting_admin_takeover'] ?? false),
-            'active_booking_status' => $draftBooking?->booking_status?->value,
             'admin_takeover' => $conversation->isAdminTakeover(),
+
+            'understanding_state' => $this->deriveUnderstandingState(
+                conversation: $conversation,
+                activeStates: $activeStates,
+                bookingSnapshot: $bookingSnapshot,
+                draftBooking: $draftBooking,
+            ),
         ], static fn (mixed $value, string $key): bool => match ($key) {
             'admin_takeover', 'review_sent', 'booking_confirmed', 'needs_human_escalation', 'waiting_admin_takeover' => true,
             default => $value !== null && $value !== '',
@@ -235,16 +274,117 @@ class ConversationContextLoaderService
             'bot_paused' => (bool) ($businessFlags['bot_paused'] ?? false),
             'admin_takeover_active' => (bool) ($businessFlags['admin_takeover_active'] ?? false),
             'has_open_escalation' => (bool) ($escalation['has_open_escalation'] ?? false),
+
+            // continuity hints only
             'current_stage' => $this->normalizeText($leadPipeline['current_stage'] ?? null),
             'last_intent' => $this->normalizeText($conversation['last_ai_intent'] ?? null),
-            'last_summary' => $this->normalizeText($conversation['last_ai_summary'] ?? null),
             'booking_status' => $this->normalizeText($booking['status'] ?? null),
+
+            // keep summary short and optional
+            'last_summary' => $this->normalizeShortText($conversation['last_ai_summary'] ?? null, 180),
+
             'needs_human_followup' => (bool) ($conversation['needs_human_followup'] ?? false),
         ], static fn (mixed $value): bool => match (true) {
             is_bool($value) => $value === true,
             is_string($value) => $value !== '',
             default => $value !== null,
         });
+    }
+
+    /**
+     * @param  array<string, mixed>  $crmContext
+     * @return array<string, mixed>
+     */
+    private function crmContextForUnderstanding(array $crmContext): array
+    {
+        if ($crmContext === []) {
+            return [];
+        }
+
+        return array_filter([
+            'business_flags' => is_array($crmContext['business_flags'] ?? null)
+                ? $crmContext['business_flags']
+                : [],
+            'lead_pipeline' => is_array($crmContext['lead_pipeline'] ?? null)
+                ? $crmContext['lead_pipeline']
+                : [],
+            'conversation' => is_array($crmContext['conversation'] ?? null)
+                ? $crmContext['conversation']
+                : [],
+            'booking' => is_array($crmContext['booking'] ?? null)
+                ? $crmContext['booking']
+                : [],
+            'escalation' => is_array($crmContext['escalation'] ?? null)
+                ? $crmContext['escalation']
+                : [],
+        ], static fn (mixed $value): bool => is_array($value) && $value !== []);
+    }
+
+    /**
+     * @param  array<string, mixed>  $activeStates
+     * @param  array<string, mixed>  $bookingSnapshot
+     */
+    private function deriveUnderstandingState(
+        Conversation $conversation,
+        array $activeStates,
+        array $bookingSnapshot,
+        ?BookingRequest $draftBooking,
+    ): ?string {
+        if ($conversation->isAdminTakeover()) {
+            return 'admin_takeover';
+        }
+
+        if ((bool) (($bookingSnapshot['needs_human_escalation'] ?? false) || $conversation->needs_human)) {
+            return 'needs_human';
+        }
+
+        if ((bool) ($bookingSnapshot['waiting_admin_takeover'] ?? false)) {
+            return 'waiting_admin';
+        }
+
+        $expectedInput = $this->normalizeText(
+            $activeStates[BookingConversationStateService::EXPECTED_INPUT_KEY]
+                ?? $activeStates['booking_expected_input']
+                ?? null,
+        );
+
+        if ($expectedInput !== null) {
+            return 'awaiting_'.$expectedInput;
+        }
+
+        if ($draftBooking !== null && $draftBooking->booking_status !== null) {
+            return 'booking_'.$draftBooking->booking_status->value;
+        }
+
+        return $this->normalizeText($conversation->current_intent) !== null
+            ? 'intent_'.$this->normalizeText($conversation->current_intent)
+            : 'general';
+    }
+
+    private function normalizePositiveInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_numeric($value)) {
+            $intValue = (int) $value;
+
+            return $intValue > 0 ? $intValue : null;
+        }
+
+        return null;
+    }
+
+    private function normalizeShortText(mixed $value, int $limit = 180): ?string
+    {
+        $text = $this->normalizeText($value);
+
+        if ($text === null) {
+            return null;
+        }
+
+        return mb_substr($text, 0, $limit);
     }
 
     private function buildJobTraceId(Conversation $conversation, ConversationMessage $message): string

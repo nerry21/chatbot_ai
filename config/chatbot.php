@@ -398,7 +398,7 @@ return [
 
     'crm' => [
 
-        'enabled' => (bool) env('CRM_ENABLED', true),
+        'enabled' => (bool) env('CHATBOT_CRM_ENABLED', env('CRM_ENABLED', true)),
 
         'hubspot' => [
             'enabled' => (bool) env('HUBSPOT_ENABLED', false),
@@ -437,11 +437,21 @@ return [
             'include_hallucination_meta' => (bool) env('CRM_DECISION_TRACE_INCLUDE_HALLUCINATION_META', true),
         ],
 
+        'notes' => [
+            'include_technical_runtime' => env('CHATBOT_CRM_NOTES_INCLUDE_TECHNICAL_RUNTIME', false),
+        ],
+
         'writeback' => [
             'append_summary_note' => (bool) env('CRM_WRITEBACK_APPEND_SUMMARY_NOTE', true),
             'append_decision_note' => (bool) env('CRM_WRITEBACK_APPEND_DECISION_NOTE', true),
             'sync_contact_snapshot' => (bool) env('CRM_WRITEBACK_SYNC_CONTACT_SNAPSHOT', true),
             'sync_lead_pipeline' => (bool) env('CRM_WRITEBACK_SYNC_LEAD_PIPELINE', true),
+
+            'contact_sync_enabled' => env('CHATBOT_CRM_CONTACT_SYNC_ENABLED', true),
+            'summary_sync_enabled' => env('CHATBOT_CRM_SUMMARY_SYNC_ENABLED', true),
+            'decision_note_sync_enabled' => env('CHATBOT_CRM_DECISION_NOTE_SYNC_ENABLED', true),
+            'lead_sync_enabled' => env('CHATBOT_CRM_LEAD_SYNC_ENABLED', true),
+            'escalation_sync_enabled' => env('CHATBOT_CRM_ESCALATION_SYNC_ENABLED', true),
         ],
 
     ],
@@ -662,6 +672,111 @@ return [
         'case_memory_max_candidates' => (int) env('CHATBOT_CASE_MEMORY_MAX_CANDIDATES', 30),
         'case_memory_retrieval_limit' => (int) env('CHATBOT_CASE_MEMORY_RETRIEVAL_LIMIT', 3),
         'correction_window_hours' => (int) env('CHATBOT_CORRECTION_WINDOW_HOURS', 24),
+    ],
+
+    // Centralised behavior and safety configuration
+    'understanding' => [
+        'mode' => env('CHATBOT_UNDERSTANDING_MODE', 'llm_first_with_crm_hints_only'),
+
+        'confidence' => [
+            'low_threshold' => (float) env('CHATBOT_UNDERSTANDING_CONFIDENCE_LOW', 0.30),
+            'clarify_threshold' => (float) env('CHATBOT_UNDERSTANDING_CONFIDENCE_CLARIFY', 0.45),
+            'high_threshold' => (float) env('CHATBOT_UNDERSTANDING_CONFIDENCE_HIGH', 0.80),
+        ],
+
+        'clarification' => [
+            'force_for_unknown_low_confidence' => env('CHATBOT_UNDERSTANDING_FORCE_CLARIFY_UNKNOWN', true),
+            'force_for_ambiguous_short_reply' => env('CHATBOT_UNDERSTANDING_FORCE_CLARIFY_SHORT_REPLY', true),
+        ],
+    ],
+
+    'runtime_health' => [
+        'fallback_actions' => [
+            'force_handoff' => env('CHATBOT_RUNTIME_FALLBACK_FORCE_HANDOFF', true),
+        ],
+
+        'schema_invalid_actions' => [
+            'force_handoff' => env('CHATBOT_RUNTIME_SCHEMA_INVALID_FORCE_HANDOFF', true),
+        ],
+
+        'degraded_actions' => [
+            'force_clarification' => env('CHATBOT_RUNTIME_DEGRADED_FORCE_CLARIFY', true),
+            'max_confidence' => (float) env('CHATBOT_RUNTIME_DEGRADED_MAX_CONFIDENCE', 0.55),
+        ],
+    ],
+
+    'policy_guard' => [
+        'admin_takeover_blocks_reply' => env('CHATBOT_POLICY_ADMIN_TAKEOVER_BLOCKS_REPLY', true),
+        'bot_paused_blocks_reply' => env('CHATBOT_POLICY_BOT_PAUSED_BLOCKS_REPLY', true),
+
+        'clarification' => [
+            'enabled' => env('CHATBOT_POLICY_CLARIFICATION_ENABLED', true),
+        ],
+
+        'handoff' => [
+            'enabled' => env('CHATBOT_POLICY_HANDOFF_ENABLED', true),
+        ],
+    ],
+
+    'grounding_guard' => [
+        'enabled' => env('CHATBOT_GROUNDING_GUARD_ENABLED', true),
+
+        'risk_thresholds' => [
+            'high_requires_handoff' => env('CHATBOT_GROUNDING_HIGH_HANDOFF', true),
+            'medium_requires_clarification' => env('CHATBOT_GROUNDING_MEDIUM_CLARIFY', true),
+        ],
+
+        'allow_candidate_grounded_reply' => env('CHATBOT_GROUNDING_ALLOW_CANDIDATE_REPLY', true),
+    ],
+
+    'final_guard' => [
+        'reply_max_length' => (int) env('CHATBOT_FINAL_REPLY_MAX_LENGTH', 1500),
+
+        'safe_fallback' => [
+            'enabled' => env('CHATBOT_FINAL_SAFE_FALLBACK_ENABLED', true),
+            'text' => env(
+                'CHATBOT_FINAL_SAFE_FALLBACK_TEXT',
+                'Baik, agar saya tidak keliru, boleh dijelaskan lagi detail kebutuhan atau pertanyaannya ya?'
+            ),
+        ],
+
+        'actions' => [
+            'allow_send_reply' => env('CHATBOT_FINAL_ALLOW_SEND_REPLY', true),
+            'allow_ask_clarification' => env('CHATBOT_FINAL_ALLOW_ASK_CLARIFICATION', true),
+            'allow_escalate_to_human' => env('CHATBOT_FINAL_ALLOW_ESCALATE_TO_HUMAN', true),
+        ],
+    ],
+
+    'reply_orchestrator' => [
+        'candidate_only' => env('CHATBOT_REPLY_ORCHESTRATOR_CANDIDATE_ONLY', true),
+        'delegate_final_decision_to' => env('CHATBOT_REPLY_ORCHESTRATOR_FINAL_DECIDER', 'conversation_reply_guard'),
+    ],
+
+    'grounded_response' => [
+        'candidate_only' => env('CHATBOT_GROUNDED_RESPONSE_CANDIDATE_ONLY', true),
+        'allow_faq' => env('CHATBOT_GROUNDED_RESPONSE_ALLOW_FAQ', true),
+        'allow_knowledge_hits' => env('CHATBOT_GROUNDED_RESPONSE_ALLOW_KNOWLEDGE', true),
+        'allow_crm_grounding' => env('CHATBOT_GROUNDED_RESPONSE_ALLOW_CRM', true),
+    ],
+
+    'webhook' => [
+        'dedup_enabled' => env('CHATBOT_WEBHOOK_DEDUP_ENABLED', true),
+        'log_payload_summary' => env('CHATBOT_WEBHOOK_LOG_PAYLOAD_SUMMARY', true),
+    ],
+
+    'decision_trace' => [
+        'enabled' => env('CHATBOT_DECISION_TRACE_ENABLED', true),
+        'version' => env('CHATBOT_DECISION_TRACE_VERSION', 'v2'),
+        'include_legacy_projection' => env('CHATBOT_DECISION_TRACE_INCLUDE_LEGACY', true),
+    ],
+
+    'feature_flags' => [
+        'llm_first_understanding' => env('CHATBOT_FEATURE_LLM_FIRST_UNDERSTANDING', true),
+        'crm_hints_only_for_understanding' => env('CHATBOT_FEATURE_CRM_HINTS_ONLY_UNDERSTANDING', true),
+        'policy_structured_verdict' => env('CHATBOT_FEATURE_POLICY_STRUCTURED_VERDICT', true),
+        'grounding_structured_verdict' => env('CHATBOT_FEATURE_GROUNDING_STRUCTURED_VERDICT', true),
+        'final_guard_structured_action' => env('CHATBOT_FEATURE_FINAL_GUARD_STRUCTURED_ACTION', true),
+        'crm_structured_writeback_report' => env('CHATBOT_FEATURE_CRM_STRUCTURED_WRITEBACK_REPORT', true),
     ],
 
     /*

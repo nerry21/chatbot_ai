@@ -46,9 +46,12 @@ class UnderstandingOutputParserService
         $normalizedAllowedIntents = $this->normalizeAllowedIntents($allowedIntents);
         $fallbackIntent = $this->fallbackIntent($normalizedAllowedIntents);
         $runtimeMeta = $this->normalizeLlmRuntimeMeta($metadata['llm_runtime'] ?? []);
+        $inputContract = is_array($metadata['input_contract'] ?? null) ? $metadata['input_contract'] : [];
 
+        // 1) Decode payload
         $data = $this->decodePayload($payload);
 
+        // 2) Hard fallback bila payload tidak bisa dipakai
         if ($data === []) {
             return LlmUnderstandingResult::fallback(
                 intent: $fallbackIntent,
@@ -61,9 +64,11 @@ class UnderstandingOutputParserService
             );
         }
 
+        // 3) Normalize core fields
         $intent = $this->normalizeIntent($data['intent'] ?? null, $normalizedAllowedIntents);
         $confidence = $this->normalizeConfidence($data['confidence'] ?? null);
         $entities = $this->normalizeEntities($data);
+        $usesPreviousContext = $this->normalizeBoolean($data['uses_previous_context'] ?? null);
         $needsClarification = $this->normalizeBoolean($data['needs_clarification'] ?? null);
         $clarificationQuestion = $this->normalizeClarificationQuestion(
             $data['clarification_question'] ?? null,
@@ -74,7 +79,13 @@ class UnderstandingOutputParserService
                 ?? $data['reasoning_short']
                 ?? null
         );
+        $handoffRecommended = $this->normalizeBoolean(
+            $data['handoff_recommended']
+                ?? $data['should_escalate']
+                ?? null
+        );
 
+        // 4) Apply schema/runtime safety
         [$confidence, $needsClarification, $clarificationQuestion] = $this->applyRuntimeSafetyAdjustments(
             confidence: $confidence,
             needsClarification: $needsClarification,
@@ -82,6 +93,20 @@ class UnderstandingOutputParserService
             runtimeMeta: $runtimeMeta,
         );
 
+        // 5) Apply understanding decision safety
+        [$confidence, $needsClarification, $clarificationQuestion, $usesPreviousContext, $handoffRecommended] = $this->applyDecisionSafetyAdjustments(
+            intent: $intent,
+            fallbackIntent: $fallbackIntent,
+            confidence: $confidence,
+            usesPreviousContext: $usesPreviousContext,
+            needsClarification: $needsClarification,
+            clarificationQuestion: $clarificationQuestion,
+            handoffRecommended: $handoffRecommended,
+            runtimeMeta: $runtimeMeta,
+            inputContract: $inputContract,
+        );
+
+        // 6) Final reasoning enrichment
         $reasoningSummary = $this->appendRuntimeNotesToReasoningSummary(
             summary: $reasoningSummary,
             runtimeMeta: $runtimeMeta,
@@ -94,24 +119,15 @@ class UnderstandingOutputParserService
             ]),
         );
 
-        if ($intent === $fallbackIntent && $confidence <= 0.30 && $clarificationQuestion === null) {
-            $needsClarification = true;
-            $clarificationQuestion = self::GENERIC_CLARIFICATION_QUESTION;
-        }
-
         return new LlmUnderstandingResult(
             intent: $intent,
             subIntent: $this->normalizeSubIntent($data['sub_intent'] ?? null),
             confidence: $confidence,
-            usesPreviousContext: $this->normalizeBoolean($data['uses_previous_context'] ?? null),
+            usesPreviousContext: $usesPreviousContext,
             entities: $entities,
             needsClarification: $needsClarification,
             clarificationQuestion: $clarificationQuestion,
-            handoffRecommended: $this->normalizeBoolean(
-                $data['handoff_recommended']
-                    ?? $data['should_escalate']
-                    ?? null
-            ),
+            handoffRecommended: $handoffRecommended,
             reasoningSummary: $reasoningSummary,
         );
     }
@@ -123,27 +139,55 @@ class UnderstandingOutputParserService
     private function decodePayload(array|string|null $payload): array
     {
         if (is_array($payload)) {
-            return $payload;
+            return $this->isUsableDecodedPayload($payload) ? $payload : [];
         }
 
         if (! is_string($payload) || trim($payload) === '') {
             return [];
         }
 
-        $decoded = $this->validator->decodeAndValidate(trim($payload));
-        if (is_array($decoded)) {
+        $trimmedPayload = trim($payload);
+
+        $decoded = $this->validator->decodeAndValidate($trimmedPayload);
+        if (is_array($decoded) && $this->isUsableDecodedPayload($decoded)) {
             return $decoded;
         }
 
-        $embeddedJson = $this->extractFirstJsonObject($payload);
+        $embeddedJson = $this->extractFirstJsonObject($trimmedPayload);
         if ($embeddedJson !== null) {
             $embeddedDecoded = $this->validator->decodeAndValidate($embeddedJson);
-            if (is_array($embeddedDecoded)) {
+            if (is_array($embeddedDecoded) && $this->isUsableDecodedPayload($embeddedDecoded)) {
                 return $embeddedDecoded;
             }
         }
 
-        return $this->parseKeyValueFallback($payload);
+        $fallback = $this->parseKeyValueFallback($trimmedPayload);
+
+        return $this->isUsableDecodedPayload($fallback) ? $fallback : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function isUsableDecodedPayload(array $payload): bool
+    {
+        if ($payload === []) {
+            return false;
+        }
+
+        if (array_key_exists('intent', $payload)) {
+            return true;
+        }
+
+        if (array_key_exists('confidence', $payload)) {
+            return true;
+        }
+
+        if (is_array($payload['entities'] ?? null) && $payload['entities'] !== []) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -236,10 +280,24 @@ class UnderstandingOutputParserService
 
     private function normalizeConfidence(mixed $value): float
     {
-        if (is_string($value) && str_ends_with(trim($value), '%')) {
-            $numeric = rtrim(trim($value), '%');
-            if (is_numeric($numeric)) {
-                return $this->validator->clampConfidence(((float) $numeric) / 100);
+        if (is_string($value)) {
+            $trimmed = trim($value);
+
+            if ($trimmed === '') {
+                return 0.0;
+            }
+
+            if (str_ends_with($trimmed, '%')) {
+                $numeric = rtrim($trimmed, '%');
+                if (is_numeric($numeric)) {
+                    return $this->validator->clampConfidence(((float) $numeric) / 100);
+                }
+
+                return 0.0;
+            }
+
+            if (! is_numeric($trimmed)) {
+                return 0.0;
             }
         }
 
@@ -290,7 +348,7 @@ class UnderstandingOutputParserService
             return 'Reasoning summary tidak tersedia.';
         }
 
-        return Str::limit($summary, 180, '...');
+        return Str::limit(preg_replace('/\s+/u', ' ', $summary) ?? $summary, 180, '...');
     }
 
     /**
@@ -324,16 +382,23 @@ class UnderstandingOutputParserService
     private function enrichReasoningSummaryWithMetadata(string $summary, array $metadata = []): string
     {
         $mode = $this->normalizeNullableString($metadata['understanding_mode'] ?? null);
+        $model = $this->normalizeNullableString($metadata['model'] ?? null);
 
-        if ($mode === null) {
+        $suffix = [];
+
+        if ($mode !== null && ! Str::contains($summary, 'mode=')) {
+            $suffix[] = 'mode='.$mode;
+        }
+
+        if ($model !== null && ! Str::contains($summary, 'model=')) {
+            $suffix[] = 'model='.$model;
+        }
+
+        if ($suffix === []) {
             return $summary;
         }
 
-        if (Str::contains($summary, 'mode=')) {
-            return $summary;
-        }
-
-        return Str::limit($summary.' [mode='.$mode.']', 180, '...');
+        return Str::limit($summary.' ['.implode(', ', $suffix).']', 180, '...');
     }
 
     private function normalizeClarificationQuestion(mixed $value, bool $needsClarification): ?string
@@ -344,7 +409,11 @@ class UnderstandingOutputParserService
             return null;
         }
 
-        return $question ?? self::GENERIC_CLARIFICATION_QUESTION;
+        if ($question === null) {
+            return self::GENERIC_CLARIFICATION_QUESTION;
+        }
+
+        return Str::limit($question, 160, '...');
     }
 
     private function normalizeNullableString(mixed $value): ?string
@@ -368,10 +437,30 @@ class UnderstandingOutputParserService
             return $value > 0 ? $value : null;
         }
 
-        if (is_string($value) && preg_match('/^\d+$/', trim($value)) === 1) {
-            $casted = (int) trim($value);
+        if (is_float($value)) {
+            $casted = (int) round($value);
 
             return $casted > 0 ? $casted : null;
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+
+            if ($trimmed === '') {
+                return null;
+            }
+
+            if (preg_match('/^\d+$/', $trimmed) === 1) {
+                $casted = (int) $trimmed;
+
+                return $casted > 0 ? $casted : null;
+            }
+
+            if (is_numeric($trimmed)) {
+                $casted = (int) round((float) $trimmed);
+
+                return $casted > 0 ? $casted : null;
+            }
         }
 
         return null;
@@ -545,9 +634,11 @@ class UnderstandingOutputParserService
         }
 
         return [
+            'trace_id' => $this->normalizeNullableString($value['trace_id'] ?? null),
             'provider' => $this->normalizeNullableString($value['provider'] ?? null),
             'task_key' => $this->normalizeNullableString($value['task_key'] ?? null),
             'task_type' => $this->normalizeNullableString($value['task_type'] ?? null),
+            'understanding_mode' => $this->normalizeNullableString($value['understanding_mode'] ?? null),
             'model' => $this->normalizeNullableString($value['model'] ?? null),
             'primary_model' => $this->normalizeNullableString($value['primary_model'] ?? null),
             'fallback_model' => $this->normalizeNullableString($value['fallback_model'] ?? null),
@@ -565,6 +656,11 @@ class UnderstandingOutputParserService
             'fallback_reason' => $this->normalizeNullableString($value['fallback_reason'] ?? null),
             'error_message' => $this->normalizeNullableString($value['error_message'] ?? null),
             'reasoning_effort' => $this->normalizeNullableString($value['reasoning_effort'] ?? null),
+            'conversation_id' => $this->normalizeInteger($value['conversation_id'] ?? null),
+            'message_id' => $this->normalizeInteger($value['message_id'] ?? null),
+            'prompt_built' => $this->normalizeBoolean($value['prompt_built'] ?? null),
+            'client_called' => $this->normalizeBoolean($value['client_called'] ?? null),
+            'input_contract' => is_array($value['input_contract'] ?? null) ? $value['input_contract'] : [],
         ];
     }
 
@@ -628,6 +724,71 @@ class UnderstandingOutputParserService
 
     /**
      * @param  array<string, mixed>  $runtimeMeta
+     * @param  array<string, mixed>  $inputContract
+     * @return array{0: float, 1: bool, 2: string|null, 3: bool, 4: bool}
+     */
+    private function applyDecisionSafetyAdjustments(
+        string $intent,
+        string $fallbackIntent,
+        float $confidence,
+        bool $usesPreviousContext,
+        bool $needsClarification,
+        ?string $clarificationQuestion,
+        bool $handoffRecommended,
+        array $runtimeMeta,
+        array $inputContract = [],
+    ): array {
+        $status = $this->normalizeNullableString($runtimeMeta['status'] ?? null);
+        $schemaValid = ! array_key_exists('schema_valid', $runtimeMeta) || (bool) $runtimeMeta['schema_valid'];
+        $degradedMode = (bool) ($runtimeMeta['degraded_mode'] ?? false);
+        $usesFullCrmContext = (bool) ($inputContract['uses_full_crm_context'] ?? false);
+
+        if ($usesFullCrmContext) {
+            $confidence = min($confidence, 0.45);
+            $needsClarification = true;
+        }
+
+        if ($intent === $fallbackIntent && $confidence <= 0.30) {
+            $needsClarification = true;
+        }
+
+        if (! $schemaValid) {
+            $handoffRecommended = false;
+        }
+
+        if ($status === 'fallback') {
+            $handoffRecommended = false;
+        }
+
+        if ($degradedMode && $confidence >= 0.60) {
+            $confidence = 0.55;
+        }
+
+        if ($needsClarification && $clarificationQuestion === null) {
+            $clarificationQuestion = self::GENERIC_CLARIFICATION_QUESTION;
+        }
+
+        if (! $needsClarification && $intent === $fallbackIntent && $confidence <= 0.40) {
+            $needsClarification = true;
+            $clarificationQuestion ??= self::GENERIC_CLARIFICATION_QUESTION;
+        }
+
+        if (! $usesPreviousContext && $intent === $fallbackIntent && $confidence <= 0.35) {
+            $needsClarification = true;
+            $clarificationQuestion ??= self::GENERIC_CLARIFICATION_QUESTION;
+        }
+
+        return [
+            $this->validator->clampConfidence($confidence),
+            $needsClarification,
+            $clarificationQuestion,
+            $usesPreviousContext,
+            $handoffRecommended,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
      */
     private function appendRuntimeNotesToReasoningSummary(
         string $summary,
@@ -651,10 +812,40 @@ class UnderstandingOutputParserService
             $notes[] = 'cache_hit';
         }
 
+        if (($runtimeMeta['status'] ?? null) === 'fallback') {
+            $notes[] = 'runtime_fallback';
+        }
+
+        if (($runtimeMeta['client_called'] ?? false) === false && ($runtimeMeta['status'] ?? null) === 'fallback') {
+            $notes[] = 'no_client_call';
+        }
+
         if ($notes === []) {
             return $summary;
         }
 
         return Str::limit($summary.' ['.implode(', ', $notes).']', 180, '...');
+    }
+
+    /**
+     * @param  array<string, mixed>  $runtimeMeta
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, mixed>
+     */
+    public function buildParserAuditSnapshot(array $runtimeMeta = [], array $metadata = []): array
+    {
+        return [
+            'trace_id' => $runtimeMeta['trace_id'] ?? ($metadata['trace_id'] ?? null),
+            'conversation_id' => $runtimeMeta['conversation_id'] ?? ($metadata['conversation_id'] ?? null),
+            'message_id' => $runtimeMeta['message_id'] ?? ($metadata['message_id'] ?? null),
+            'model' => $runtimeMeta['model'] ?? ($metadata['model'] ?? null),
+            'status' => $runtimeMeta['status'] ?? null,
+            'degraded_mode' => $runtimeMeta['degraded_mode'] ?? null,
+            'schema_valid' => $runtimeMeta['schema_valid'] ?? null,
+            'fallback_reason' => $runtimeMeta['fallback_reason'] ?? null,
+            'input_contract' => is_array($runtimeMeta['input_contract'] ?? null)
+                ? $runtimeMeta['input_contract']
+                : (is_array($metadata['input_contract'] ?? null) ? $metadata['input_contract'] : []),
+        ];
     }
 }

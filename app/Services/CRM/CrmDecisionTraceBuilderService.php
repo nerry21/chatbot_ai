@@ -17,6 +17,9 @@ class CrmDecisionTraceBuilderService
      * - snapshot CRM sebelum writeback
      * - outcome final untuk CRM audit
      *
+     * Urutan trace baku (v2):
+     * input_context → understanding → policy → grounding → final_action → crm_effects
+     *
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $summaryResult
      * @param  array<string, mixed>  $finalReply
@@ -101,106 +104,61 @@ class CrmDecisionTraceBuilderService
             hallucinationGuard: $hallucinationGuard,
         );
 
+        $traceId = (string) Str::uuid();
+
+        $inputContext = $this->buildInputContextSection(
+            customer: $customer,
+            conversation: $conversation,
+            contextSnapshot: $contextSnapshot,
+            crmContext: $crmContext,
+        );
+
+        $understandingSection = $this->buildUnderstandingSection(
+            intentResult: $intentResult,
+            llmRuntime: $llmRuntime,
+        );
+
+        $policySection = $this->buildPolicySection(
+            policyGuard: $policyGuard,
+        );
+
+        $groundingSection = $this->buildGroundingSection(
+            hallucinationGuard: $hallucinationGuard,
+        );
+
+        $finalActionSection = $this->buildFinalActionSection(
+            finalReply: $finalReply,
+            replyMeta: $replyMeta,
+            orchestration: $orchestration,
+            intentResult: $intentResult,
+            policyGuard: $policyGuard,
+            hallucinationGuard: $hallucinationGuard,
+            runtimeHealth: $runtimeHealth,
+            finalDecision: $finalDecision,
+            needsEscalation: $needsEscalation,
+        );
+
+        $crmEffectsSection = $this->buildCrmEffectsSection(
+            crmConversation: $crmConversation,
+            crmBusinessFlags: $crmBusinessFlags,
+            crmEscalation: $crmEscalation,
+            crmLeadPipeline: $crmLeadPipeline,
+            crmHubspot: $crmHubspot,
+            usedCrmFacts: $usedCrmFacts,
+            summaryResult: $summaryResult,
+        );
+
         return [
-            'trace_version' => 1,
-            'trace_id' => (string) Str::uuid(),
+            'trace_version' => 2,
+            'trace_id' => $traceId,
             'generated_at' => now()->toIso8601String(),
             'source' => 'crm_llm_closed_loop_trace',
-
-            'customer' => [
-                'id' => $customer->id,
-                'name' => $customer->name,
-                'phone' => $customer->phone_e164,
-            ],
-
-            'conversation' => [
-                'id' => $conversation->id,
-                'status' => $conversation->status ?? null,
-                'admin_takeover_runtime' => method_exists($conversation, 'isAdminTakeover')
-                    ? $conversation->isAdminTakeover()
-                    : false,
-            ],
-
-            'llm' => [
-                'intent' => (string) ($intentResult['intent'] ?? 'unknown'),
-                'confidence' => isset($intentResult['confidence'])
-                    ? (float) $intentResult['confidence']
-                    : 0.0,
-                'reasoning_short' => $this->normalizeText($intentResult['reasoning_short'] ?? null),
-                'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
-                'clarification_question' => $this->normalizeText($intentResult['clarification_question'] ?? null),
-                'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
-                'uses_previous_context' => (bool) ($intentResult['uses_previous_context'] ?? false),
-                'understanding_source' => $this->normalizeText($intentResult['understanding_source'] ?? null),
-                'runtime_health' => $this->resolveStageRuntimeHealth(
-                    is_array($llmRuntime['understanding'] ?? null) ? $llmRuntime['understanding'] : []
-                ),
-                'model' => $llmRuntime['understanding']['model'] ?? null,
-                'provider' => $llmRuntime['understanding']['provider'] ?? null,
-            ],
-
-            'policy_guard' => [
-                'action' => $this->normalizeText($policyGuard['action'] ?? null) ?? 'unknown',
-                'blocked' => (bool) ($policyGuard['block_auto_reply'] ?? false),
-                'reasons' => $this->toStringList($policyGuard['reasons'] ?? []),
-                'crm_policy_source' => $this->normalizeText($policyGuard['crm_policy_source'] ?? null),
-                'crm_policy_snapshot' => is_array($policyGuard['crm_policy_snapshot'] ?? null)
-                    ? $policyGuard['crm_policy_snapshot']
-                    : [],
-                'decision_trace_policy' => is_array($policyGuard['decision_trace_policy'] ?? null)
-                    ? $policyGuard['decision_trace_policy']
-                    : [],
-            ],
-
-            'hallucination_guard' => [
-                'action' => $this->normalizeText($hallucinationGuard['action'] ?? null) ?? 'unknown',
-                'blocked' => (bool) ($hallucinationGuard['blocked'] ?? false),
-                'reason' => $this->normalizeText($hallucinationGuard['reason'] ?? null),
-                'grounding_source' => $this->normalizeText($hallucinationGuard['grounding_source'] ?? null),
-                'crm_grounding_present' => (bool) ($hallucinationGuard['crm_grounding_present'] ?? false),
-                'crm_grounding_sections' => $this->toStringList($hallucinationGuard['crm_grounding_sections'] ?? []),
-                'used_crm_facts' => $this->toStringList($hallucinationGuard['used_crm_facts'] ?? []),
-                'decision_trace_hallucination' => is_array($hallucinationGuard['decision_trace_hallucination'] ?? null)
-                    ? $hallucinationGuard['decision_trace_hallucination']
-                    : [],
-            ],
-
-            'final_reply' => [
-                'source' => $this->normalizeText($replyMeta['source'] ?? null),
-                'action' => $this->normalizeText($replyMeta['action'] ?? null),
-                'grounding_source' => $this->normalizeText($replyMeta['grounding_source'] ?? null),
-                'crm_grounding_present' => (bool) ($replyMeta['crm_grounding_present'] ?? false),
-                'crm_grounding_sections' => $this->toStringList($replyMeta['crm_grounding_sections'] ?? []),
-                'force_handoff' => (bool) ($replyMeta['force_handoff'] ?? false),
-                'is_fallback' => (bool) ($finalReply['is_fallback'] ?? false),
-                'should_escalate' => (bool) ($finalReply['should_escalate'] ?? false),
-                'used_crm_facts' => $this->toStringList($finalReply['used_crm_facts'] ?? []),
-            ],
-
-            'crm_state_before_writeback' => [
-                'lead_stage' => $this->normalizeText($crmLeadPipeline['stage'] ?? null),
-                'conversation_status' => $this->normalizeText($crmConversation['status'] ?? null),
-                'needs_human' => (bool) ($crmConversation['needs_human'] ?? false),
-                'admin_takeover' => (bool) ($crmConversation['admin_takeover'] ?? false),
-                'bot_paused' => (bool) ($crmBusinessFlags['bot_paused'] ?? false),
-                'admin_takeover_active' => (bool) ($crmBusinessFlags['admin_takeover_active'] ?? false),
-                'open_escalation' => (bool) ($crmEscalation['has_open_escalation'] ?? false),
-                'hubspot_contact_id' => $this->normalizeText($crmHubspot['contact_id'] ?? null),
-                'hubspot_lifecycle_stage' => $this->normalizeText($crmHubspot['lifecycle_stage'] ?? null),
-            ],
-
-            'summary' => [
-                'text' => $this->normalizeText($summaryResult['summary'] ?? null),
-                'sentiment' => $this->normalizeText($summaryResult['sentiment'] ?? null),
-                'needs_human_followup' => (bool) ($summaryResult['needs_human_followup'] ?? false),
-            ],
-
-            'orchestration' => [
-                'reply_force_handoff' => (bool) ($orchestration['reply_force_handoff'] ?? false),
-                'booking_action' => $this->normalizeText($orchestration['booking_action'] ?? null),
-                'final_reply_source' => $this->normalizeText($orchestration['final_reply_source'] ?? null),
-            ],
-
+            'input_context' => $inputContext,
+            'understanding' => $understandingSection,
+            'policy' => $policySection,
+            'grounding' => $groundingSection,
+            'final_action' => $finalActionSection,
+            'crm_effects' => $crmEffectsSection,
             'llm_runtime' => [
                 'overall_health' => $runtimeHealth,
                 'understanding' => $llmRuntime['understanding'],
@@ -216,14 +174,248 @@ class CrmDecisionTraceBuilderService
                     is_array($llmRuntime['grounded_response'] ?? null) ? $llmRuntime['grounded_response'] : []
                 ),
             ],
-
-            'outcome' => [
-                'final_decision' => $finalDecision,
-                'needs_escalation' => $needsEscalation,
-                'used_crm_facts' => $usedCrmFacts,
-                'closed_loop_ready' => true,
-                'runtime_health' => $runtimeHealth,
+            'legacy' => [
+                'customer' => [
+                    'id' => $customer->id,
+                    'name' => $customer->name,
+                    'phone' => $customer->phone_e164,
+                ],
+                'conversation' => [
+                    'id' => $conversation->id,
+                    'status' => $conversation->status ?? null,
+                    'admin_takeover_runtime' => method_exists($conversation, 'isAdminTakeover')
+                        ? $conversation->isAdminTakeover()
+                        : false,
+                ],
+                'llm' => $understandingSection,
+                'policy_guard' => $policySection,
+                'hallucination_guard' => $groundingSection,
+                'final_reply' => $finalActionSection,
+                'crm_state_before_writeback' => $crmEffectsSection,
+                'summary' => [
+                    'text' => $this->normalizeText($summaryResult['summary'] ?? null),
+                    'sentiment' => $this->normalizeText($summaryResult['sentiment'] ?? null),
+                    'needs_human_followup' => (bool) ($summaryResult['needs_human_followup'] ?? false),
+                ],
+                'orchestration' => [
+                    'reply_force_handoff' => (bool) ($orchestration['reply_force_handoff'] ?? false),
+                    'booking_action' => $this->normalizeText($orchestration['booking_action'] ?? null),
+                    'final_reply_source' => $this->normalizeText($orchestration['final_reply_source'] ?? null),
+                ],
+                'outcome' => [
+                    'final_decision' => $finalDecision,
+                    'needs_escalation' => $needsEscalation,
+                    'used_crm_facts' => $usedCrmFacts,
+                    'closed_loop_ready' => true,
+                    'runtime_health' => $runtimeHealth,
+                ],
             ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $contextSnapshot
+     * @param  array<string, mixed>  $crmContext
+     * @return array<string, mixed>
+     */
+    private function buildInputContextSection(
+        Customer $customer,
+        Conversation $conversation,
+        array $contextSnapshot,
+        array $crmContext,
+    ): array {
+        return [
+            'trace_id' => $this->normalizeText($contextSnapshot['job_trace_id'] ?? ($contextSnapshot['trace_id'] ?? null)),
+            'decision_trace_id' => $this->normalizeDecisionTraceId($contextSnapshot),
+            'conversation' => [
+                'id' => $conversation->id,
+                'status' => $conversation->status ?? null,
+                'current_intent' => $conversation->current_intent,
+                'needs_human' => (bool) $conversation->needs_human,
+                'admin_takeover_runtime' => method_exists($conversation, 'isAdminTakeover')
+                    ? $conversation->isAdminTakeover()
+                    : false,
+            ],
+            'customer' => [
+                'id' => $customer->id,
+                'name' => $customer->name,
+                'phone' => $customer->phone_e164,
+            ],
+            'context_snapshot' => [
+                'conversation_id' => $contextSnapshot['conversation_id'] ?? null,
+                'message_id' => $contextSnapshot['message_id'] ?? null,
+                'pipeline_stage' => $this->normalizeText($contextSnapshot['pipeline_stage'] ?? null),
+                'crm_context_sections' => array_keys(array_filter(
+                    $crmContext,
+                    static fn ($value): bool => is_array($value) ? $value !== [] : ! empty($value)
+                )),
+                'has_decision_trace_seed' => is_array($contextSnapshot['decision_trace'] ?? null),
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $llmRuntime
+     * @return array<string, mixed>
+     */
+    private function buildUnderstandingSection(
+        array $intentResult,
+        array $llmRuntime,
+    ): array {
+        $understandingRuntime = is_array($llmRuntime['understanding'] ?? null)
+            ? $llmRuntime['understanding']
+            : [];
+
+        return [
+            'intent' => $this->normalizeText($intentResult['intent'] ?? null) ?? 'unknown',
+            'confidence' => isset($intentResult['confidence'])
+                ? (float) $intentResult['confidence']
+                : 0.0,
+            'reasoning_short' => $this->normalizeText($intentResult['reasoning_short'] ?? null),
+            'needs_clarification' => (bool) ($intentResult['needs_clarification'] ?? false),
+            'clarification_question' => $this->normalizeText($intentResult['clarification_question'] ?? null),
+            'handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
+            'uses_previous_context' => (bool) ($intentResult['uses_previous_context'] ?? false),
+            'understanding_source' => $this->normalizeText($intentResult['understanding_source'] ?? null),
+            'runtime_health' => $this->resolveStageRuntimeHealth($understandingRuntime),
+            'runtime' => $understandingRuntime,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $policyGuard
+     * @return array<string, mixed>
+     */
+    private function buildPolicySection(array $policyGuard): array
+    {
+        return [
+            'verdict' => $this->normalizeText($policyGuard['verdict'] ?? null)
+                ?? $this->normalizeText($policyGuard['policy_verdict'] ?? null)
+                ?? 'unknown',
+            'action' => $this->normalizeText($policyGuard['action'] ?? null) ?? 'unknown',
+            'allow' => (bool) ($policyGuard['allow'] ?? false),
+            'blocked' => (bool) ($policyGuard['block_auto_reply'] ?? false),
+            'force_handoff' => (bool) ($policyGuard['force_handoff'] ?? false),
+            'force_clarification' => (bool) ($policyGuard['force_clarification'] ?? false),
+            'reason_code' => $this->normalizeText($policyGuard['reason_code'] ?? null),
+            'reasons' => $this->toStringList($policyGuard['reasons'] ?? []),
+            'crm_policy_source' => $this->normalizeText($policyGuard['crm_policy_source'] ?? null),
+            'crm_policy_snapshot' => is_array($policyGuard['crm_policy_snapshot'] ?? null)
+                ? $policyGuard['crm_policy_snapshot']
+                : [],
+            'decision_trace_policy' => is_array($policyGuard['decision_trace_policy'] ?? null)
+                ? $policyGuard['decision_trace_policy']
+                : [],
+            'runtime_health' => $this->normalizeText($policyGuard['runtime_health'] ?? null),
+            'llm_runtime' => is_array($policyGuard['llm_runtime'] ?? null) ? $policyGuard['llm_runtime'] : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $hallucinationGuard
+     * @return array<string, mixed>
+     */
+    private function buildGroundingSection(array $hallucinationGuard): array
+    {
+        return [
+            'verdict' => $this->normalizeText($hallucinationGuard['verdict'] ?? null)
+                ?? $this->normalizeText($hallucinationGuard['grounding_verdict'] ?? null)
+                ?? 'unknown',
+            'action' => $this->normalizeText($hallucinationGuard['action'] ?? null) ?? 'unknown',
+            'blocked' => (bool) ($hallucinationGuard['blocked'] ?? false),
+            'force_handoff' => (bool) ($hallucinationGuard['force_handoff'] ?? false),
+            'force_clarification' => (bool) ($hallucinationGuard['force_clarification'] ?? false),
+            'reason' => $this->normalizeText($hallucinationGuard['reason'] ?? null),
+            'grounding_source' => $this->normalizeText($hallucinationGuard['grounding_source'] ?? null),
+            'crm_grounding_present' => (bool) ($hallucinationGuard['crm_grounding_present'] ?? false),
+            'crm_grounding_sections' => $this->toStringList($hallucinationGuard['crm_grounding_sections'] ?? []),
+            'used_crm_facts' => $this->toStringList($hallucinationGuard['used_crm_facts'] ?? []),
+            'decision_trace_hallucination' => is_array($hallucinationGuard['decision_trace_hallucination'] ?? null)
+                ? $hallucinationGuard['decision_trace_hallucination']
+                : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $finalReply
+     * @param  array<string, mixed>  $replyMeta
+     * @param  array<string, mixed>  $orchestration
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $policyGuard
+     * @param  array<string, mixed>  $hallucinationGuard
+     * @return array<string, mixed>
+     */
+    private function buildFinalActionSection(
+        array $finalReply,
+        array $replyMeta,
+        array $orchestration,
+        array $intentResult,
+        array $policyGuard,
+        array $hallucinationGuard,
+        string $runtimeHealth,
+        string $finalDecision,
+        bool $needsEscalation,
+    ): array {
+        return [
+            'final_decision' => $finalDecision,
+            'needs_escalation' => $needsEscalation,
+            'reply_source' => $this->normalizeText($replyMeta['source'] ?? null),
+            'reply_action' => $this->normalizeText($replyMeta['action'] ?? null),
+            'grounding_source' => $this->normalizeText($replyMeta['grounding_source'] ?? null),
+            'grounding_verdict' => $this->normalizeText($replyMeta['grounding_verdict'] ?? null),
+            'force_handoff' => (bool) ($replyMeta['force_handoff'] ?? false),
+            'is_fallback' => (bool) ($finalReply['is_fallback'] ?? false),
+            'should_escalate' => (bool) ($finalReply['should_escalate'] ?? false),
+            'next_action' => $this->normalizeText($finalReply['next_action'] ?? null),
+            'handoff_reason' => $this->normalizeText($finalReply['handoff_reason'] ?? null),
+            'clarification_question' => $this->normalizeText($finalReply['clarification_question'] ?? null),
+            'policy_verdict' => $this->normalizeText($policyGuard['verdict'] ?? null)
+                ?? $this->normalizeText($policyGuard['policy_verdict'] ?? null),
+            'grounding_guard_verdict' => $this->normalizeText($hallucinationGuard['verdict'] ?? null)
+                ?? $this->normalizeText($hallucinationGuard['grounding_verdict'] ?? null),
+            'intent_handoff_recommended' => (bool) ($intentResult['handoff_recommended'] ?? false),
+            'reply_force_handoff' => (bool) ($orchestration['reply_force_handoff'] ?? false),
+            'runtime_health' => $runtimeHealth,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $crmConversation
+     * @param  array<string, mixed>  $crmBusinessFlags
+     * @param  array<string, mixed>  $crmEscalation
+     * @param  array<string, mixed>  $crmLeadPipeline
+     * @param  array<string, mixed>  $crmHubspot
+     * @param  array<int, string>  $usedCrmFacts
+     * @param  array<string, mixed>  $summaryResult
+     * @return array<string, mixed>
+     */
+    private function buildCrmEffectsSection(
+        array $crmConversation,
+        array $crmBusinessFlags,
+        array $crmEscalation,
+        array $crmLeadPipeline,
+        array $crmHubspot,
+        array $usedCrmFacts,
+        array $summaryResult,
+    ): array {
+        return [
+            'lead_stage' => $this->normalizeText($crmLeadPipeline['stage'] ?? null),
+            'conversation_status' => $this->normalizeText($crmConversation['status'] ?? null),
+            'needs_human' => (bool) ($crmConversation['needs_human'] ?? false),
+            'admin_takeover' => (bool) ($crmConversation['admin_takeover'] ?? false),
+            'bot_paused' => (bool) ($crmBusinessFlags['bot_paused'] ?? false),
+            'admin_takeover_active' => (bool) ($crmBusinessFlags['admin_takeover_active'] ?? false),
+            'open_escalation' => (bool) ($crmEscalation['has_open_escalation'] ?? false),
+            'hubspot_contact_id' => $this->normalizeText($crmHubspot['contact_id'] ?? null),
+            'hubspot_lifecycle_stage' => $this->normalizeText($crmHubspot['lifecycle_stage'] ?? null),
+            'summary' => [
+                'text' => $this->normalizeText($summaryResult['summary'] ?? null),
+                'sentiment' => $this->normalizeText($summaryResult['sentiment'] ?? null),
+                'needs_human_followup' => (bool) ($summaryResult['needs_human_followup'] ?? false),
+            ],
+            'used_crm_facts' => $usedCrmFacts,
+            'closed_loop_ready' => true,
         ];
     }
 
@@ -239,7 +431,26 @@ class CrmDecisionTraceBuilderService
         array $policyGuard,
         array $hallucinationGuard,
     ): string {
-        if (($finalReply['should_escalate'] ?? false) === true || (($finalReply['meta']['force_handoff'] ?? false) === true)) {
+        $replyMeta = is_array($finalReply['meta'] ?? null) ? $finalReply['meta'] : [];
+        $finalGuardAction = $this->normalizeText($replyMeta['action'] ?? null);
+
+        if ($finalGuardAction === 'escalate_to_human') {
+            return 'handoff';
+        }
+
+        if ($finalGuardAction === 'ask_clarification') {
+            return 'clarify';
+        }
+
+        if ($finalGuardAction === 'safe_fallback') {
+            return 'safe_fallback';
+        }
+
+        if ($finalGuardAction === 'send_reply') {
+            return 'allow';
+        }
+
+        if (($finalReply['should_escalate'] ?? false) === true || (($replyMeta['force_handoff'] ?? false) === true)) {
             return 'handoff';
         }
 
@@ -256,6 +467,19 @@ class CrmDecisionTraceBuilderService
         }
 
         return 'allow';
+    }
+
+    /**
+     * @param  array<string, mixed>  $contextSnapshot
+     */
+    private function normalizeDecisionTraceId(array $contextSnapshot = []): ?string
+    {
+        return $this->normalizeText(
+            $contextSnapshot['decision_trace']['trace_id']
+                ?? $contextSnapshot['job_trace_id']
+                ?? $contextSnapshot['trace_id']
+                ?? null
+        );
     }
 
     /**
@@ -346,6 +570,10 @@ class CrmDecisionTraceBuilderService
         $understandingRuntime = is_array($contextSnapshot['understanding_runtime'] ?? null)
             ? $contextSnapshot['understanding_runtime']
             : (is_array($intentResult['llm_runtime'] ?? null) ? $intentResult['llm_runtime'] : []);
+
+        if (is_array($contextSnapshot['machine_snapshot']['understanding_runtime'] ?? null)) {
+            $understandingRuntime = $contextSnapshot['machine_snapshot']['understanding_runtime'];
+        }
 
         return [
             'understanding' => is_array($replyRuntime['understanding'] ?? null)

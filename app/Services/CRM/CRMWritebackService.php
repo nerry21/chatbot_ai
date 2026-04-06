@@ -99,19 +99,11 @@ class CRMWritebackService
             crmEscalation: $crmEscalation,
         );
 
-        $summarySync = ['status' => 'skipped', 'reason' => 'no_summary'];
-        if ($this->shouldSyncSummary($summaryResult)) {
-            SyncConversationSummaryToCrmJob::dispatch(
-                customerId: $customer->id,
-                conversationId: $conversation->id,
-            )->onQueue('crm');
-
-            $summarySync = [
-                'status' => 'queued',
-                'queue' => 'crm',
-                'reason' => 'summary_sync_enqueued',
-            ];
-        }
+        $summarySync = $this->runSummarySyncStep(
+            customer: $customer,
+            conversation: $conversation,
+            summaryResult: $summaryResult,
+        );
 
         $decisionNote = $this->decisionNoteBuilder->build(
             customer: $customer,
@@ -123,22 +115,13 @@ class CRMWritebackService
             decisionTrace: $decisionTrace,
         );
 
-        $decisionNoteSync = ['status' => 'skipped', 'reason' => 'no_decision_note'];
-        if (trim($decisionNote) !== '') {
-            RetryDecisionNoteToCrmJob::dispatch(
-                customerId: $customer->id,
-                note: $decisionNote,
-            )->onQueue('crm');
-
-            $decisionNoteSync = [
-                'status' => 'queued',
-                'queue' => 'crm',
-                'reason' => 'decision_note_enqueued',
-                'trace_id' => $decisionTrace['trace_id'] ?? null,
-                'runtime_health' => $runtimeHealth,
-                'llm_runtime' => $this->summarizeRuntimeForWriteback($llmRuntime),
-            ];
-        }
+        $decisionNoteSync = $this->runDecisionNoteSyncStep(
+            customer: $customer,
+            decisionNote: $decisionNote,
+            decisionTrace: $decisionTrace,
+            runtimeHealth: $runtimeHealth,
+            llmRuntime: $llmRuntime,
+        );
 
         $intent = is_string($intentResult['intent'] ?? null)
             ? trim((string) $intentResult['intent'])
@@ -155,7 +138,7 @@ class CRMWritebackService
             needsEscalation: $needsEscalation,
         );
 
-        $lead = $this->syncLeadFromDecision(
+        $leadStep = $this->runLeadSyncStep(
             customer: $customer,
             conversation: $conversation,
             booking: $booking,
@@ -167,14 +150,178 @@ class CRMWritebackService
             needsEscalation: $needsEscalation,
         );
 
+        $lead = $leadStep['lead'];
+
+        $contactSync = $this->runContactSyncStep(
+            customer: $customer,
+            intentResult: $intentResult,
+            summaryResult: $summaryResult,
+            finalReply: $finalReply,
+            crmContext: $crmContext,
+            needsEscalation: $needsEscalation,
+            runtimeHealth: $runtimeHealth,
+            llmRuntime: $llmRuntime,
+        );
+
+        $escalationSync = $this->runEscalationSyncStep(
+            conversation: $conversation,
+            intentResult: $intentResult,
+            intent: $intent,
+            needsEscalation: $needsEscalation,
+            crmEscalation: $crmEscalation,
+        );
+
+        $writebackReport = [
+            'contact_sync' => $contactSync,
+            'summary_sync' => $summarySync,
+            'decision_note_sync' => $decisionNoteSync,
+            'lead_sync' => $leadStep['report'],
+            'escalation_sync' => $escalationSync,
+        ];
+
+        WaLog::info('[CRMWriteback] CRM + LLM writeback complete', [
+            'conversation_id' => $conversation->id,
+            'customer_id' => $customer->id,
+            'intent' => $intent,
+            'lead_stage_before' => $crmLeadPipeline['stage'] ?? null,
+            'lead_stage_after' => $lead?->stage,
+            'tags' => $tags,
+            'contact_sync' => $contactSync,
+            'summary_sync' => $summarySync,
+            'decision_note_sync' => $decisionNoteSync,
+            'lead_sync' => $leadStep['report'],
+            'escalation_sync' => $escalationSync,
+            'writeback_report' => $writebackReport,
+            'needs_escalation' => $needsEscalation,
+            'decision_trace_id' => $decisionTrace['trace_id'] ?? null,
+            'decision_trace_final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
+            'decision_trace_used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
+            'runtime_health' => $runtimeHealth,
+            'runtime_summary' => $this->summarizeRuntimeForWriteback($llmRuntime),
+        ]);
+
+        return [
+            'status' => 'ok',
+            'tags' => $tags,
+            'lead_stage' => $lead?->stage,
+            'lead_id' => $lead?->id,
+            'contact_sync' => $contactSync,
+            'summary_sync' => $summarySync,
+            'decision_note_sync' => $decisionNoteSync,
+            'lead_sync' => $leadStep['report'],
+            'escalation_sync' => $escalationSync,
+            'writeback_report' => $writebackReport,
+            'lead' => $lead,
+            'needs_escalation' => $needsEscalation,
+            'decision_trace' => $decisionTrace,
+            'context_snapshot' => [
+                'crm_context_present' => ! empty($crmContext),
+                'orchestration_present' => ! empty($contextSnapshot['orchestration']),
+                'conversation_id' => $conversation->id,
+                'customer_id' => $customer->id,
+                'runtime_health' => $runtimeHealth,
+                'runtime_summary' => $this->summarizeRuntimeForWriteback($llmRuntime),
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $summaryResult
+     * @return array<string, mixed>
+     */
+    private function runSummarySyncStep(
+        $customer,
+        Conversation $conversation,
+        array $summaryResult,
+    ): array {
+        if (! $this->shouldSyncSummary($summaryResult)) {
+            return [
+                'status' => 'skipped',
+                'reason' => 'no_summary',
+                'action' => 'summary_sync',
+            ];
+        }
+
+        SyncConversationSummaryToCrmJob::dispatch(
+            customerId: $customer->id,
+            conversationId: $conversation->id,
+        )->onQueue('crm');
+
+        return [
+            'status' => 'queued',
+            'queue' => 'crm',
+            'reason' => 'summary_sync_enqueued',
+            'action' => 'summary_sync',
+            'metadata' => [
+                'customer_id' => $customer->id,
+                'conversation_id' => $conversation->id,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $decisionTrace
+     * @param  array<string, mixed>  $llmRuntime
+     * @return array<string, mixed>
+     */
+    private function runDecisionNoteSyncStep(
+        $customer,
+        string $decisionNote,
+        array $decisionTrace,
+        string $runtimeHealth,
+        array $llmRuntime,
+    ): array {
+        if (trim($decisionNote) === '') {
+            return [
+                'status' => 'skipped',
+                'reason' => 'no_decision_note',
+                'action' => 'decision_note_sync',
+            ];
+        }
+
+        RetryDecisionNoteToCrmJob::dispatch(
+            customerId: $customer->id,
+            note: $decisionNote,
+        )->onQueue('crm');
+
+        return [
+            'status' => 'queued',
+            'queue' => 'crm',
+            'reason' => 'decision_note_enqueued',
+            'action' => 'decision_note_sync',
+            'trace_id' => $decisionTrace['trace_id'] ?? null,
+            'runtime_health' => $runtimeHealth,
+            'llm_runtime' => $this->summarizeRuntimeForWriteback($llmRuntime),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $summaryResult
+     * @param  array<string, mixed>  $finalReply
+     * @param  array<string, mixed>  $crmContext
+     * @param  array<string, mixed>  $llmRuntime
+     * @return array<string, mixed>
+     */
+    private function runContactSyncStep(
+        $customer,
+        array $intentResult,
+        array $summaryResult,
+        array $finalReply,
+        array $crmContext,
+        bool $needsEscalation,
+        string $runtimeHealth,
+        array $llmRuntime,
+    ): array {
         SyncContactToCrmJob::dispatch(
             customerId: $customer->id,
         )->onQueue('crm');
 
-        $contactSync = [
+        return [
             'status' => 'queued',
             'queue' => 'crm',
             'reason' => 'contact_sync_enqueued',
+            'action' => 'contact_sync',
             'context' => [
                 'last_ai_intent' => $intentResult['intent'] ?? null,
                 'last_ai_summary' => $summaryResult['summary'] ?? null,
@@ -199,51 +346,97 @@ class CRMWritebackService
                 'ai_runtime_grounded_model' => $llmRuntime['grounded_response']['model'] ?? null,
             ],
         ];
+    }
 
-        if ($needsEscalation && (($crmEscalation['has_open_escalation'] ?? false) !== true)) {
-            EscalateConversationToAdminJob::dispatch(
-                $conversation->id,
-                (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation'),
-                'normal',
-            )->onQueue('priority');
-        }
-
-        WaLog::info('[CRMWriteback] CRM + LLM writeback complete', [
-            'conversation_id' => $conversation->id,
-            'customer_id' => $customer->id,
-            'intent' => $intent,
-            'lead_stage_before' => $crmLeadPipeline['stage'] ?? null,
-            'lead_stage_after' => $lead?->stage,
-            'tags' => $tags,
-            'contact_sync' => $contactSync,
-            'summary_sync' => $summarySync,
-            'decision_note_sync' => $decisionNoteSync,
-            'needs_escalation' => $needsEscalation,
-            'decision_trace_id' => $decisionTrace['trace_id'] ?? null,
-            'decision_trace_final_decision' => $decisionTrace['outcome']['final_decision'] ?? null,
-            'decision_trace_used_crm_facts' => $decisionTrace['outcome']['used_crm_facts'] ?? [],
-            'runtime_health' => $runtimeHealth,
-            'runtime_summary' => $this->summarizeRuntimeForWriteback($llmRuntime),
-        ]);
+    /**
+     * @param  array<string, mixed>  $crmLeadPipeline
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $summaryResult
+     * @param  array<string, mixed>  $finalReply
+     * @return array{lead:mixed, report:array<string,mixed>}
+     */
+    private function runLeadSyncStep(
+        $customer,
+        Conversation $conversation,
+        ?BookingRequest $booking,
+        string $intent,
+        array $crmLeadPipeline,
+        array $intentResult,
+        array $summaryResult,
+        array $finalReply,
+        bool $needsEscalation,
+    ): array {
+        $lead = $this->syncLeadFromDecision(
+            customer: $customer,
+            conversation: $conversation,
+            booking: $booking,
+            intent: $intent,
+            crmLeadPipeline: $crmLeadPipeline,
+            intentResult: $intentResult,
+            summaryResult: $summaryResult,
+            finalReply: $finalReply,
+            needsEscalation: $needsEscalation,
+        );
 
         return [
-            'status' => 'ok',
-            'tags' => $tags,
-            'lead_stage' => $lead?->stage,
-            'lead_id' => $lead?->id,
-            'contact_sync' => $contactSync,
-            'summary_sync' => $summarySync,
-            'decision_note_sync' => $decisionNoteSync,
             'lead' => $lead,
-            'needs_escalation' => $needsEscalation,
-            'decision_trace' => $decisionTrace,
-            'context_snapshot' => [
-                'crm_context_present' => ! empty($crmContext),
-                'orchestration_present' => ! empty($contextSnapshot['orchestration']),
+            'report' => [
+                'status' => $lead === null ? 'skipped' : 'synced',
+                'reason' => $lead === null ? 'lead_not_available' : 'lead_synced',
+                'action' => 'lead_sync',
+                'metadata' => [
+                    'lead_id' => $lead?->id,
+                    'lead_stage_before' => $crmLeadPipeline['stage'] ?? null,
+                    'lead_stage_after' => $lead?->stage,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @param  array<string, mixed>  $crmEscalation
+     * @return array<string, mixed>
+     */
+    private function runEscalationSyncStep(
+        Conversation $conversation,
+        array $intentResult,
+        string $intent,
+        bool $needsEscalation,
+        array $crmEscalation,
+    ): array {
+        if (! $needsEscalation) {
+            return [
+                'status' => 'skipped',
+                'reason' => 'no_escalation_needed',
+                'action' => 'escalation_sync',
+            ];
+        }
+
+        if (($crmEscalation['has_open_escalation'] ?? false) === true) {
+            return [
+                'status' => 'skipped',
+                'reason' => 'already_open',
+                'action' => 'escalation_sync',
+            ];
+        }
+
+        $reason = (string) ($intentResult['reasoning_short'] ?? $intent ?? 'AI requested escalation');
+
+        EscalateConversationToAdminJob::dispatch(
+            $conversation->id,
+            $reason,
+            'normal',
+        )->onQueue('priority');
+
+        return [
+            'status' => 'queued',
+            'queue' => 'priority',
+            'reason' => 'escalation_enqueued',
+            'action' => 'escalation_sync',
+            'metadata' => [
                 'conversation_id' => $conversation->id,
-                'customer_id' => $customer->id,
-                'runtime_health' => $runtimeHealth,
-                'runtime_summary' => $this->summarizeRuntimeForWriteback($llmRuntime),
+                'escalation_reason' => $reason,
             ],
         ];
     }
