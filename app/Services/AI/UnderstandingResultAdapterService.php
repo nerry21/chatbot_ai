@@ -65,6 +65,7 @@ class UnderstandingResultAdapterService
             'intent_result' => $finalIntentResult,
             'entity_result' => $finalEntityResult,
             'meta' => $meta,
+            'business_domain' => 'travel',
             'raw_understanding' => $this->rawUnderstandingSnapshot($understanding),
             'normalized_understanding' => [
                 'intent_result' => $finalIntentResult,
@@ -83,7 +84,18 @@ class UnderstandingResultAdapterService
             return true;
         }
 
-        if ($understanding->confidence <= 0.20) {
+        if (
+            $understanding->confidence <= 0.20
+            && ! in_array($understanding->intent, [
+                'ask_schedule',
+                'ask_fare',
+                'ask_route',
+                'booking_start',
+                'schedule_change',
+                'pickup_dropoff_question',
+                'payment_question',
+            ], true)
+        ) {
             return true;
         }
 
@@ -146,9 +158,13 @@ class UnderstandingResultAdapterService
             'source' => $usedLegacyFallback ? 'legacy_fallback' : 'llm_understanding',
             'needs_clarification' => $understanding->needsClarification,
             'clarification_question' => $understanding->clarificationQuestion,
+            'needs_clarification_reason' => $understanding->needsClarification
+                ? 'travel_context_needs_more_detail'
+                : null,
             'handoff_recommended' => $understanding->handoffRecommended,
             'uses_previous_context' => $understanding->usesPreviousContext,
             'runtime_health' => $this->deriveRuntimeHealth($normalizedRuntimeMeta),
+            'business_domain' => 'travel',
         ];
     }
 
@@ -179,6 +195,20 @@ class UnderstandingResultAdapterService
         ];
 
         if ($legacyEntityResult !== []) {
+            if (in_array($understanding->intent, [
+                'ask_schedule',
+                'ask_fare',
+                'ask_route',
+                'booking_start',
+                'schedule_change',
+            ], true)) {
+                unset(
+                    $legacyEntityResult['pickup_full_address'],
+                    $legacyEntityResult['destination_full_address'],
+                    $legacyEntityResult['booking_confirmation'],
+                    $legacyEntityResult['review_confirmation']
+                );
+            }
             $finalEntities = $this->mergeLegacyEntities($finalEntities, $legacyEntityResult);
         }
 

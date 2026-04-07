@@ -56,6 +56,23 @@ class ReplyOrchestratorService
             ? $context['intent_result']
             : $this->intentClassificationService->classify($context);
 
+        $intent = (string) ($intentResult['intent'] ?? 'unknown');
+        $businessDomain = (string) (
+            $intentResult['business_domain']
+            ?? data_get($context, 'prompts.business_domain')
+            ?? config('chatbot.prompts.business_domain', 'travel')
+        );
+        $isTravelIntent = in_array($intent, [
+            'ask_schedule',
+            'ask_fare',
+            'ask_route',
+            'booking_start',
+            'booking_update',
+            'schedule_change',
+            'pickup_dropoff_question',
+            'payment_question',
+        ], true);
+
         $replyDraft = is_array($context['reply_result'] ?? null)
             ? $context['reply_result']
             : $this->replyGenerationService->generate(
@@ -92,6 +109,8 @@ class ReplyOrchestratorService
             'intent_result' => $intentResult,
             'rule_evaluation' => $ruleEvaluation,
             'reply_result' => $finalReply,
+            'business_domain' => $businessDomain,
+            'is_travel_intent' => $isTravelIntent,
         ];
     }
 
