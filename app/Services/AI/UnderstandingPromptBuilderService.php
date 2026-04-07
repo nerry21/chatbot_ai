@@ -61,6 +61,11 @@ PRINSIP UTAMA:
 16. Jika admin_takeover=true atau CRM hints menunjukkan bot_paused/admin_takeover_active, jangan otomatis menganggap intent berubah; tetap pahami isi pesan user secara literal dan konservatif.
 17. Gunakan crm_hints hanya untuk continuity, misalnya mengenali bahwa user sedang di alur booking, pernah escalation, atau perlu follow-up, tetapi bukan untuk mengubah makna pesan terbaru.
 18. Jangan menambahkan field baru di luar format output.
+19. Domain bisnis utama adalah travel antar kota. Prioritaskan interpretasi terkait jadwal, keberangkatan, rute, harga, booking, ubah data booking, ubah jadwal, titik jemput, alamat jemput, tujuan, alamat tujuan, seat, dan pembayaran.
+20. Jika pesan terbaru tampak seperti pembuka baru atau pertanyaan baru, jangan menghidupkan ulang missing field lama dari booking yang sudah stale.
+21. Jika ada riwayat lama tetapi pesan terbaru jelas menanyakan jadwal/harga/rute baru, fokus ke pertanyaan travel terbaru.
+22. Jangan terlalu kaku. Untuk pertanyaan travel sederhana, pilih intent travel yang paling dekat daripada langsung unknown atau handoff.
+23. Jika konteks belum lengkap, tetap pahami arah travel user terlebih dahulu lalu minta klarifikasi yang paling relevan.
 
 INTENT YANG DIIZINKAN:
 {$allowedIntentList}
@@ -144,10 +149,10 @@ SYSTEM;
     {
         return implode("\n", [
             '- Gunakan pesan user terbaru sebagai sumber utama.',
-            '- Riwayat, conversation state, dan known entities hanya membantu kesinambungan.',
+            '- Riwayat hanya dipakai bila masih relevan dengan topik travel terbaru.',
+            '- Jangan hidupkan ulang slot booking lama jika user tampak memulai topik baru.',
             '- CRM hints hanya continuity hints, bukan sumber kebenaran utama.',
-            '- Jangan mengambil keputusan bisnis final dari hints.',
-            '- Jika konteks kurang, pilih intent paling aman dan set needs_clarification=true.',
+            '- Jika konteks kurang, pilih intent travel paling aman lalu set needs_clarification=true.',
         ]);
     }
 

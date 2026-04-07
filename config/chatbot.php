@@ -39,7 +39,8 @@ return [
     */
 
     'memory' => [
-        'max_recent_messages' => (int) env('CHATBOT_MAX_RECENT_MESSAGES', 10),
+        'max_recent_messages' => (int) env('CHATBOT_MAX_RECENT_MESSAGES', 6),
+        'history_max_age_minutes' => (int) env('CHATBOT_HISTORY_MAX_AGE_MINUTES', 180),
     ],
 
     /*
@@ -51,6 +52,7 @@ return [
     'prompts' => [
         'language' => env('CHATBOT_PROMPT_LANGUAGE', 'id'),
         'style'    => env('CHATBOT_PROMPT_STYLE', 'sopan_ringkas'),
+        'business_domain' => env('CHATBOT_BUSINESS_DOMAIN', 'travel'),
     ],
 
     /*
@@ -112,8 +114,8 @@ return [
         ],
         'unavailable_state_key'       => 'route_unavailable_context',
         'unavailable_state_ttl_hours' => (int) env('CHATBOT_UNAVAILABLE_STATE_TTL_HOURS', 24),
-        'unavailable_followup_reply'  => 'Baik, kalau ingin saya cek lagi, silakan kirim rute atau detail perjalanan baru yang ingin dicoba.',
-        'unavailable_close_reply'     => 'Baik, terima kasih. Jika nanti Anda ingin cek rute atau jadwal lain, silakan kirim detail barunya ya.',
+        'unavailable_followup_reply'  => 'Baik, jika ingin saya bantu cek lagi, silakan kirim rute, jadwal, atau detail perjalanan baru yang ingin dicoba.',
+        'unavailable_close_reply'     => 'Baik, terima kasih. Jika nanti Anda ingin cek jadwal, rute, atau booking travel lainnya, silakan kirim detail barunya ya.',
         'repair_corrupted_state'      => (bool) env('CHATBOT_REPAIR_CORRUPTED_STATE', true),
     ],
 

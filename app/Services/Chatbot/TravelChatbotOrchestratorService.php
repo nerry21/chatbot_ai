@@ -50,6 +50,14 @@ class TravelChatbotOrchestratorService
 
         $conversation = $this->stateService->findOrCreate($customerPhone, $channel, $customerName);
 
+        if ($this->stateService->shouldStartFreshSession($conversation, $now, $text)) {
+            $conversation = $this->stateService->resetForFreshSession(
+                $conversation,
+                $now,
+                'travel_new_topic_or_stale_session'
+            );
+        }
+
         $conversation = $this->stateService->markIncomingMessage(
             $conversation,
             $text,

@@ -49,7 +49,10 @@ class TravelConversationStateService
                 'current_step'               => null,
                 'booking_data'               => [],
                 'schedule_change_data'       => [],
-                'meta'                       => [],
+                'meta'                       => [
+                    'history_visible_from' => now($this->timezone())->toDateTimeString(),
+                    'conversation_domain' => 'travel',
+                ],
                 'is_waiting_customer_reply'  => false,
                 'is_cancelled'               => false,
                 'is_active'                  => true,
@@ -347,6 +350,77 @@ class TravelConversationStateService
         $state->second_follow_up_sent_at    = null;
         $state->is_waiting_customer_reply   = false;
         $state->is_cancelled                = false;
+        $state->meta = $meta;
+        $state->save();
+
+        return $state->fresh();
+    }
+
+    public function shouldStartFreshSession(
+        ChatbotConversationState $state,
+        ?Carbon $now = null,
+        ?string $latestMessage = null,
+    ): bool {
+        $now ??= now($this->timezone());
+
+        $status = (string) ($state->status ?? 'idle');
+        $lastCustomerAt = $state->last_customer_message_at;
+        $lastCompletedAt = $state->last_completed_booking_at;
+
+        $latestMessage = trim((string) $latestMessage);
+        $normalized = mb_strtolower($latestMessage, 'UTF-8');
+
+        $isShortFreshOpen = in_array($normalized, [
+            'assalamualaikum',
+            'halo',
+            'hai',
+            'pagi',
+            'siang',
+            'sore',
+            'malam',
+            'assalamualaikum selamat pagi',
+        ], true);
+
+        if (in_array($status, ['booking', 'schedule_change'], true)) {
+            return false;
+        }
+
+        if ($lastCompletedAt !== null && $lastCompletedAt->diffInHours($now) >= 2) {
+            return true;
+        }
+
+        if ($lastCustomerAt !== null && $lastCustomerAt->diffInHours($now) >= 6) {
+            return true;
+        }
+
+        if ($status === 'booking_confirmed' && $isShortFreshOpen) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function resetForFreshSession(
+        ChatbotConversationState $state,
+        ?Carbon $now = null,
+        string $reason = 'fresh_session_cutoff',
+    ): ChatbotConversationState {
+        $now ??= now($this->timezone());
+
+        $meta = $state->meta ?? [];
+        $meta['history_visible_from'] = $now->toDateTimeString();
+        $meta['fresh_session_started_at'] = $now->toDateTimeString();
+        $meta['fresh_session_reason'] = $reason;
+
+        $state->status = 'idle';
+        $state->current_step = null;
+        $state->booking_data = [];
+        $state->schedule_change_data = [];
+        $state->last_admin_notification_key = null;
+        $state->first_follow_up_sent_at = null;
+        $state->second_follow_up_sent_at = null;
+        $state->is_waiting_customer_reply = false;
+        $state->is_cancelled = false;
         $state->meta = $meta;
         $state->save();
 

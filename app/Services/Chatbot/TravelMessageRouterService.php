@@ -83,32 +83,38 @@ class TravelMessageRouterService
             return $this->handleGreetingOnly($text, $state, $now);
         }
 
-        // 2. Offer repeat booking / schedule change after a completed booking
+        // 2. Pertanyaan jadwal sederhana harus dibaca sebagai travel inquiry,
+        // bukan diseret ke repeat-booking atau fallback generic.
+        if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
+            return $this->handleSimpleScheduleQuestion($text, $state);
+        }
+
+        // 3. Offer repeat booking / schedule change after a completed booking
         if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
             return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
         }
 
-        // 3. Schedule change start trigger
+        // 4. Schedule change start trigger
         if ($this->isScheduleChangeMessage($text)) {
             return $this->handleScheduleChangeStart($text, $phone, $state, $now);
         }
 
-        // 4. Schedule change continuation
+        // 5. Schedule change continuation
         if ($state['status'] === 'schedule_change') {
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
         }
 
-        // 5. Booking start trigger
+        // 6. Booking start trigger
         if ($this->isBookingStartMessage($text) && $state['status'] === 'idle') {
             return $this->handleBookingStart($state);
         }
 
-        // 6. Booking continuation
+        // 7. Booking continuation
         if ($state['status'] === 'booking') {
             return $this->handleBookingFlow($text, $phone, $state, $now);
         }
 
-        // 7. Fare question
+        // 8. Fare question
         if ($this->looksLikeFareQuestion($text)) {
             $fareResponse = $this->tryHandleFareQuestion($text, $state);
             if ($fareResponse !== null) {
@@ -116,7 +122,7 @@ class TravelMessageRouterService
             }
         }
 
-        // 8. Knowledge base / FAQ
+        // 9. Knowledge base / FAQ
         $faqMatch = $this->faqMatcherService->match($text);
         if ($faqMatch !== null && $faqMatch['score'] >= TravelFaqMatcherService::FALLBACK_SCORE_THRESHOLD) {
             return $this->buildResult(
@@ -747,7 +753,18 @@ class TravelMessageRouterService
     {
         $normalized = $this->normalizeText($text);
 
-        foreach (['mau booking', 'mau pesan', 'pesan travel', 'booking', 'reservasi'] as $pattern) {
+        foreach ([
+            'mau booking',
+            'mau pesan',
+            'pesan travel',
+            'booking',
+            'reservasi',
+            'pesan tiket',
+            'mau berangkat',
+            'saya mau berangkat',
+            'lanjut booking',
+            'lanjut pesan',
+        ] as $pattern) {
             if (str_contains($normalized, $pattern)) {
                 return true;
             }
@@ -760,7 +777,17 @@ class TravelMessageRouterService
     {
         $normalized = $this->normalizeText($text);
 
-        foreach (['ubah jadwal', 'ganti jadwal', 'perubahan jadwal', 'ubah tanggal', 'ubah jam'] as $pattern) {
+        foreach ([
+            'ubah jadwal',
+            'ganti jadwal',
+            'perubahan jadwal',
+            'ubah tanggal',
+            'ubah jam',
+            'reschedule',
+            'jadwalnya diubah',
+            'saya mau ubah jadwal',
+            'saya mau ganti jadwal',
+        ] as $pattern) {
             if (str_contains($normalized, $pattern)) {
                 return true;
             }
@@ -790,11 +817,136 @@ class TravelMessageRouterService
 
         $normalized = $this->normalizeText($text);
 
-        $triggers = ['halo', 'hai', 'pagi', 'siang', 'sore', 'malam', 'assalamualaikum'];
+        if ($this->looksLikeSimpleScheduleQuestion($text)) {
+            return false;
+        }
+
+        $lastCompletedAt = $this->parseStateDepartureDatetime($state['last_completed_booking_at'] ?? null);
+        if ($lastCompletedAt === null) {
+            return false;
+        }
+
+        if ($lastCompletedAt->diffInMinutes(now(config('chatbot.jet.timezone', 'Asia/Jakarta'))) > 90) {
+            return false;
+        }
+
+        $triggers = [
+            'halo',
+            'hai',
+            'pagi',
+            'siang',
+            'sore',
+            'malam',
+            'assalamualaikum',
+            'assalamualaikum selamat pagi',
+        ];
 
         return in_array($normalized, $triggers, true)
             || str_contains($normalized, 'pesan lagi')
             || str_contains($normalized, 'booking lagi');
+    }
+
+    private function looksLikeBusinessQuestion(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        $patterns = [
+            'booking',
+            'pesan',
+            'jadwal',
+            'keberangkatan',
+            'berangkat',
+            'jam 5',
+            'jam 8',
+            'jam 10',
+            'jam 14',
+            'jam 16',
+            'jam 19',
+            'ongkos',
+            'tarif',
+            'harga',
+            'seat',
+            'kursi',
+            'jemput',
+            'antar',
+            'tujuan',
+            'rute',
+            'travel',
+            'ubah jadwal',
+            'ganti jadwal',
+            'apakah ada',
+            'ada keberangkatan',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function looksLikeSimpleScheduleQuestion(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach ([
+            'jadwal',
+            'keberangkatan',
+            'berangkat',
+            'jam ',
+            'pagi',
+            'siang',
+            'sore',
+            'malam',
+            'apakah ada',
+            'ada keberangkatan',
+        ] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        if ($this->bookingRuleService->findDepartureTime($text) !== null) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function handleSimpleScheduleQuestion(string $text, array $state): array
+    {
+        $slot = $this->bookingRuleService->findDepartureTime($text);
+
+        $reply = 'Untuk jadwal keberangkatan travel, tersedia pilihan berikut:'
+            . "\n\n"
+            . $this->buildDepartureMenuText();
+
+        if ($slot !== null) {
+            $slotLabel = (string) ($slot['label'] ?? 'Jadwal');
+            $slotTime  = substr((string) ($slot['time'] ?? ''), 0, 5);
+
+            $reply = "Izin Bapak/Ibu, untuk jam {$slotTime} WIB tersedia pada jadwal {$slotLabel}."
+                . "\n\n"
+                . 'Berikut pilihan jadwal yang tersedia:'
+                . "\n\n"
+                . $this->buildDepartureMenuText()
+                . "\n\nJika ingin, saya bisa bantu lanjut bookingnya.";
+        } else {
+            $reply .= "\n\nJika ingin, saya bisa bantu cek dan lanjutkan bookingnya.";
+        }
+
+        return $this->buildResult(
+            replyText: $reply,
+            intent: 'ask_schedule',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'schedule_question' => true,
+                'matched_slot' => $slot,
+            ],
+        );
     }
 
     // ─── Extraction helpers ────────────────────────────────────────────────────

@@ -36,6 +36,7 @@ class UnderstandingCrmHintReducerService
         $hints = [
             'hint_version' => 1,
             'mode' => 'crm_hints_only_for_understanding',
+            'business_domain' => 'travel',
 
             'continuity' => $this->clean([
                 'has_summary' => $conversationSummary !== null && trim($conversationSummary) !== '',
@@ -73,9 +74,6 @@ class UnderstandingCrmHintReducerService
                 'is_returning' => $this->isTruthy($businessFlags['customer_is_returning'] ?? null),
                 'preferred_pickup' => $this->normalizeText($customer['preferred_pickup'] ?? null),
                 'preferred_destination' => $this->normalizeText($customer['preferred_destination'] ?? null),
-                'interest_topic' => $this->normalizeText(
-                    $hubspot['ai_memory']['customer_interest_topic'] ?? null
-                ),
             ]),
 
             'booking_hint' => $this->clean([
@@ -115,14 +113,10 @@ class UnderstandingCrmHintReducerService
 
             'lead_hint' => $this->clean([
                 'stage' => $this->normalizeText($lead['stage'] ?? null),
-                'lifecycle_stage' => $this->normalizeText($hubspot['lifecycle_stage'] ?? null),
-                'lead_status' => $this->normalizeText($hubspot['lead_status'] ?? null),
             ]),
 
             'memory_hint' => $this->clean([
                 'last_ai_intent' => $this->normalizeText($hubspot['ai_memory']['last_ai_intent'] ?? null),
-                'customer_interest_topic' => $this->normalizeText($hubspot['ai_memory']['customer_interest_topic'] ?? null),
-                'needs_human_followup' => $this->isTruthy($hubspot['ai_memory']['needs_human_followup'] ?? null),
                 'recent_topic' => $this->normalizeText(
                     $customerMemory['recent_topic']
                         ?? $customerMemory['last_topic']

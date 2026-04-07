@@ -14,7 +14,7 @@ use App\Support\WaLog;
 
 class ConversationContextLoaderService
 {
-    private const HISTORY_FETCH_LIMIT = 20;
+    private const HISTORY_FETCH_LIMIT = 12;
 
     public function __construct(
         private readonly ConversationStateService $stateService,
@@ -123,8 +123,13 @@ class ConversationContextLoaderService
      */
     private function loadHistoryMessages(Conversation $conversation, int $excludeMessageId): array
     {
+        $historyMaxAgeMinutes = (int) config('chatbot.memory.history_max_age_minutes', 180);
+        $cutoff = now()->subMinutes(max(30, $historyMaxAgeMinutes));
+
         return $conversation->messages()
             ->where('id', '!=', $excludeMessageId)
+            ->whereNotNull('message_text')
+            ->where('sent_at', '>=', $cutoff)
             ->orderByDesc('sent_at')
             ->limit(self::HISTORY_FETCH_LIMIT)
             ->get(['direction', 'sender_type', 'message_text', 'sent_at'])
@@ -245,7 +250,7 @@ class ConversationContextLoaderService
 
     private function historyWindow(): int
     {
-        return min(10, max(5, (int) config('chatbot.memory.max_recent_messages', 10)));
+        return min(6, max(3, (int) config('chatbot.memory.max_recent_messages', 6)));
     }
 
     /**
