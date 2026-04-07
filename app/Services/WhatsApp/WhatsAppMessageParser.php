@@ -248,6 +248,7 @@ class WhatsAppMessageParser
                 str_starts_with($id, 'departure_time:') => $id,
                 str_starts_with($id, 'pickup_location:') => $id,
                 str_starts_with($id, 'dropoff_location:') => $id,
+                str_starts_with($id, 'change_field:') => $id,
                 preg_match('/^passenger_count_(\d+)$/', $id, $matches) === 1 => (string) ($matches[1] ?? $id),
                 default => null,
             };

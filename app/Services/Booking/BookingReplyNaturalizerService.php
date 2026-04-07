@@ -99,9 +99,9 @@ class BookingReplyNaturalizerService
     public function askTravelDate(?string $seed = null): string
     {
         return $this->variation->pick([
-            'Izin Bapak/Ibu, kalau boleh tahu untuk keberangkatan di tanggal berapa dan jam berapa?',
-            'Izin Bapak/Ibu, rencananya berangkat tanggal berapa dan pilih jam yang mana ya?',
-            'Boleh dibantu, untuk keberangkatannya di tanggal berapa dan jam berapa ya?',
+            'Izin Bapak/Ibu, untuk keberangkatannya mohon pilih tanggalnya dulu ya.',
+            'Izin Bapak/Ibu, rencananya berangkat tanggal berapa ya? Silakan pilih tanggalnya.',
+            'Boleh dibantu, untuk keberangkatannya mohon pilih tanggal dulu ya.',
         ], $seed);
     }
 

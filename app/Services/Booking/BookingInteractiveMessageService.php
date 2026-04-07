@@ -2,10 +2,38 @@
 
 namespace App\Services\Booking;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 class BookingInteractiveMessageService
 {
+    /**
+     * @return array{text: string, message_type: string, outbound_payload: array<string, mixed>}
+     */
+    public function departureDateMenu(string $body, int $days = 14, ?string $footer = null): array
+    {
+        $rows = array_map(
+            fn (array $option): array => [
+                'id' => 'departure_date:'.$option['value'],
+                'title' => $option['title'],
+                'description' => $option['description'],
+            ],
+            $this->departureDateOptions($days),
+        );
+
+        $footer ??= 'Jika menu tidak tampil, balas angka pilihan atau tanggal yang dipilih.';
+
+        return $this->listMessage(
+            $body,
+            'Pilih Tanggal',
+            [[
+                'title' => 'Tanggal keberangkatan',
+                'rows' => $rows,
+            ]],
+            $footer,
+        );
+    }
+
     /**
      * @param  array<int, array<string, mixed>>  $slots
      * @return array{text: string, message_type: string, outbound_payload: array<string, mixed>}
@@ -83,6 +111,36 @@ class BookingInteractiveMessageService
             prefix: 'dropoff_location',
             sectionLabel: 'Lokasi antar',
             footer: $footer ?? 'Jika menu tidak tampil, balas angka atau nama lokasi tujuan.',
+        );
+    }
+
+    /**
+     * @return array{text: string, message_type: string, outbound_payload: array<string, mixed>}
+     */
+    public function changeFieldMenu(?string $footer = null): array
+    {
+        $rows = [
+            ['id' => 'change_field:travel_date', 'title' => 'Tanggal', 'description' => 'Ubah tanggal keberangkatan'],
+            ['id' => 'change_field:travel_time', 'title' => 'Jam', 'description' => 'Ubah jam keberangkatan'],
+            ['id' => 'change_field:passenger_count', 'title' => 'Penumpang', 'description' => 'Ubah jumlah penumpang'],
+            ['id' => 'change_field:selected_seats', 'title' => 'Seat', 'description' => 'Ubah pilihan seat'],
+            ['id' => 'change_field:pickup_location', 'title' => 'Jemput', 'description' => 'Ubah titik jemput'],
+            ['id' => 'change_field:pickup_full_address', 'title' => 'Alamat Jemput', 'description' => 'Ubah alamat jemput'],
+            ['id' => 'change_field:destination', 'title' => 'Tujuan', 'description' => 'Ubah tujuan antar'],
+            ['id' => 'change_field:passenger_name', 'title' => 'Nama', 'description' => 'Ubah nama penumpang'],
+            ['id' => 'change_field:contact_number', 'title' => 'Kontak', 'description' => 'Ubah nomor kontak'],
+        ];
+
+        $footer ??= 'Jika menu tidak tampil, balas nama bagian yang ingin diubah.';
+
+        return $this->listMessage(
+            'Silakan pilih bagian data yang ingin diubah.',
+            'Ubah Data',
+            [[
+                'title' => 'Bagian booking',
+                'rows' => $rows,
+            ]],
+            $footer,
         );
     }
 
@@ -275,5 +333,35 @@ class BookingInteractiveMessageService
     private function slugValue(string $value): string
     {
         return Str::slug($value);
+    }
+
+    /**
+     * @return array<int, array{value: string, title: string, description: string}>
+     */
+    private function departureDateOptions(int $days = 14): array
+    {
+        $days = max(7, min(30, $days));
+        $timezone = config('app.timezone', 'Asia/Jakarta');
+        $options = [];
+
+        Carbon::setLocale('id');
+
+        for ($offset = 0; $offset < $days; $offset++) {
+            $date = Carbon::now($timezone)->startOfDay()->addDays($offset);
+            $prefix = match ($offset) {
+                0 => 'Hari ini',
+                1 => 'Besok',
+                2 => 'Lusa',
+                default => $date->translatedFormat('l'),
+            };
+
+            $options[] = [
+                'value' => $date->toDateString(),
+                'title' => Str::limit($prefix, 24, ''),
+                'description' => $date->translatedFormat('d F Y'),
+            ];
+        }
+
+        return $options;
     }
 }

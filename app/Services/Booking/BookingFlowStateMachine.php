@@ -103,6 +103,18 @@ class BookingFlowStateMachine
             );
         }
 
+        $changeField = $this->slotExtractor->resolveChangeFieldSelection($messageText);
+        if ($booking !== null && $changeField !== null) {
+            return $this->handleChangeFieldSelection(
+                conversation: $conversation,
+                customer: $customer,
+                booking: $booking,
+                field: $changeField,
+                intentResult: $intentResult,
+                messageText: $messageText,
+            );
+        }
+
         $slots = $this->stateService->hydrateFromBooking($conversation, $booking);
         $slots = $this->stateService->repairCorruptedState($conversation);
         $expectedInput = $this->stateService->expectedInput($conversation);
@@ -420,6 +432,8 @@ class BookingFlowStateMachine
         }
 
         if ($isAwaitingFinalConfirmation && (($signals['rejection'] ?? false) === true || ($signals['change_request'] ?? false) === true) && $mergedUpdates === []) {
+            $menu = $this->interactiveService->changeFieldMenu();
+
             $this->stateService->putMany($conversation, [
                 'review_sent' => false,
                 'booking_confirmed' => false,
@@ -433,8 +447,11 @@ class BookingFlowStateMachine
                 booking: $booking,
                 action: 'ask_correction',
                 reply: $this->reply(
-                    $this->withGreetingContext($signals, $messageText, $this->replyNaturalizer->askCorrection()),
+                    $this->withGreetingContext($signals, $messageText, $menu['text']),
                     ['source' => 'booking_engine', 'action' => 'ask_correction'],
+                    false,
+                    $menu['message_type'],
+                    $menu['outbound_payload'],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
             );
@@ -668,12 +685,17 @@ class BookingFlowStateMachine
         ], 'booking_rejection_priority');
         $this->stateService->transitionFlowState($conversation, BookingFlowState::ShowingReview, null, 'booking_rejection_priority');
 
+        $menu = $this->interactiveService->changeFieldMenu();
+
         return $this->decision(
             booking: $booking->fresh(),
             action: 'ask_correction',
             reply: $this->reply(
-                $this->replyNaturalizer->askCorrection(),
+                $menu['text'],
                 ['source' => 'booking_engine', 'action' => 'ask_correction'],
+                false,
+                $menu['message_type'],
+                $menu['outbound_payload'],
             ),
             intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
         );
@@ -718,6 +740,88 @@ class BookingFlowStateMachine
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $intentResult
+     * @return array<string, mixed>
+     */
+    private function handleChangeFieldSelection(
+        Conversation $conversation,
+        Customer $customer,
+        BookingRequest $booking,
+        string $field,
+        array $intentResult,
+        string $messageText,
+    ): array {
+        $slots = $this->stateService->load($conversation);
+        $resetPayload = $this->changeFieldResetPayload($field);
+
+        if ($resetPayload === []) {
+            $menu = $this->interactiveService->changeFieldMenu();
+
+            return $this->decision(
+                booking: $booking,
+                action: 'ask_correction_field',
+                reply: $this->reply(
+                    $menu['text'],
+                    ['source' => 'booking_engine', 'action' => 'ask_correction_field'],
+                    false,
+                    $menu['message_type'],
+                    $menu['outbound_payload'],
+                ),
+                intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
+            );
+        }
+
+        $this->stateService->putMany($conversation, array_merge($resetPayload, [
+            'review_sent' => false,
+            'booking_confirmed' => false,
+            'final_confirmation_received' => false,
+            'review_hash' => null,
+            'admin_forwarded' => false,
+            'admin_forward_hash' => null,
+        ]), 'change_field_selection');
+
+        if (in_array($field, ['travel_date', 'travel_time', 'selected_seats', 'passenger_count'], true)) {
+            $this->seatAvailability->releaseSeats($booking);
+        }
+
+        $slots = $this->stateService->load($conversation);
+        $booking = $this->stateService->syncBooking($booking->fresh(), $slots, $customer->phone_e164 ?? '');
+
+        return $this->replyForNextStep(
+            conversation: $conversation,
+            booking: $booking,
+            intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
+            signals: ['greeting_detected' => false, 'salam_type' => null],
+            messageText: $messageText,
+            slots: $slots,
+            mergedUpdates: [],
+            capturedUpdates: [],
+            correctionLines: [],
+            route: $this->evaluateRoute($slots),
+            nextInput: $field,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function changeFieldResetPayload(string $field): array
+    {
+        return match ($field) {
+            'travel_date' => ['travel_date' => null, 'selected_seats' => [], 'seat_choices_available' => []],
+            'travel_time' => ['travel_time' => null, 'selected_seats' => [], 'seat_choices_available' => []],
+            'passenger_count' => ['passenger_count' => null, 'selected_seats' => [], 'seat_choices_available' => [], 'passenger_name' => null, 'passenger_names' => []],
+            'selected_seats' => ['selected_seats' => [], 'seat_choices_available' => []],
+            'pickup_location' => ['pickup_location' => null, 'pickup_full_address' => null, 'destination' => null, 'destination_full_address' => null, 'fare_amount' => null, 'route_status' => null, 'route_issue' => null],
+            'pickup_full_address' => ['pickup_full_address' => null],
+            'destination' => ['destination' => null, 'destination_full_address' => null, 'fare_amount' => null, 'route_status' => null, 'route_issue' => null],
+            'passenger_name' => ['passenger_name' => null, 'passenger_names' => []],
+            'contact_number' => ['contact_number' => null, 'contact_same_as_sender' => null],
+            default => [],
+        };
     }
 
     /**
@@ -1011,16 +1115,21 @@ class BookingFlowStateMachine
         }
 
         if (($slots['review_hash'] ?? null) === $reviewHash && ($slots['review_sent'] ?? false) !== true) {
+            $menu = $this->interactiveService->changeFieldMenu();
+
             return $this->decision(
                 booking: $booking->fresh(),
                 action: 'await_booking_change',
                 reply: $this->reply(
-                    $this->withGreetingContext($signals, $messageText, $this->replyNaturalizer->askCorrection()),
+                    $this->withGreetingContext($signals, $messageText, $menu['text']),
                     [
                         'source' => 'booking_engine',
                         'action' => 'await_booking_change',
                         'review_hash' => $reviewHash,
                     ],
+                    false,
+                    $menu['message_type'],
+                    $menu['outbound_payload'],
                 ),
                 intentResult: $this->overrideIntent($intentResult, IntentType::UbahDataBooking),
             );
@@ -1175,9 +1284,8 @@ class BookingFlowStateMachine
      */
     private function promptTravelDate(Conversation $conversation): array
     {
-        $interactive = $this->interactiveService->departureTimeMenu(
+        $interactive = $this->interactiveService->departureDateMenu(
             $this->replyNaturalizer->askTravelDate($this->replySeed($conversation, 'travel_date')),
-            (array) config('chatbot.jet.departure_slots', []),
         );
 
         return ['prompt' => $interactive['text'], 'message_type' => $interactive['message_type'], 'outbound_payload' => $interactive['outbound_payload']];

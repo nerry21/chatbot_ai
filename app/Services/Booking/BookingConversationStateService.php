@@ -17,9 +17,9 @@ class BookingConversationStateService
      * @var array<int, string>
      */
     private const EXPECTED_INPUTS = [
-        'passenger_count',
         'travel_date',
         'travel_time',
+        'passenger_count',
         'selected_seats',
         'pickup_location',
         'pickup_full_address',
@@ -34,9 +34,9 @@ class BookingConversationStateService
      * @var array<int, string>
      */
     private const TRACKED_SLOT_KEYS = [
-        'passenger_count',
         'travel_date',
         'travel_time',
+        'passenger_count',
         'selected_seats',
         'pickup_location',
         'pickup_full_address',
@@ -84,9 +84,9 @@ class BookingConversationStateService
      * @var array<int, string>
      */
     private const FINAL_REVIEW_KEYS = [
-        'passenger_count',
         'travel_date',
         'travel_time',
+        'passenger_count',
         'selected_seats',
         'pickup_location',
         'pickup_full_address',
@@ -621,16 +621,16 @@ class BookingConversationStateService
             return (string) ($slots['route_issue'] ?? 'destination');
         }
 
-        if ($this->isBlank($slots['passenger_count'] ?? null)) {
-            return 'passenger_count';
-        }
-
         if ($this->isBlank($slots['travel_date'] ?? null)) {
             return 'travel_date';
         }
 
         if ($this->isBlank($slots['travel_time'] ?? null)) {
             return 'travel_time';
+        }
+
+        if ($this->isBlank($slots['passenger_count'] ?? null)) {
+            return 'passenger_count';
         }
 
         $passengerCount = max(1, (int) ($slots['passenger_count'] ?? 1));

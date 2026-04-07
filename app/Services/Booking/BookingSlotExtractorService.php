@@ -79,7 +79,7 @@ class BookingSlotExtractorService
             $updates['passenger_count'] = $count;
         }
 
-        $date = $this->extractDate($text, $entityResult);
+        $date = $this->extractDate($text, $expectedInput, $entityResult);
         if ($date !== null) {
             $updates['travel_date'] = $date;
         }
@@ -128,6 +128,19 @@ class BookingSlotExtractorService
         }
 
         return ['updates' => $updates, 'signals' => $signals];
+    }
+
+    public function resolveChangeFieldSelection(string $messageText): ?string
+    {
+        $normalized = trim(mb_strtolower($messageText, 'UTF-8'));
+
+        if (str_starts_with($normalized, 'change_field:')) {
+            $field = trim(substr($normalized, strlen('change_field:')));
+
+            return $this->normalizeEditableField($field);
+        }
+
+        return $this->normalizeEditableField($normalized);
     }
 
     public function isCloseIntent(string $normalizedText): bool
@@ -230,7 +243,7 @@ class BookingSlotExtractorService
         return null;
     }
 
-    private function extractDate(string $messageText, array $entityResult): ?string
+    private function extractDate(string $messageText, ?string $expectedInput, array $entityResult): ?string
     {
         $raw = $entityResult['departure_date'] ?? null;
         if (is_string($raw) && trim($raw) !== '') {
@@ -240,8 +253,22 @@ class BookingSlotExtractorService
             }
         }
 
+        $interactiveDate = $this->extractInteractiveDepartureDate($messageText);
+        if ($interactiveDate !== null) {
+            return $interactiveDate;
+        }
+
         $text = $this->normalizeText($messageText);
         $now = Carbon::now($this->timezone());
+
+        if ($expectedInput === 'travel_date' && ctype_digit($text)) {
+            $date = $now->copy()->startOfDay()->addDays(max(0, ((int) $text) - 1));
+
+            if ((int) $text >= 1 && (int) $text <= 30) {
+                return $date->toDateString();
+            }
+        }
+
         if (str_contains($text, 'hari ini')) return $now->toDateString();
         if (str_contains($text, 'besok')) return $now->copy()->addDay()->toDateString();
         if (str_contains($text, 'lusa')) return $now->copy()->addDays(2)->toDateString();
@@ -527,6 +554,63 @@ class BookingSlotExtractorService
         }
 
         return mb_convert_case($clean, MB_CASE_TITLE, 'UTF-8');
+    }
+
+    private function extractInteractiveDepartureDate(string $messageText): ?string
+    {
+        $text = trim($messageText);
+
+        if (! str_starts_with($text, 'departure_date:')) {
+            return null;
+        }
+
+        $value = trim(substr($text, strlen('departure_date:')));
+        if ($value === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value, $this->timezone())->toDateString();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function normalizeEditableField(string $field): ?string
+    {
+        $aliases = [
+            'tanggal' => 'travel_date',
+            'tanggal keberangkatan' => 'travel_date',
+            'travel_date' => 'travel_date',
+            'jam' => 'travel_time',
+            'jam keberangkatan' => 'travel_time',
+            'travel_time' => 'travel_time',
+            'penumpang' => 'passenger_count',
+            'jumlah penumpang' => 'passenger_count',
+            'passenger_count' => 'passenger_count',
+            'seat' => 'selected_seats',
+            'kursi' => 'selected_seats',
+            'selected_seats' => 'selected_seats',
+            'jemput' => 'pickup_location',
+            'pickup' => 'pickup_location',
+            'titik jemput' => 'pickup_location',
+            'pickup_location' => 'pickup_location',
+            'alamat jemput' => 'pickup_full_address',
+            'pickup_full_address' => 'pickup_full_address',
+            'tujuan' => 'destination',
+            'dropoff' => 'destination',
+            'destination' => 'destination',
+            'nama' => 'passenger_name',
+            'nama penumpang' => 'passenger_name',
+            'passenger_name' => 'passenger_name',
+            'kontak' => 'contact_number',
+            'no hp' => 'contact_number',
+            'nomor hp' => 'contact_number',
+            'nomor kontak' => 'contact_number',
+            'contact_number' => 'contact_number',
+        ];
+
+        return $aliases[$field] ?? null;
     }
 
     private function normalizeAddress(string $value): ?string
