@@ -105,7 +105,7 @@ class TravelMessageRouterService
         }
 
         // 6. Booking start trigger
-        if ($this->isBookingStartMessage($text) && $state['status'] === 'idle') {
+        if ($this->isBookingStartMessage($text)) {
             return $this->handleBookingStart($state);
         }
 
@@ -158,15 +158,32 @@ class TravelMessageRouterService
     private function handleBookingStart(array $state): array
     {
         $state['status']       = 'booking';
-        $state['current_step'] = 'ask_passenger_count';
-        $state['booking_data'] = [];
+        $state['current_step'] = 'ask_departure_date';
+        $state['booking_data'] = [
+            'departure_date'       => null,
+            'departure_date_label' => null,
+            'departure_time'       => null,
+            'departure_time_label' => null,
+            'passenger_count'      => null,
+            'seat'                 => null,
+            'pickup_point'         => null,
+            'pickup_address'       => null,
+            'dropoff_point'        => null,
+            'passenger_names'      => [],
+            'contact_number'       => null,
+        ];
 
         return $this->buildResult(
-            replyText: 'Baik Bapak/Ibu, izin bantu proses bookingnya. Boleh tahu berapa penumpangnya?',
+            replyText: "Baik, saya bantu bookingnya ya.\n\nSilakan pilih tanggal keberangkatannya terlebih dahulu.",
             intent: 'start_booking',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['booking_started' => true],
+            meta: [
+                'booking_started'  => true,
+                'step'             => 'ask_departure_date',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildDepartureDateInteractiveList(),
+            ],
         );
     }
 
@@ -175,10 +192,10 @@ class TravelMessageRouterService
         $step = $state['current_step'] ?? 'ask_passenger_count';
 
         return match ($step) {
-            'ask_passenger_count'        => $this->handlePassengerCountStep($text, $state),
             'ask_departure_date'         => $this->handleDepartureDateStep($text, $state),
             'ask_departure_time'         => $this->handleDepartureTimeStep($text, $state),
-            'ask_departure_time_and_date'=> $this->handleDepartureStep($text, $state),
+            'ask_departure_time_and_date'=> $this->handleDepartureDateStep($text, $state),
+            'ask_passenger_count'        => $this->handlePassengerCountStep($text, $state),
             'ask_seat'                   => $this->handleSeatStep($text, $state),
             'ask_pickup_point'           => $this->handlePickupPointStep($text, $state),
             'ask_pickup_address'         => $this->handlePickupAddressStep($text, $state),
@@ -186,7 +203,8 @@ class TravelMessageRouterService
             'ask_passenger_name'         => $this->handlePassengerNameStep($text, $state),
             'ask_contact_number'         => $this->handleContactStep($text, $state, $phone),
             'ask_review_confirmation'    => $this->handleReviewConfirmationStep($text, $phone, $state, $now),
-            default                      => $this->resetBookingToFirstQuestion($state),
+            'ask_which_field_to_change'  => $this->handleWhichFieldToChangeStep($text, $state),
+            default                      => $this->handleBookingStart($state),
         };
     }
 
@@ -218,127 +236,34 @@ class TravelMessageRouterService
 
         $state['booking_data']['passenger_count']                = $count;
         $state['booking_data']['requires_passenger_confirmation'] = $validation['requires_confirmation'];
-        $state['booking_data']['departure_date']                 = null;
-        $state['booking_data']['departure_date_label']           = null;
-        $state['booking_data']['departure_time']                 = null;
-        $state['booking_data']['departure_time_label']           = null;
-        $state['current_step']                                   = 'ask_departure_date';
+        $state['current_step']                                   = 'ask_seat';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         $reply = $validation['requires_confirmation']
             ? $validation['message'].' '
             : '';
 
-        $reply .= 'Baik, saya bantu bookingnya ya. Silakan pilih tanggal keberangkatannya terlebih dahulu.';
+        $reply .= 'Baik. Untuk seat, pilihannya: '
+            .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
+            .'. Seat mana yang diinginkan?';
 
         return $this->buildResult(
             replyText: trim($reply),
             intent: 'passenger_count',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: [
-                'step'                       => 'ask_departure_date',
-                'show_departure_date_picker' => true,
-                'departure_date_options'     => $this->buildDepartureDateOptions(),
-                'interactive_type'           => 'list',
-                'interactive_list'           => $this->buildDepartureDateInteractiveList(),
-            ],
+            meta: ['step' => 'ask_seat'],
         );
     }
 
     private function handleDepartureStep(string $text, array $state): array
     {
-        // Normalise time variants: "10.00 WIB" / "pukul 10.00" → "10:00"
-        $normalizedTimeText = mb_strtolower(trim($text), 'UTF-8');
-        $normalizedTimeText = str_replace(['.', ' wib', 'pukul '], [':', '', ''], $normalizedTimeText);
+        $state['current_step'] = 'ask_departure_date';
 
-        $date = $this->extractDateText($text);
-        $slot = $this->bookingRuleService->findDepartureTime($normalizedTimeText);
-
-        // Start from whatever was already saved in state
-        $bookingData = (array) ($state['booking_data'] ?? []);
-
-        // Persist any new value that was just provided
-        if ($date !== null) {
-            $bookingData['departure_date'] = $date;
-        }
-
-        if ($slot !== null) {
-            $bookingData['departure_time']       = substr((string) ($slot['time'] ?? ''), 0, 5);
-            $bookingData['departure_time_label'] = (string) ($slot['label'] ?? $bookingData['departure_time']);
-        }
-
-        $state['booking_data'] = $bookingData;
-
-        $hasDate = ! empty($bookingData['departure_date']);
-        $hasTime = ! empty($bookingData['departure_time']);
-
-        // Both still missing → ask for both
-        if (! $hasDate && ! $hasTime) {
-            return $this->buildResult(
-                replyText: "Izin Bapak/Ibu, mohon dibantu isi tanggal dan pilih jam keberangkatannya.\n\n"
-                    . $this->buildDepartureMenuText(),
-                intent: 'departure_time_date',
-                state: $state,
-                actions: [['type' => 'save_state']],
-                meta: [
-                    'step'              => 'ask_departure_time_and_date',
-                    'ask_departure_date' => true,
-                    'ask_departure_time' => true,
-                    'show_time_picker'  => true,
-                ],
-            );
-        }
-
-        // Time saved, date still missing → ask only for date
-        if ($hasTime && ! $hasDate) {
-            return $this->buildResult(
-                replyText: 'Baik, jam keberangkatan sudah saya catat. Sekarang mohon kirim tanggal keberangkatannya ya, misalnya 29 Maret 2026.',
-                intent: 'departure_time_date',
-                state: $state,
-                actions: [['type' => 'save_state']],
-                meta: [
-                    'step'              => 'ask_departure_time_and_date',
-                    'ask_departure_date' => true,
-                    'ask_departure_time' => false,
-                    'show_time_picker'  => false,
-                ],
-            );
-        }
-
-        // Date saved, time still missing → ask only for time
-        if ($hasDate && ! $hasTime) {
-            return $this->buildResult(
-                replyText: 'Baik, tanggal keberangkatan sudah saya catat. Sekarang mohon pilih atau tulis jam keberangkatannya ya.'
-                    . "\n\n" . $this->buildDepartureMenuText(),
-                intent: 'departure_time_date',
-                state: $state,
-                actions: [['type' => 'save_state']],
-                meta: [
-                    'step'              => 'ask_departure_time_and_date',
-                    'ask_departure_date' => false,
-                    'ask_departure_time' => true,
-                    'show_time_picker'  => true,
-                ],
-            );
-        }
-
-        // Both available → advance to seat step
-        $state['current_step'] = 'ask_seat';
-
-        $slotMeta = $slot ?? [
-            'time'  => $bookingData['departure_time'],
-            'label' => $bookingData['departure_time_label'] ?? $bookingData['departure_time'],
-        ];
-
-        return $this->buildResult(
-            replyText: 'Baik. Untuk seat, pilihannya: '
-                . implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
-                . '. Seat mana yang diinginkan?',
-            intent: 'departure_time_date',
-            state: $state,
-            actions: [['type' => 'save_state']],
-            meta: ['step' => 'ask_seat', 'departure_slot' => $slotMeta],
-        );
+        return $this->handleDepartureDateStep($text, $state);
     }
 
     private function handleDepartureDateStep(string $text, array $state): array
@@ -370,6 +295,10 @@ class TravelMessageRouterService
 
         $state['booking_data'] = $bookingData;
         $state['current_step'] = 'ask_departure_time';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         return $this->buildResult(
             replyText: "Baik, tanggal keberangkatan sudah saya catat: {$selectedDate['label']}.\n\nSekarang silakan pilih jam keberangkatannya ya.\n\n"
@@ -416,19 +345,21 @@ class TravelMessageRouterService
         $bookingData['departure_time_label'] = (string) ($slot['label'] ?? $bookingData['departure_time']);
 
         $state['booking_data'] = $bookingData;
-        $state['current_step'] = 'ask_seat';
+        $state['current_step'] = 'ask_passenger_count';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         return $this->buildResult(
             replyText: 'Baik, jam keberangkatan sudah saya catat: '
                 .$bookingData['departure_time'].' WIB.'
-                ."\n\nUntuk seat, pilihannya: "
-                .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
-                .'. Seat mana yang diinginkan?',
+                ."\n\nUntuk keberangkatan ini ada berapa orang penumpangnya?",
             intent: 'departure_time',
             state: $state,
             actions: [['type' => 'save_state']],
             meta: [
-                'step'         => 'ask_seat',
+                'step'         => 'ask_passenger_count',
                 'departure_slot' => $slot,
             ],
         );
@@ -449,35 +380,50 @@ class TravelMessageRouterService
         }
 
         $state['booking_data']['seat'] = $seat;
-        $state['current_step']         = 'ask_pickup_point';
+        $state['current_step'] = 'ask_pickup_point';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         return $this->buildResult(
-            replyText: "Izin Bapak/Ibu, titik penjemputannya di mana?\n\n"
-                .$this->fareService->buildLocationListText(),
+            replyText: 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
             intent: 'seat',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['step' => 'ask_pickup_point'],
+            meta: [
+                'step' => 'ask_pickup_point',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPickupPointInteractiveList(),
+            ],
         );
     }
 
     private function handlePickupPointStep(string $text, array $state): array
     {
-        $location = $this->extractLocation($text);
+        $location = $this->extractSelectedPickupLocationFromInteractive($text)
+            ?? $this->extractLocation($text);
 
         if ($location === null) {
             return $this->buildResult(
-                replyText: "Izin Bapak/Ibu, mohon pilih titik penjemputannya.\n\n"
-                    .$this->fareService->buildLocationListText(),
+                replyText: 'Izin Bapak/Ibu, mohon pilih titik penjemputannya.',
                 intent: 'pickup_location',
                 state: $state,
                 actions: [],
-                meta: ['step' => 'ask_pickup_point'],
+                meta: [
+                    'step' => 'ask_pickup_point',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildPickupPointInteractiveList(),
+                ],
             );
         }
 
         $state['booking_data']['pickup_point'] = $location;
-        $state['current_step']                 = 'ask_pickup_address';
+        $state['current_step'] = 'ask_pickup_address';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         return $this->buildResult(
             replyText: 'Boleh minta alamat lengkap penjemputannya, Bapak/Ibu?',
@@ -503,35 +449,50 @@ class TravelMessageRouterService
         }
 
         $state['booking_data']['pickup_address'] = $address;
-        $state['current_step']                   = 'ask_dropoff_point';
+        $state['current_step'] = 'ask_dropoff_point';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         return $this->buildResult(
-            replyText: "Untuk tujuan pengantarannya ke mana, Bapak/Ibu?\n\n"
-                .$this->fareService->buildLocationListText(),
+            replyText: 'Untuk tujuan pengantarannya ke mana, Bapak/Ibu? Silakan pilih lokasinya.',
             intent: 'pickup_address',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['step' => 'ask_dropoff_point'],
+            meta: [
+                'step' => 'ask_dropoff_point',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildDropoffPointInteractiveList(),
+            ],
         );
     }
 
     private function handleDropoffPointStep(string $text, array $state): array
     {
-        $location = $this->extractLocation($text);
+        $location = $this->extractSelectedDropoffLocationFromInteractive($text)
+            ?? $this->extractLocation($text);
 
         if ($location === null) {
             return $this->buildResult(
-                replyText: "Izin Bapak/Ibu, mohon pilih tujuan pengantarannya.\n\n"
-                    .$this->fareService->buildLocationListText(),
+                replyText: 'Izin Bapak/Ibu, mohon pilih tujuan pengantarannya.',
                 intent: 'dropoff_location',
                 state: $state,
                 actions: [],
-                meta: ['step' => 'ask_dropoff_point'],
+                meta: [
+                    'step' => 'ask_dropoff_point',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildDropoffPointInteractiveList(),
+                ],
             );
         }
 
         $state['booking_data']['dropoff_point'] = $location;
-        $state['current_step']                  = 'ask_passenger_name';
+        $state['current_step'] = 'ask_passenger_name';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         $count = (int) ($state['booking_data']['passenger_count'] ?? 1);
         $question = $count > 1
@@ -563,6 +524,10 @@ class TravelMessageRouterService
 
         $state['booking_data']['passenger_names'] = $names;
         $state['current_step']                    = 'ask_contact_number';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
 
         return $this->buildResult(
             replyText: 'Untuk nomor kontak yang bisa dihubungi, boleh dikirimkan? Jika sama dengan nomor ini cukup ketik "sama".',
@@ -596,7 +561,7 @@ class TravelMessageRouterService
         $state['current_step'] = 'ask_review_confirmation';
 
         return $this->buildResult(
-            replyText: $this->bookingRuleService->buildBookingReview($state['booking_data']),
+            replyText: $this->buildBookingReviewText($state['booking_data']),
             intent: 'booking_review',
             state: $state,
             actions: [['type' => 'save_state']],
@@ -606,9 +571,25 @@ class TravelMessageRouterService
 
     private function handleReviewConfirmationStep(string $text, string $phone, array $state, Carbon $now): array
     {
+        if ($this->isChangeDataRequest($text)) {
+            $state['current_step'] = 'ask_which_field_to_change';
+
+            return $this->buildResult(
+                replyText: 'Silakan pilih bagian data yang ingin diubah, Bapak/Ibu.',
+                intent: 'booking_review_change_request',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'             => 'ask_which_field_to_change',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildChangeFieldInteractiveList(),
+                ],
+            );
+        }
+
         if (! $this->bookingRuleService->isConfirmationText($text)) {
             return $this->buildResult(
-                replyText: 'Baik Bapak/Ibu, jika ada yang perlu diperbaiki silakan sampaikan bagian mana yang ingin diubah.',
+                replyText: 'Baik Bapak/Ibu, silakan ketik "Benar" untuk konfirmasi, atau "Ubah Data" jika ada yang ingin diperbaiki.',
                 intent: 'booking_review_unconfirmed',
                 state: $state,
                 actions: [],
@@ -617,10 +598,11 @@ class TravelMessageRouterService
         }
 
         $adminMessage = "Booking Baru\nNomor Customer: {$phone}\n\n"
-            .$this->bookingRuleService->buildBookingReview($state['booking_data']);
+            .$this->buildBookingReviewText($state['booking_data']);
 
         $state['status']                     = 'booking_confirmed';
         $state['current_step']               = null;
+        $state['booking_edit_mode']          = false;
         $state['last_completed_booking_at']  = $now->toDateTimeString();
         $state['departure_datetime']         = $this->combineDepartureDateTime(
             (string) ($state['booking_data']['departure_date'] ?? ''),
@@ -636,6 +618,81 @@ class TravelMessageRouterService
                 ['type' => 'save_state'],
             ],
             meta: ['admin_code' => 'Booking Baru'],
+        );
+    }
+
+    private function handleWhichFieldToChangeStep(string $text, array $state): array
+    {
+        $fieldMap = [
+            'change_field:departure_date'    => 'ask_departure_date',
+            'change_field:departure_time'    => 'ask_departure_time',
+            'change_field:passenger_count'   => 'ask_passenger_count',
+            'change_field:seat'              => 'ask_seat',
+            'change_field:pickup_point'      => 'ask_pickup_point',
+            'change_field:pickup_address'    => 'ask_pickup_address',
+            'change_field:dropoff_point'     => 'ask_dropoff_point',
+            'change_field:passenger_names'   => 'ask_passenger_name',
+            'change_field:contact_number'    => 'ask_contact_number',
+        ];
+
+        $normalized = trim($text);
+
+        // Interactive list click
+        if (isset($fieldMap[$normalized])) {
+            $state['booking_edit_mode'] = true;
+            $state['current_step']      = $fieldMap[$normalized];
+
+            return $this->handleBookingFlow($text, '', $state, $this->resolveNow(null));
+        }
+
+        // Teks bebas → coba cocokkan kata kunci
+        $keywordMap = [
+            'tanggal'      => 'ask_departure_date',
+            'jam'          => 'ask_departure_time',
+            'penumpang'    => 'ask_passenger_count',
+            'seat'         => 'ask_seat',
+            'kursi'        => 'ask_seat',
+            'titik jemput' => 'ask_pickup_point',
+            'jemput'       => 'ask_pickup_point',
+            'alamat'       => 'ask_pickup_address',
+            'tujuan'       => 'ask_dropoff_point',
+            'nama'         => 'ask_passenger_name',
+            'kontak'       => 'ask_contact_number',
+            'hp'           => 'ask_contact_number',
+            'nomor'        => 'ask_contact_number',
+            '1'            => 'ask_departure_date',
+            '2'            => 'ask_departure_time',
+            '3'            => 'ask_passenger_count',
+            '4'            => 'ask_seat',
+            '5'            => 'ask_pickup_point',
+            '6'            => 'ask_pickup_address',
+            '7'            => 'ask_dropoff_point',
+            '8'            => 'ask_passenger_name',
+            '9'            => 'ask_contact_number',
+        ];
+
+        $normalizedLower = $this->normalizeText($text);
+
+        foreach ($keywordMap as $keyword => $step) {
+            if (str_contains($normalizedLower, $keyword) || $normalizedLower === $keyword) {
+                $state['booking_edit_mode'] = true;
+                $state['current_step']      = $step;
+
+                return $this->handleBookingFlow('', '', $state, $this->resolveNow(null));
+            }
+        }
+
+        // Tidak dikenali → tampilkan menu lagi
+        return $this->buildResult(
+            replyText: 'Izin Bapak/Ibu, mohon pilih bagian yang ingin diubah.',
+            intent: 'booking_review_change_request',
+            state: $state,
+            actions: [],
+            meta: [
+                'step'             => 'ask_which_field_to_change',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildChangeFieldInteractiveList(),
+            ],
         );
     }
 
@@ -964,6 +1021,29 @@ class TravelMessageRouterService
         return false;
     }
 
+    private function isChangeDataRequest(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach ([
+            'ubah data',
+            'ganti data',
+            'ada yang salah',
+            'ada yang keliru',
+            'perbaiki',
+            'koreksi',
+            'tidak benar',
+            'belum benar',
+            'salah',
+        ] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return $normalized === '2';
+    }
+
     private function looksLikeFareQuestion(string $text): bool
     {
         $normalized = $this->normalizeText($text);
@@ -1166,7 +1246,12 @@ class TravelMessageRouterService
         $normalized = $this->normalizeText($text);
 
         foreach ($this->fareService->getAllLocations() as $location) {
-            if (str_contains(' '.$normalized.' ', ' '.$this->normalizeText($location).' ')) {
+            $normalizedLocation = $this->normalizeText($location);
+
+            if (
+                str_contains(' '.$normalized.' ', ' '.$normalizedLocation.' ')
+                || str_contains($normalized, $normalizedLocation)
+            ) {
                 return $location;
             }
         }
@@ -1353,6 +1438,92 @@ class TravelMessageRouterService
         ];
     }
 
+    private function buildPickupPointInteractiveList(): array
+    {
+        $rows = [];
+
+        foreach ($this->fareService->getAllLocations() as $location) {
+            $rows[] = [
+                'id'          => 'pickup_location:'.$this->normalizeSelectionValue($location),
+                'title'       => mb_substr((string) $location, 0, 24),
+                'description' => 'Titik jemput',
+            ];
+        }
+
+        return [
+            'button'   => 'Pilih Jemput',
+            'header'   => 'Titik Penjemputan',
+            'body'     => 'Silakan pilih titik penjemputan yang diinginkan.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Lokasi Jemput',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
+    private function buildDropoffPointInteractiveList(): array
+    {
+        $rows = [];
+
+        foreach ($this->fareService->getAllLocations() as $location) {
+            $rows[] = [
+                'id'          => 'dropoff_location:'.$this->normalizeSelectionValue($location),
+                'title'       => mb_substr((string) $location, 0, 24),
+                'description' => 'Tujuan antar',
+            ];
+        }
+
+        return [
+            'button'   => 'Pilih Tujuan',
+            'header'   => 'Tujuan Pengantaran',
+            'body'     => 'Silakan pilih tujuan pengantaran yang diinginkan.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Lokasi Tujuan',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
+    private function buildChangeFieldInteractiveList(): array
+    {
+        $fields = [
+            ['id' => 'change_field:departure_date',  'title' => '1. Tanggal Keberangkatan', 'description' => 'Ubah tanggal'],
+            ['id' => 'change_field:departure_time',  'title' => '2. Jam Keberangkatan',     'description' => 'Ubah jam'],
+            ['id' => 'change_field:passenger_count', 'title' => '3. Jumlah Penumpang',      'description' => 'Ubah jumlah penumpang'],
+            ['id' => 'change_field:seat',            'title' => '4. Seat',                  'description' => 'Ubah pilihan seat'],
+            ['id' => 'change_field:pickup_point',    'title' => '5. Titik Jemput',          'description' => 'Ubah titik penjemputan'],
+            ['id' => 'change_field:pickup_address',  'title' => '6. Alamat Jemput',         'description' => 'Ubah alamat penjemputan'],
+            ['id' => 'change_field:dropoff_point',   'title' => '7. Tujuan Antar',          'description' => 'Ubah tujuan pengantaran'],
+            ['id' => 'change_field:passenger_names', 'title' => '8. Nama Penumpang',        'description' => 'Ubah nama penumpang'],
+            ['id' => 'change_field:contact_number',  'title' => '9. No HP',                 'description' => 'Ubah nomor kontak'],
+        ];
+
+        $rows = array_map(static fn ($f) => [
+            'id'          => $f['id'],
+            'title'       => mb_substr($f['title'], 0, 24),
+            'description' => $f['description'],
+        ], $fields);
+
+        return [
+            'button'   => 'Pilih Bagian',
+            'header'   => 'Ubah Data Booking',
+            'body'     => 'Silakan pilih bagian data yang ingin diubah.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Data Booking',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
     private function extractSelectableDepartureDate(string $text): ?array
     {
         $normalized = trim(mb_strtolower($text, 'UTF-8'));
@@ -1423,6 +1594,59 @@ class TravelMessageRouterService
         return $this->bookingRuleService->findDepartureTime($value);
     }
 
+    private function extractSelectedPickupLocationFromInteractive(string $text): ?string
+    {
+        $normalized = trim($text);
+
+        if (! str_starts_with($normalized, 'pickup_location:')) {
+            return null;
+        }
+
+        $value = trim(substr($normalized, strlen('pickup_location:')));
+        if ($value === '') {
+            return null;
+        }
+
+        foreach ($this->fareService->getAllLocations() as $location) {
+            if ($this->normalizeSelectionValue($location) === $value) {
+                return $location;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractSelectedDropoffLocationFromInteractive(string $text): ?string
+    {
+        $normalized = trim($text);
+
+        if (! str_starts_with($normalized, 'dropoff_location:')) {
+            return null;
+        }
+
+        $value = trim(substr($normalized, strlen('dropoff_location:')));
+        if ($value === '') {
+            return null;
+        }
+
+        foreach ($this->fareService->getAllLocations() as $location) {
+            if ($this->normalizeSelectionValue($location) === $value) {
+                return $location;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeSelectionValue(string $value): string
+    {
+        $normalized = mb_strtolower(trim($value), 'UTF-8');
+        $normalized = preg_replace('/[^\p{L}\p{N}\s\-]/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', '_', $normalized) ?? $normalized;
+
+        return trim($normalized, '_');
+    }
+
     private function buildDepartureMenuText(): string
     {
         $lines = [];
@@ -1435,6 +1659,126 @@ class TravelMessageRouterService
         }
 
         return implode("\n", $lines);
+    }
+
+    private function buildEditModeReturnToReview(array $state): array
+    {
+        $state['booking_edit_mode'] = false;
+        $state['current_step']      = 'ask_review_confirmation';
+
+        return $this->buildResult(
+            replyText: $this->buildBookingReviewText($state['booking_data']),
+            intent: 'booking_review',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'ask_review_confirmation', 'edit_mode_return' => true],
+        );
+    }
+
+    private function buildBookingReviewText(array $bookingData): string
+    {
+        $departureDateValue = trim((string) ($bookingData['departure_date'] ?? ''));
+        $departureDateLabel = trim((string) ($bookingData['departure_date_label'] ?? ''));
+        $departureTimeValue = trim((string) ($bookingData['departure_time'] ?? ''));
+        $departureTimeLabel = trim((string) ($bookingData['departure_time_label'] ?? ''));
+        $passengerCount     = trim((string) ($bookingData['passenger_count'] ?? ''));
+        $seat               = trim((string) ($bookingData['seat'] ?? ''));
+        $pickupPoint        = trim((string) ($bookingData['pickup_point'] ?? ''));
+        $pickupAddress      = trim((string) ($bookingData['pickup_address'] ?? ''));
+        $dropoffPoint       = trim((string) ($bookingData['dropoff_point'] ?? ''));
+        $contactNumber      = trim((string) ($bookingData['contact_number'] ?? ''));
+
+        $passengerNamesRaw = $bookingData['passenger_names'] ?? [];
+        $passengerNames = is_array($passengerNamesRaw)
+            ? array_values(array_filter(array_map(
+                static fn ($item) => trim((string) $item),
+                $passengerNamesRaw
+            )))
+            : [];
+
+        $departureDateDisplay = $departureDateLabel !== ''
+            ? $departureDateLabel
+            : ($departureDateValue !== '' ? $this->formatDepartureDateForReview($departureDateValue) : '-');
+
+        $departureTimeDisplay = $departureTimeValue !== ''
+            ? $departureTimeValue.' WIB'
+            : ($departureTimeLabel !== '' ? $departureTimeLabel : '-');
+
+        $passengerNamesDisplay = $passengerNames !== []
+            ? implode(', ', $passengerNames)
+            : '-';
+
+        $lines = [
+            'Baik Bapak/Ibu, berikut review booking perjalanannya:',
+            '',
+            'Tanggal keberangkatan : '.$departureDateDisplay,
+            'Jam keberangkatan     : '.$departureTimeDisplay,
+            'Jumlah penumpang      : '.($passengerCount !== '' ? $passengerCount.' orang' : '-'),
+            'Seat terpilih         : '.($seat !== '' ? $seat : '-'),
+            'Titik jemput          : '.($pickupPoint !== '' ? $pickupPoint : '-'),
+            'Alamat jemput         : '.($pickupAddress !== '' ? $pickupAddress : '-'),
+            'Tujuan antar          : '.($dropoffPoint !== '' ? $dropoffPoint : '-'),
+            'Nama penumpang        : '.$passengerNamesDisplay,
+            'No HP                 : '.($contactNumber !== '' ? $contactNumber : '-'),
+            '',
+            'Izin konfirmasi Bapak/Ibu, apakah data perjalanan ini sudah tepat?',
+            '',
+            '1. Benar',
+            '2. Ubah Data',
+            '',
+            'Pilih Benar jika datanya sudah sesuai, atau Ubah Data jika masih ada yang perlu diperbaiki.',
+        ];
+
+        return implode("\n", $lines);
+    }
+
+    private function formatDepartureDateForReview(string $date): string
+    {
+        if (trim($date) === '') {
+            return '-';
+        }
+
+        try {
+            $carbon = Carbon::parse($date, config('chatbot.jet.timezone', 'Asia/Jakarta'));
+
+            $dayNames = [
+                'Sunday'    => 'Minggu',
+                'Monday'    => 'Senin',
+                'Tuesday'   => 'Selasa',
+                'Wednesday' => 'Rabu',
+                'Thursday'  => 'Kamis',
+                'Friday'    => 'Jumat',
+                'Saturday'  => 'Sabtu',
+            ];
+
+            $monthNames = [
+                1  => 'Januari',
+                2  => 'Februari',
+                3  => 'Maret',
+                4  => 'April',
+                5  => 'Mei',
+                6  => 'Juni',
+                7  => 'Juli',
+                8  => 'Agustus',
+                9  => 'September',
+                10 => 'Oktober',
+                11 => 'November',
+                12 => 'Desember',
+            ];
+
+            $dayLabel   = $dayNames[$carbon->format('l')] ?? $carbon->format('l');
+            $monthLabel = $monthNames[(int) $carbon->format('n')] ?? $carbon->format('F');
+
+            return sprintf(
+                '%s, %02d %s %s',
+                $dayLabel,
+                (int) $carbon->format('d'),
+                $monthLabel,
+                $carbon->format('Y')
+            );
+        } catch (\Throwable) {
+            return $date;
+        }
     }
 
     private function combineDepartureDateTime(string $date, string $time): ?string
@@ -1477,6 +1821,7 @@ class TravelMessageRouterService
             'last_completed_booking_at'   => null,
             'departure_datetime'          => null,
             'first_follow_up_sent_at'     => null,
+            'booking_edit_mode'           => false,
         ], $state);
     }
 
