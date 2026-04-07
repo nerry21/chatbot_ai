@@ -236,33 +236,97 @@ class TravelMessageRouterService
 
     private function handleDepartureStep(string $text, array $state): array
     {
-        $date = $this->extractDateText($text);
-        $slot = $this->bookingRuleService->findDepartureTime($text);
+        // Normalise time variants: "10.00 WIB" / "pukul 10.00" → "10:00"
+        $normalizedTimeText = mb_strtolower(trim($text), 'UTF-8');
+        $normalizedTimeText = str_replace(['.', ' wib', 'pukul '], [':', '', ''], $normalizedTimeText);
 
-        if ($date === null || $slot === null) {
+        $date = $this->extractDateText($text);
+        $slot = $this->bookingRuleService->findDepartureTime($normalizedTimeText);
+
+        // Start from whatever was already saved in state
+        $bookingData = (array) ($state['booking_data'] ?? []);
+
+        // Persist any new value that was just provided
+        if ($date !== null) {
+            $bookingData['departure_date'] = $date;
+        }
+
+        if ($slot !== null) {
+            $bookingData['departure_time']       = substr((string) ($slot['time'] ?? ''), 0, 5);
+            $bookingData['departure_time_label'] = (string) ($slot['label'] ?? $bookingData['departure_time']);
+        }
+
+        $state['booking_data'] = $bookingData;
+
+        $hasDate = ! empty($bookingData['departure_date']);
+        $hasTime = ! empty($bookingData['departure_time']);
+
+        // Both still missing → ask for both
+        if (! $hasDate && ! $hasTime) {
             return $this->buildResult(
                 replyText: "Izin Bapak/Ibu, mohon dibantu isi tanggal dan pilih jam keberangkatannya.\n\n"
-                    .$this->buildDepartureMenuText(),
+                    . $this->buildDepartureMenuText(),
                 intent: 'departure_time_date',
                 state: $state,
-                actions: [],
-                meta: ['step' => 'ask_departure_time_and_date'],
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'              => 'ask_departure_time_and_date',
+                    'ask_departure_date' => true,
+                    'ask_departure_time' => true,
+                    'show_time_picker'  => true,
+                ],
             );
         }
 
-        $state['booking_data']['departure_date']        = $date;
-        $state['booking_data']['departure_time']        = substr((string) ($slot['time'] ?? ''), 0, 5);
-        $state['booking_data']['departure_time_label']  = $slot['label'] ?? $state['booking_data']['departure_time'];
-        $state['current_step']                          = 'ask_seat';
+        // Time saved, date still missing → ask only for date
+        if ($hasTime && ! $hasDate) {
+            return $this->buildResult(
+                replyText: 'Baik, jam keberangkatan sudah saya catat. Sekarang mohon kirim tanggal keberangkatannya ya, misalnya 29 Maret 2026.',
+                intent: 'departure_time_date',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'              => 'ask_departure_time_and_date',
+                    'ask_departure_date' => true,
+                    'ask_departure_time' => false,
+                    'show_time_picker'  => false,
+                ],
+            );
+        }
+
+        // Date saved, time still missing → ask only for time
+        if ($hasDate && ! $hasTime) {
+            return $this->buildResult(
+                replyText: 'Baik, tanggal keberangkatan sudah saya catat. Sekarang mohon pilih atau tulis jam keberangkatannya ya.'
+                    . "\n\n" . $this->buildDepartureMenuText(),
+                intent: 'departure_time_date',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'              => 'ask_departure_time_and_date',
+                    'ask_departure_date' => false,
+                    'ask_departure_time' => true,
+                    'show_time_picker'  => true,
+                ],
+            );
+        }
+
+        // Both available → advance to seat step
+        $state['current_step'] = 'ask_seat';
+
+        $slotMeta = $slot ?? [
+            'time'  => $bookingData['departure_time'],
+            'label' => $bookingData['departure_time_label'] ?? $bookingData['departure_time'],
+        ];
 
         return $this->buildResult(
             replyText: 'Baik. Untuk seat, pilihannya: '
-                .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
-                .'. Seat mana yang diinginkan?',
+                . implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
+                . '. Seat mana yang diinginkan?',
             intent: 'departure_time_date',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['step' => 'ask_seat', 'departure_slot' => $slot],
+            meta: ['step' => 'ask_seat', 'departure_slot' => $slotMeta],
         );
     }
 
