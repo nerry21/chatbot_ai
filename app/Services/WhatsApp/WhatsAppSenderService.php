@@ -42,6 +42,48 @@ class WhatsAppSenderService
     }
 
     /**
+     * @param array<string, mixed> $list
+     * @param array<string, mixed> $meta
+     * @return array{status:string,provider:string,response:array|null,error:string|null,requested_type?:string,sent_type?:string,fallback_used?:bool}
+     */
+    public function sendInteractiveList(string $toPhoneE164, array $list, array $meta = []): array
+    {
+        $interactive = [
+            'type' => 'list',
+            'body' => [
+                'text' => (string) ($list['body'] ?? 'Silakan pilih salah satu.'),
+            ],
+            'action' => [
+                'button' => (string) ($list['button'] ?? 'Pilih'),
+                'sections' => (array) ($list['sections'] ?? []),
+            ],
+        ];
+
+        $headerText = trim((string) ($list['header'] ?? ''));
+        if ($headerText !== '') {
+            $interactive['header'] = [
+                'type' => 'text',
+                'text' => $headerText,
+            ];
+        }
+
+        $footerText = trim((string) ($list['footer'] ?? ''));
+        if ($footerText !== '') {
+            $interactive['footer'] = [
+                'text' => $footerText,
+            ];
+        }
+
+        return $this->sendMessage(
+            $toPhoneE164,
+            (string) ($list['body'] ?? 'Silakan pilih salah satu.'),
+            'interactive',
+            ['interactive' => $interactive],
+            $meta,
+        );
+    }
+
+    /**
      * @param array<string, mixed> $providerPayload
      * @param array<string, mixed> $meta
      * @return array{status:string,provider:string,response:array|null,error:string|null,requested_type?:string,sent_type?:string,fallback_used?:bool}

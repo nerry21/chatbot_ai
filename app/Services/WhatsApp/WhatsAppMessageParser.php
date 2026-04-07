@@ -244,9 +244,10 @@ class WhatsAppMessageParser
             $normalizedById = match (true) {
                 $id === 'booking_confirm' => 'benar',
                 $id === 'booking_change' => 'ubah data',
-                str_starts_with($id, 'departure_time:') => (string) substr($id, strlen('departure_time:')),
-                str_starts_with($id, 'pickup_location:') => $this->humanizeSelectionId((string) substr($id, strlen('pickup_location:'))),
-                str_starts_with($id, 'dropoff_location:') => $this->humanizeSelectionId((string) substr($id, strlen('dropoff_location:'))),
+                str_starts_with($id, 'departure_date:') => $id,
+                str_starts_with($id, 'departure_time:') => $id,
+                str_starts_with($id, 'pickup_location:') => $id,
+                str_starts_with($id, 'dropoff_location:') => $id,
                 preg_match('/^passenger_count_(\d+)$/', $id, $matches) === 1 => (string) ($matches[1] ?? $id),
                 default => null,
             };
@@ -262,7 +263,7 @@ class WhatsAppMessageParser
             return $title;
         }
 
-        return $id !== '' ? $this->humanizeSelectionId($id) : null;
+        return $id !== '' ? $id : null;
     }
 
     private function humanizeSelectionId(string $value): string

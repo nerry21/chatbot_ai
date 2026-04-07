@@ -2,8 +2,10 @@
 
 namespace App\Services\Chatbot;
 
+use App\Enums\BookingStatus;
 use App\Enums\MessageDirection;
 use App\Enums\SenderType;
+use App\Models\BookingRequest;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
@@ -61,7 +63,7 @@ class TravelWhatsAppPipelineService
             return false;
         }
 
-        $this->orchestrator->handleIncoming(
+        $result = $this->orchestrator->handleIncoming(
             [
                 'text' => $text,
                 'customer_phone' => $phone,
@@ -72,10 +74,28 @@ class TravelWhatsAppPipelineService
             ],
             [
                 'send_reply' => function (string $toPhone, string $replyText, array $context = []) use ($conversation): array {
-                    $delivery = $this->sender->sendText($toPhone, $replyText, [
-                        'source' => 'travel_whatsapp_pipeline',
-                        'conversation_id' => $conversation->id,
-                    ]);
+                    $meta = is_array($context['meta'] ?? null) ? $context['meta'] : [];
+                    $interactiveType = (string) ($meta['interactive_type'] ?? '');
+                    $interactiveList = is_array($meta['interactive_list'] ?? null) ? $meta['interactive_list'] : [];
+
+                    if ($interactiveType === 'list' && $interactiveList !== []) {
+                        $delivery = $this->sender->sendInteractiveList($toPhone, $interactiveList, [
+                            'source' => 'travel_whatsapp_pipeline',
+                            'conversation_id' => $conversation->id,
+                        ]);
+
+                        if (trim($replyText) !== '') {
+                            $this->sender->sendText($toPhone, $replyText, [
+                                'source' => 'travel_whatsapp_pipeline_followup_text',
+                                'conversation_id' => $conversation->id,
+                            ]);
+                        }
+                    } else {
+                        $delivery = $this->sender->sendText($toPhone, $replyText, [
+                            'source' => 'travel_whatsapp_pipeline',
+                            'conversation_id' => $conversation->id,
+                        ]);
+                    }
 
                     $this->conversationManager->appendOutboundMessage(
                         $conversation,
@@ -83,6 +103,7 @@ class TravelWhatsAppPipelineService
                         [
                             'source' => 'travel_whatsapp_pipeline',
                             'delivery' => $delivery,
+                            'meta' => $meta,
                         ],
                         'text'
                     );
@@ -102,7 +123,42 @@ class TravelWhatsAppPipelineService
             ]
         );
 
+        if (($result['intent'] ?? null) === 'booking_confirmed') {
+            $bookingData = (array) (($result['router_result']['new_state']['booking_data'] ?? null)
+                ?? ($result['conversation']->booking_data ?? []));
+
+            $this->persistBookingRequest($conversation, $customer, $bookingData);
+        }
+
         return true;
+    }
+
+    private function persistBookingRequest(
+        Conversation $conversation,
+        Customer $customer,
+        array $bookingData,
+    ): void {
+        $passengerNames = $bookingData['passenger_names'] ?? null;
+        $passengerName  = is_array($passengerNames) && count($passengerNames) > 0
+            ? implode(', ', $passengerNames)
+            : null;
+
+        BookingRequest::create([
+            'conversation_id'  => $conversation->id,
+            'customer_id'      => $customer->id,
+            'departure_date'   => $bookingData['departure_date'] ?? null,
+            'departure_time'   => $bookingData['departure_time'] ?? null,
+            'passenger_count'  => $bookingData['passenger_count'] ?? null,
+            'passenger_names'  => is_array($passengerNames) ? $passengerNames : null,
+            'passenger_name'   => $passengerName,
+            'pickup_location'  => $bookingData['pickup_point'] ?? null,
+            'pickup_full_address' => $bookingData['pickup_address'] ?? null,
+            'destination'      => $bookingData['dropoff_point'] ?? null,
+            'selected_seats'   => isset($bookingData['seat']) ? [$bookingData['seat']] : null,
+            'contact_number'   => $bookingData['contact_number'] ?? null,
+            'booking_status'   => BookingStatus::Confirmed,
+            'confirmed_at'     => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
+        ]);
     }
 
     /**

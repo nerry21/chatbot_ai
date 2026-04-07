@@ -176,6 +176,8 @@ class TravelMessageRouterService
 
         return match ($step) {
             'ask_passenger_count'        => $this->handlePassengerCountStep($text, $state),
+            'ask_departure_date'         => $this->handleDepartureDateStep($text, $state),
+            'ask_departure_time'         => $this->handleDepartureTimeStep($text, $state),
             'ask_departure_time_and_date'=> $this->handleDepartureStep($text, $state),
             'ask_seat'                   => $this->handleSeatStep($text, $state),
             'ask_pickup_point'           => $this->handlePickupPointStep($text, $state),
@@ -216,21 +218,30 @@ class TravelMessageRouterService
 
         $state['booking_data']['passenger_count']                = $count;
         $state['booking_data']['requires_passenger_confirmation'] = $validation['requires_confirmation'];
-        $state['current_step']                                   = 'ask_departure_time_and_date';
+        $state['booking_data']['departure_date']                 = null;
+        $state['booking_data']['departure_date_label']           = null;
+        $state['booking_data']['departure_time']                 = null;
+        $state['booking_data']['departure_time_label']           = null;
+        $state['current_step']                                   = 'ask_departure_date';
 
         $reply = $validation['requires_confirmation']
             ? $validation['message'].' '
             : '';
 
-        $reply .= 'Boleh tahu tanggal dan jam keberangkatannya?'
-            ."\n\n".$this->buildDepartureMenuText();
+        $reply .= 'Baik, saya bantu bookingnya ya. Silakan pilih tanggal keberangkatannya terlebih dahulu.';
 
         return $this->buildResult(
             replyText: trim($reply),
             intent: 'passenger_count',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['step' => 'ask_departure_time_and_date'],
+            meta: [
+                'step'                       => 'ask_departure_date',
+                'show_departure_date_picker' => true,
+                'departure_date_options'     => $this->buildDepartureDateOptions(),
+                'interactive_type'           => 'list',
+                'interactive_list'           => $this->buildDepartureDateInteractiveList(),
+            ],
         );
     }
 
@@ -327,6 +338,99 @@ class TravelMessageRouterService
             state: $state,
             actions: [['type' => 'save_state']],
             meta: ['step' => 'ask_seat', 'departure_slot' => $slotMeta],
+        );
+    }
+
+    private function handleDepartureDateStep(string $text, array $state): array
+    {
+        $bookingData = $state['booking_data'] ?? [];
+
+        $selectedDate = $this->extractSelectedDepartureDateFromInteractive($text)
+            ?? $this->extractSelectableDepartureDate($text);
+
+        if ($selectedDate === null) {
+            return $this->buildResult(
+                replyText: "Izin Bapak/Ibu, silakan pilih tanggal keberangkatannya terlebih dahulu ya.\n\n"
+                    .$this->buildDepartureDateMenuText(),
+                intent: 'departure_date',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'                       => 'ask_departure_date',
+                    'show_departure_date_picker' => true,
+                    'departure_date_options'     => $this->buildDepartureDateOptions(),
+                    'interactive_type'           => 'list',
+                    'interactive_list'           => $this->buildDepartureDateInteractiveList(),
+                ],
+            );
+        }
+
+        $bookingData['departure_date']       = $selectedDate['value'];
+        $bookingData['departure_date_label'] = $selectedDate['label'];
+
+        $state['booking_data'] = $bookingData;
+        $state['current_step'] = 'ask_departure_time';
+
+        return $this->buildResult(
+            replyText: "Baik, tanggal keberangkatan sudah saya catat: {$selectedDate['label']}.\n\nSekarang silakan pilih jam keberangkatannya ya.\n\n"
+                .$this->buildDepartureMenuText(),
+            intent: 'departure_date',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'                       => 'ask_departure_time',
+                'show_departure_time_picker' => true,
+                'interactive_type'           => 'list',
+                'interactive_list'           => $this->buildDepartureTimeInteractiveList(),
+            ],
+        );
+    }
+
+    private function handleDepartureTimeStep(string $text, array $state): array
+    {
+        $bookingData = $state['booking_data'] ?? [];
+
+        $normalizedText = mb_strtolower(trim($text), 'UTF-8');
+        $normalizedText = str_replace(['.', ' wib', 'pukul '], [':', '', ''], $normalizedText);
+
+        $slot = $this->extractSelectedDepartureTimeFromInteractive($text)
+            ?? $this->bookingRuleService->findDepartureTime($normalizedText);
+
+        if ($slot === null) {
+            return $this->buildResult(
+                replyText: "Izin Bapak/Ibu, silakan pilih jam keberangkatannya ya.\n\n"
+                    .$this->buildDepartureMenuText(),
+                intent: 'departure_time',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'                       => 'ask_departure_time',
+                    'show_departure_time_picker' => true,
+                    'interactive_type'           => 'list',
+                    'interactive_list'           => $this->buildDepartureTimeInteractiveList(),
+                ],
+            );
+        }
+
+        $bookingData['departure_time']       = substr((string) ($slot['time'] ?? ''), 0, 5);
+        $bookingData['departure_time_label'] = (string) ($slot['label'] ?? $bookingData['departure_time']);
+
+        $state['booking_data'] = $bookingData;
+        $state['current_step'] = 'ask_seat';
+
+        return $this->buildResult(
+            replyText: 'Baik, jam keberangkatan sudah saya catat: '
+                .$bookingData['departure_time'].' WIB.'
+                ."\n\nUntuk seat, pilihannya: "
+                .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
+                .'. Seat mana yang diinginkan?',
+            intent: 'departure_time',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'         => 'ask_seat',
+                'departure_slot' => $slot,
+            ],
         );
     }
 
@@ -1123,6 +1227,201 @@ class TravelMessageRouterService
     }
 
     // ─── Misc helpers ──────────────────────────────────────────────────────────
+
+    private function buildDepartureDateOptions(int $days = 30): array
+    {
+        $timezone = config('chatbot.jet.timezone', 'Asia/Jakarta');
+        $start    = now($timezone)->startOfDay();
+
+        $dayNames = [
+            'Sunday'    => 'Minggu',
+            'Monday'    => 'Senin',
+            'Tuesday'   => 'Selasa',
+            'Wednesday' => 'Rabu',
+            'Thursday'  => 'Kamis',
+            'Friday'    => 'Jumat',
+            'Saturday'  => 'Sabtu',
+        ];
+
+        $monthNames = [
+            1  => 'Januari',
+            2  => 'Februari',
+            3  => 'Maret',
+            4  => 'April',
+            5  => 'Mei',
+            6  => 'Juni',
+            7  => 'Juli',
+            8  => 'Agustus',
+            9  => 'September',
+            10 => 'Oktober',
+            11 => 'November',
+            12 => 'Desember',
+        ];
+
+        $options = [];
+
+        for ($i = 0; $i < $days; $i++) {
+            $date       = $start->copy()->addDays($i);
+            $englishDay = $date->format('l');
+            $dayLabel   = $dayNames[$englishDay] ?? $englishDay;
+            $monthLabel = $monthNames[(int) $date->format('n')] ?? $date->format('F');
+
+            $label = sprintf(
+                '%s, %02d %s %s',
+                $dayLabel,
+                (int) $date->format('d'),
+                $monthLabel,
+                $date->format('Y')
+            );
+
+            $options[] = [
+                'value' => $date->format('Y-m-d'),
+                'label' => $label,
+            ];
+        }
+
+        return $options;
+    }
+
+    private function buildDepartureDateMenuText(int $days = 30): string
+    {
+        $options = $this->buildDepartureDateOptions($days);
+        $lines   = ['Pilihan tanggal keberangkatan:'];
+
+        foreach ($options as $index => $option) {
+            $lines[] = ($index + 1).'. '.$option['label'];
+        }
+
+        $lines[] = '';
+        $lines[] = 'Silakan balas dengan angka pilihan, tanggal lengkap, atau format YYYY-MM-DD.';
+
+        return implode("\n", $lines);
+    }
+
+    private function buildDepartureDateInteractiveList(int $days = 30): array
+    {
+        $options = $this->buildDepartureDateOptions($days);
+        $rows    = [];
+
+        foreach ($options as $option) {
+            $rows[] = [
+                'id'          => 'departure_date:'.$option['value'],
+                'title'       => mb_substr((string) $option['label'], 0, 24),
+                'description' => (string) $option['value'],
+            ];
+        }
+
+        return [
+            'button'   => 'Pilih Tanggal',
+            'header'   => 'Tanggal Keberangkatan',
+            'body'     => 'Silakan pilih tanggal keberangkatan yang diinginkan.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => '30 Hari Ke Depan',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
+    private function buildDepartureTimeInteractiveList(): array
+    {
+        $rows = [];
+
+        foreach ($this->bookingRuleService->getDepartureTimes() as $slot) {
+            $time  = substr((string) ($slot['time'] ?? ''), 0, 5);
+            $label = (string) ($slot['label'] ?? $time);
+            $rows[] = [
+                'id'          => 'departure_time:'.$time,
+                'title'       => mb_substr($label, 0, 24),
+                'description' => $time.' WIB',
+            ];
+        }
+
+        return [
+            'button'   => 'Pilih Jam',
+            'header'   => 'Jam Keberangkatan',
+            'body'     => 'Silakan pilih jam keberangkatan yang diinginkan.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Pilihan Jam',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
+    private function extractSelectableDepartureDate(string $text): ?array
+    {
+        $normalized = trim(mb_strtolower($text, 'UTF-8'));
+        $options    = $this->buildDepartureDateOptions();
+
+        foreach ($options as $index => $option) {
+            $number = (string) ($index + 1);
+            $label  = trim(mb_strtolower((string) $option['label'], 'UTF-8'));
+            $value  = trim((string) $option['value']);
+
+            if ($normalized === $number || $normalized === $label || $normalized === $value) {
+                return $option;
+            }
+
+            if (str_contains($normalized, $value)) {
+                return $option;
+            }
+        }
+
+        if (preg_match('/\b(\d{4}-\d{2}-\d{2})\b/', $normalized, $matches) === 1) {
+            $picked = $matches[1] ?? null;
+
+            foreach ($options as $option) {
+                if (($option['value'] ?? null) === $picked) {
+                    return $option;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function extractSelectedDepartureDateFromInteractive(string $text): ?array
+    {
+        $normalized = trim($text);
+
+        if (! str_starts_with($normalized, 'departure_date:')) {
+            return null;
+        }
+
+        $value = trim(substr($normalized, strlen('departure_date:')));
+        if ($value === '') {
+            return null;
+        }
+
+        foreach ($this->buildDepartureDateOptions() as $option) {
+            if (($option['value'] ?? null) === $value) {
+                return $option;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractSelectedDepartureTimeFromInteractive(string $text): ?array
+    {
+        $normalized = trim($text);
+
+        if (! str_starts_with($normalized, 'departure_time:')) {
+            return null;
+        }
+
+        $value = trim(substr($normalized, strlen('departure_time:')));
+        if ($value === '') {
+            return null;
+        }
+
+        return $this->bookingRuleService->findDepartureTime($value);
+    }
 
     private function buildDepartureMenuText(): string
     {
