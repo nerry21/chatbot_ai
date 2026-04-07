@@ -14,7 +14,6 @@ class SyncContactToCrmJob implements ShouldQueue
 {
     use Queueable, InteractsWithQueue, SerializesModels;
 
-    public string $queue = 'crm';
     public int $tries = 4;
     public array $backoff = [30, 120, 300, 900];
     public int $timeout = 90;
