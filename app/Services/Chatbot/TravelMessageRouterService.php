@@ -1103,9 +1103,13 @@ class TravelMessageRouterService
         $normalized = $this->normalizeText($text);
 
         $greetings = [
-            'assalamualaikum', 'halo', 'hai', 'hi', 'hello',
+            'assalamualaikum', 'halo', 'hallo', 'hai', 'hi', 'hello', 'hey',
             'pagi', 'siang', 'sore', 'malam',
             'selamat pagi', 'selamat siang', 'selamat sore', 'selamat malam',
+            'halo selamat pagi', 'halo selamat siang', 'halo selamat sore', 'halo selamat malam',
+            'hallo selamat pagi', 'hallo selamat siang', 'hallo selamat sore', 'hallo selamat malam',
+            'assalamualaikum selamat pagi', 'assalamualaikum selamat siang',
+            'assalamualaikum selamat sore', 'assalamualaikum selamat malam',
         ];
 
         return in_array($normalized, $greetings, true);
@@ -1120,6 +1124,7 @@ class TravelMessageRouterService
             'mau boking',
             'mau pesan',
             'pesan travel',
+            'pemesanan',
             'booking',
             'boking',
             'bookin',
@@ -1127,8 +1132,11 @@ class TravelMessageRouterService
             'service:reguler',
             'reservasi',
             'pesan tiket',
+            'order',
             'mau berangkat',
             'saya mau berangkat',
+            'ingin berangkat',
+            'ingin pesan',
             'lanjut booking',
             'lanjut boking',
             'lanjut pesan',
