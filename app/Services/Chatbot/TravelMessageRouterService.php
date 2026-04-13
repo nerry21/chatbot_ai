@@ -1456,7 +1456,7 @@ class TravelMessageRouterService
 
     // ─── Misc helpers ──────────────────────────────────────────────────────────
 
-    private function buildDepartureDateOptions(int $days = 30): array
+    private function buildDepartureDateOptions(int $days = 14): array
     {
         $timezone = config('chatbot.jet.timezone', 'Asia/Jakarta');
         $start    = now($timezone)->startOfDay();
@@ -1511,7 +1511,7 @@ class TravelMessageRouterService
         return $options;
     }
 
-    private function buildDepartureDateMenuText(int $days = 30): string
+    private function buildDepartureDateMenuText(int $days = 14): string
     {
         $options = $this->buildDepartureDateOptions($days);
         $lines   = ['Pilihan tanggal keberangkatan:'];
@@ -1526,7 +1526,7 @@ class TravelMessageRouterService
         return implode("\n", $lines);
     }
 
-    private function buildDepartureDateInteractiveList(int $days = 30): array
+    private function buildDepartureDateInteractiveList(int $days = 14): array
     {
         $options = $this->buildDepartureDateOptions($days);
         $rows    = [];
@@ -1539,17 +1539,23 @@ class TravelMessageRouterService
             ];
         }
 
+        // WhatsApp API limit: max 10 rows per section
+        $sections = [];
+        $chunks = array_chunk($rows, 10);
+        foreach ($chunks as $index => $chunk) {
+            $weekNum = $index + 1;
+            $sections[] = [
+                'title' => 'Minggu ke-'.$weekNum,
+                'rows'  => $chunk,
+            ];
+        }
+
         return [
             'button'   => 'Pilih Tanggal',
             'header'   => 'Tanggal Keberangkatan',
             'body'     => 'Silakan pilih tanggal keberangkatan yang diinginkan.',
             'footer'   => 'JET Travel Rokan Hulu',
-            'sections' => [
-                [
-                    'title' => '30 Hari Ke Depan',
-                    'rows'  => $rows,
-                ],
-            ],
+            'sections' => $sections,
         ];
     }
 
@@ -1620,17 +1626,22 @@ class TravelMessageRouterService
             ];
         }
 
+        // WhatsApp API limit: max 10 rows per section
+        $sections = [];
+        $chunks = array_chunk($rows, 10);
+        foreach ($chunks as $index => $chunk) {
+            $sections[] = [
+                'title' => $index === 0 ? 'Lokasi Jemput' : 'Lokasi Jemput (lanjutan)',
+                'rows'  => $chunk,
+            ];
+        }
+
         return [
             'button'   => 'Pilih Jemput',
             'header'   => 'Titik Penjemputan',
-            'body'     => 'Silakan pilih titik penjemputan yang diinginkan.',
+            'body'     => 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
             'footer'   => 'JET Travel Rokan Hulu',
-            'sections' => [
-                [
-                    'title' => 'Lokasi Jemput',
-                    'rows'  => $rows,
-                ],
-            ],
+            'sections' => $sections,
         ];
     }
 
@@ -1646,17 +1657,22 @@ class TravelMessageRouterService
             ];
         }
 
+        // WhatsApp API limit: max 10 rows per section
+        $sections = [];
+        $chunks = array_chunk($rows, 10);
+        foreach ($chunks as $index => $chunk) {
+            $sections[] = [
+                'title' => $index === 0 ? 'Lokasi Tujuan' : 'Lokasi Tujuan (lanjutan)',
+                'rows'  => $chunk,
+            ];
+        }
+
         return [
             'button'   => 'Pilih Tujuan',
             'header'   => 'Tujuan Pengantaran',
-            'body'     => 'Silakan pilih tujuan pengantaran yang diinginkan.',
+            'body'     => 'Untuk pengantarannya ke mana, Bapak/Ibu? Silakan pilih lokasinya.',
             'footer'   => 'JET Travel Rokan Hulu',
-            'sections' => [
-                [
-                    'title' => 'Lokasi Tujuan',
-                    'rows'  => $rows,
-                ],
-            ],
+            'sections' => $sections,
         ];
     }
 
