@@ -42,7 +42,7 @@ class TravelGreetingService
             $parts[] = 'Waalaikumsalam warahmatullahi wabarakatuh';
         }
 
-        $parts[] = $time['label'].'. Ada yang bisa kami bantu untuk perjalanannya, Bapak/Ibu?';
+        $parts[] = $time['label'].', semoga hari ini membawa berkah dan rahmat. Izin Bapak/Ibu, kalau boleh tahu ada keperluan apa menghubungi JET (Jasa Executive Travel)?';
 
         return implode("\n\n", $parts);
     }

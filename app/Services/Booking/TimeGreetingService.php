@@ -1,84 +1,47 @@
 <?php
 
-namespace App\Services\Chatbot;
+namespace App\Services\Booking;
 
-use App\Services\Booking\TimeGreetingService;
-use Carbon\Carbon;
+use Illuminate\Support\Carbon;
 
-/**
- * TravelGreetingService
- *
- * Thin facade around the existing GreetingDetectorService + TimeGreetingService
- * that exposes a simple, stateless API for building opening greetings.
- *
- * All Islamic-greeting detection logic lives in GreetingDetectorService so that
- * it stays in sync with the main pipeline.  Time-based greeting logic lives in
- * TimeGreetingService (reads chatbot.jet.timezone).
- */
-class TravelGreetingService
+class TimeGreetingService
 {
-    public function __construct(
-        private readonly GreetingDetectorService $detector,
-        private readonly TimeGreetingService $timeGreeting,
-    ) {}
-
     /**
-     * Build a full opening greeting for the first inbound message.
-     *
-     * Returns e.g.:
-     *   "Waalaikumsalam warahmatullahi wabarakatuh\n\nSelamat pagi Bapak/Ibu. Ada yang bisa kami bantu?"
-     *
-     * or without Islamic prefix:
-     *   "Selamat sore Bapak/Ibu. Ada yang bisa kami bantu?"
-     */
-    public function buildOpeningGreeting(string $incomingText, ?Carbon $now = null): string
-    {
-        $hasIslamic = $this->detector->hasIslamicGreeting($incomingText);
-        $time = $this->timeGreeting->resolve($now);
-
-        $parts = [];
-
-        if ($hasIslamic) {
-            $parts[] = 'Waalaikumsalam warahmatullahi wabarakatuh';
-        }
-
-        $parts[] = $time['label'].', semoga hari ini membawa berkah dan rahmat. Izin Bapak/Ibu, kalau boleh tahu ada keperluan apa menghubungi JET (Jasa Executive Travel)?';
-
-        return implode("\n\n", $parts);
-    }
-
-    /**
-     * Whether the incoming text contains an Islamic greeting.
-     * Delegates to GreetingDetectorService so detection stays consistent.
-     */
-    public function shouldReplyIslamicGreeting(string $incomingText): bool
-    {
-        return $this->detector->hasIslamicGreeting($incomingText);
-    }
-
-    /**
-     * Return the time-based greeting label for the current moment.
-     *
      * @return array{key: string, label: string}
      */
-    public function getTimeGreeting(?Carbon $now = null): array
+    public function resolve(?Carbon $now = null): array
     {
-        return $this->timeGreeting->resolve($now);
+        $moment = ($now ?? Carbon::now())->copy()->setTimezone($this->timezone());
+        $minuteOfDay = ((int) $moment->format('H') * 60) + (int) $moment->format('i');
+
+        if ($minuteOfDay >= 300 && $minuteOfDay <= 600) {
+            return $this->payload('pagi', 'Selamat pagi Bapak/Ibu');
+        }
+
+        if ($minuteOfDay >= 601 && $minuteOfDay <= 900) {
+            return $this->payload('siang', 'Selamat siang Bapak/Ibu');
+        }
+
+        if ($minuteOfDay >= 901 && $minuteOfDay <= 1080) {
+            return $this->payload('sore', 'Selamat sore Bapak/Ibu');
+        }
+
+        return $this->payload('malam', 'Selamat malam Bapak/Ibu');
+    }
+
+    public function timezone(): string
+    {
+        return (string) config('chatbot.jet.timezone', 'Asia/Jakarta');
     }
 
     /**
-     * Return just the label text, e.g. "Selamat pagi Bapak/Ibu".
+     * @return array{key: string, label: string}
      */
-    public function getTimeBasedGreeting(?Carbon $now = null): string
+    private function payload(string $key, string $label): array
     {
-        return $this->timeGreeting->resolve($now)['label'];
-    }
-
-    /**
-     * Return the greeting period key, e.g. "pagi" | "siang" | "sore" | "malam".
-     */
-    public function getGreetingLabel(?Carbon $now = null): string
-    {
-        return $this->timeGreeting->resolve($now)['key'];
+        return [
+            'key' => $key,
+            'label' => $label,
+        ];
     }
 }
