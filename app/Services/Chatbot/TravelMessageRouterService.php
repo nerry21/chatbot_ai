@@ -83,6 +83,18 @@ class TravelMessageRouterService
             return $this->handleGreetingOnly($text, $state, $now);
         }
 
+        // 1b. Pure greeting during stale booking — customer is starting fresh
+        //     Reset booking state and show greeting with service menu
+        if ($this->isGreetingOnly($text) && in_array($state['status'], ['booking', 'schedule_change', 'booking_confirmed'], true)) {
+            $state['status']       = 'idle';
+            $state['current_step'] = null;
+            $state['booking_data'] = [];
+            $state['schedule_change_data'] = [];
+            $state['booking_edit_mode'] = false;
+
+            return $this->handleGreetingOnly($text, $state, $now);
+        }
+
         // 2. Booking continuation (must be BEFORE schedule/greeting checks)
         if ($state['status'] === 'booking') {
             return $this->handleBookingFlow($text, $phone, $state, $now);

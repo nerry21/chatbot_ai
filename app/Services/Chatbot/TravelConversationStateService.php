@@ -373,27 +373,42 @@ class TravelConversationStateService
         $isShortFreshOpen = in_array($normalized, [
             'assalamualaikum',
             'halo',
+            'hallo',
             'hai',
+            'hi',
+            'hello',
             'pagi',
             'siang',
             'sore',
             'malam',
+            'selamat pagi',
+            'selamat siang',
+            'selamat sore',
+            'selamat malam',
+            'halo selamat pagi',
+            'halo selamat siang',
+            'halo selamat sore',
+            'halo selamat malam',
+            'hallo selamat pagi',
+            'hallo selamat siang',
+            'hallo selamat sore',
+            'hallo selamat malam',
+            'hallo selamat pagi.',
             'assalamualaikum selamat pagi',
         ], true);
 
-        if (in_array($status, ['booking', 'schedule_change'], true)) {
-            return false;
-        }
-
-        if ($lastCompletedAt !== null && $lastCompletedAt->diffInHours($now) >= 2) {
+        // Reset ANY state (including mid-booking) after 2 hours of no activity.
+        if ($lastCustomerAt !== null && $lastCustomerAt->diffInHours($now) >= 2) {
             return true;
         }
 
-        if ($lastCustomerAt !== null && $lastCustomerAt->diffInHours($now) >= 6) {
-            return true;
-        }
-
+        // Reset completed booking immediately when greeting is sent.
         if ($status === 'booking_confirmed' && $isShortFreshOpen) {
+            return true;
+        }
+
+        // Reset completed booking after 2 hours.
+        if ($lastCompletedAt !== null && $lastCompletedAt->diffInHours($now) >= 2) {
             return true;
         }
 
