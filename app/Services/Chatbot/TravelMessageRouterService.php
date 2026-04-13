@@ -1456,7 +1456,7 @@ class TravelMessageRouterService
 
     // ─── Misc helpers ──────────────────────────────────────────────────────────
 
-    private function buildDepartureDateOptions(int $days = 14): array
+    private function buildDepartureDateOptions(int $days = 7): array
     {
         $timezone = config('chatbot.jet.timezone', 'Asia/Jakarta');
         $start    = now($timezone)->startOfDay();
@@ -1511,7 +1511,7 @@ class TravelMessageRouterService
         return $options;
     }
 
-    private function buildDepartureDateMenuText(int $days = 14): string
+    private function buildDepartureDateMenuText(int $days = 7): string
     {
         $options = $this->buildDepartureDateOptions($days);
         $lines   = ['Pilihan tanggal keberangkatan:'];
@@ -1526,7 +1526,7 @@ class TravelMessageRouterService
         return implode("\n", $lines);
     }
 
-    private function buildDepartureDateInteractiveList(int $days = 14): array
+    private function buildDepartureDateInteractiveList(int $days = 7): array
     {
         $options = $this->buildDepartureDateOptions($days);
         $rows    = [];
@@ -1539,23 +1539,18 @@ class TravelMessageRouterService
             ];
         }
 
-        // WhatsApp API limit: max 10 rows per section
-        $sections = [];
-        $chunks = array_chunk($rows, 10);
-        foreach ($chunks as $index => $chunk) {
-            $weekNum = $index + 1;
-            $sections[] = [
-                'title' => 'Minggu ke-'.$weekNum,
-                'rows'  => $chunk,
-            ];
-        }
-
+        // WhatsApp API limit: max 10 rows per section — 7 days fits in 1 section
         return [
             'button'   => 'Pilih Tanggal',
             'header'   => 'Tanggal Keberangkatan',
             'body'     => 'Silakan pilih tanggal keberangkatan yang diinginkan.',
             'footer'   => 'JET Travel Rokan Hulu',
-            'sections' => $sections,
+            'sections' => [
+                [
+                    'title' => '7 Hari Ke Depan',
+                    'rows'  => $rows,
+                ],
+            ],
         ];
     }
 
