@@ -78,56 +78,54 @@ class TravelMessageRouterService
             );
         }
 
-        // 1. Pure greeting when no booking is active — show service menu
-        if ($this->isGreetingOnly($text) && $state['status'] === 'idle') {
-            return $this->handleGreetingOnly($text, $state, $now);
-        }
-
-        // 1b. Pure greeting during stale booking — customer is starting fresh
-        //     Reset booking state and show greeting with service menu
-        if ($this->isGreetingOnly($text) && in_array($state['status'], ['booking', 'schedule_change', 'booking_confirmed'], true)) {
-            $state['status']       = 'idle';
-            $state['current_step'] = null;
-            $state['booking_data'] = [];
+        // 1. Pure greeting — ALWAYS reset and show service menu, regardless of current state.
+        //    If customer sends "Hallo selamat pagi" they want to start fresh.
+        if ($this->isGreetingOnly($text)) {
+            $state['status']               = 'idle';
+            $state['current_step']         = null;
+            $state['booking_data']         = [];
             $state['schedule_change_data'] = [];
-            $state['booking_edit_mode'] = false;
+            $state['booking_edit_mode']    = false;
 
             return $this->handleGreetingOnly($text, $state, $now);
         }
 
-        // 2. Booking continuation (must be BEFORE schedule/greeting checks)
+        // 2. New booking request while already in booking → reset and start fresh.
+        if ($state['status'] === 'booking' && $this->isBookingStartMessage($text)) {
+            return $this->handleBookingStartWithGreeting($text, $state, $now);
+        }
+
+        // 3. Booking continuation
         if ($state['status'] === 'booking') {
             return $this->handleBookingFlow($text, $phone, $state, $now);
         }
 
-        // 3. Schedule change continuation
+        // 4. Schedule change continuation
         if ($state['status'] === 'schedule_change') {
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
         }
 
-        // 4. Dropping / Rental / Paket → forward to admin
+        // 5. Dropping / Rental / Paket → forward to admin
         if ($this->isDroppingOrRentalOrPaketRequest($text)) {
             return $this->handleNonRegularService($phone, $state, $text);
         }
 
-        // 5. Booking start trigger (reguler / booking / pesan / boking)
-        //    This MUST be checked BEFORE schedule question, because
-        //    "saya mau boking malam" contains both "booking" and "malam"
+        // 6. Booking start trigger (reguler / booking / pesan / boking / pemesanan)
         if ($this->isBookingStartMessage($text)) {
             return $this->handleBookingStartWithGreeting($text, $state, $now);
         }
 
-        // 6. Schedule change start trigger
+        // 7. Schedule change start trigger
         if ($this->isScheduleChangeMessage($text)) {
             return $this->handleScheduleChangeStart($text, $phone, $state, $now);
         }
 
-        // 7. Offer repeat booking / schedule change after a completed booking
+        // 8. Offer repeat booking / schedule change after a completed booking
         if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
             return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
         }
 
-        // 8. Pertanyaan jadwal sederhana (ONLY when not a booking request)
+        // 9. Pertanyaan jadwal sederhana (ONLY when not a booking request)
         if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
             return $this->handleSimpleScheduleQuestion($text, $state);
         }
@@ -330,19 +328,21 @@ class TravelMessageRouterService
         $step = $state['current_step'] ?? 'ask_passenger_count';
 
         return match ($step) {
-            'ask_departure_date'         => $this->handleDepartureDateStep($text, $state),
-            'ask_departure_time'         => $this->handleDepartureTimeStep($text, $state),
-            'ask_departure_time_and_date'=> $this->handleDepartureDateStep($text, $state),
-            'ask_passenger_count'        => $this->handlePassengerCountStep($text, $state),
-            'ask_seat'                   => $this->handleSeatStep($text, $state),
-            'ask_pickup_point'           => $this->handlePickupPointStep($text, $state),
-            'ask_pickup_address'         => $this->handlePickupAddressStep($text, $state),
-            'ask_dropoff_point'          => $this->handleDropoffPointStep($text, $state),
-            'ask_passenger_name'         => $this->handlePassengerNameStep($text, $state),
-            'ask_contact_number'         => $this->handleContactStep($text, $state, $phone),
-            'ask_review_confirmation'    => $this->handleReviewConfirmationStep($text, $phone, $state, $now),
-            'ask_which_field_to_change'  => $this->handleWhichFieldToChangeStep($text, $state),
-            default                      => $this->handleBookingStart($state),
+            'ask_departure_date'              => $this->handleDepartureDateStep($text, $state),
+            'ask_departure_time'              => $this->handleDepartureTimeStep($text, $state),
+            'ask_departure_time_and_date'     => $this->handleDepartureDateStep($text, $state),
+            'ask_passenger_count'             => $this->handlePassengerCountStep($text, $state),
+            'ask_seat'                        => $this->handleSeatStep($text, $state),
+            'wait_admin_seat_confirmation'    => $this->handleAdminSeatConfirmationResponse($text, $state),
+            'seat_rejected_choose_action'     => $this->handleSeatRejectedAction($text, $state),
+            'ask_pickup_point'                => $this->handlePickupPointStep($text, $state),
+            'ask_pickup_address'              => $this->handlePickupAddressStep($text, $state),
+            'ask_dropoff_point'               => $this->handleDropoffPointStep($text, $state),
+            'ask_passenger_name'              => $this->handlePassengerNameStep($text, $state),
+            'ask_contact_number'              => $this->handleContactStep($text, $state, $phone),
+            'ask_review_confirmation'         => $this->handleReviewConfirmationStep($text, $phone, $state, $now),
+            'ask_which_field_to_change'       => $this->handleWhichFieldToChangeStep($text, $state),
+            default                           => $this->handleBookingStart($state),
         };
     }
 
@@ -529,6 +529,41 @@ class TravelMessageRouterService
         }
 
         $state['booking_data']['seat'] = $seat;
+
+        // Check if seat requires admin confirmation (e.g., BS Tengah)
+        $requiresAdminConfirmation = in_array(
+            $seat,
+            (array) config('chatbot.jet.seat_requires_admin_confirmation', ['BS Tengah']),
+            true,
+        );
+
+        if ($requiresAdminConfirmation) {
+            $state['current_step'] = 'wait_admin_seat_confirmation';
+
+            $phone = $state['booking_data']['contact_number'] ?? '-';
+            $passengerCount = $state['booking_data']['passenger_count'] ?? 1;
+            $departureTime = $state['booking_data']['departure_time'] ?? '-';
+            $departureDate = $state['booking_data']['departure_date_label'] ?? $state['booking_data']['departure_date'] ?? '-';
+
+            $adminMessage = "Konfirmasi Seat BS Tengah\n"
+                ."Tanggal: {$departureDate}\n"
+                ."Jam: {$departureTime} WIB\n"
+                ."Jumlah penumpang: {$passengerCount} orang\n\n"
+                ."Apakah seat BS Tengah diizinkan, Bos?\n"
+                ."Balas: IZINKAN atau TOLAK";
+
+            return $this->buildResult(
+                replyText: "Izin Bapak/Ibu, untuk seat *BS Tengah* memerlukan konfirmasi dari Admin terlebih dahulu.\n\nMohon ditunggu sebentar ya, kami sedang mengkonfirmasi ke Admin.",
+                intent: 'seat_admin_confirmation',
+                state: $state,
+                actions: [
+                    ['type' => 'notify_admin', 'channel' => 'main_admin', 'message' => $adminMessage],
+                    ['type' => 'save_state'],
+                ],
+                meta: ['step' => 'wait_admin_seat_confirmation', 'seat_requires_confirmation' => true],
+            );
+        }
+
         $state['current_step'] = 'ask_pickup_point';
 
         if (!empty($state['booking_edit_mode'])) {
@@ -545,6 +580,125 @@ class TravelMessageRouterService
                 'interactive_type' => 'list',
                 'interactive_list' => $this->buildPickupPointInteractiveList(),
             ],
+        );
+    }
+
+    private function handleAdminSeatConfirmationResponse(string $text, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+
+        // Admin approves
+        if (str_contains($normalized, 'izinkan') || str_contains($normalized, 'approve')
+            || str_contains($normalized, 'boleh') || str_contains($normalized, 'oke')
+            || str_contains($normalized, 'setuju') || str_contains($normalized, 'ya')) {
+
+            $state['current_step'] = 'ask_pickup_point';
+
+            return $this->buildResult(
+                replyText: "Baik Bapak/Ibu, seat *BS Tengah* sudah dikonfirmasi oleh Admin.\n\nSekarang, izin Bapak/Ibu silakan pilih titik penjemputannya.",
+                intent: 'seat_confirmed',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step' => 'ask_pickup_point',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildPickupPointInteractiveList(),
+                ],
+            );
+        }
+
+        // Admin rejects
+        if (str_contains($normalized, 'tolak') || str_contains($normalized, 'tidak')
+            || str_contains($normalized, 'reject') || str_contains($normalized, 'jangan')) {
+
+            $state['current_step'] = 'seat_rejected_choose_action';
+            $state['booking_data']['seat'] = null;
+
+            return $this->buildResult(
+                replyText: "Mohon maaf Bapak/Ibu, seat *BS Tengah* tidak tersedia saat ini.\n\nSilakan pilih:\n1. Ganti seat\n2. Ganti jam keberangkatan\n3. Ganti tanggal keberangkatan",
+                intent: 'seat_rejected',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: ['step' => 'seat_rejected_choose_action'],
+            );
+        }
+
+        // Unrecognized — still waiting
+        return $this->buildResult(
+            replyText: 'Mohon ditunggu ya Bapak/Ibu, kami masih menunggu konfirmasi dari Admin untuk seat BS Tengah.',
+            intent: 'seat_waiting',
+            state: $state,
+            actions: [],
+            meta: ['step' => 'wait_admin_seat_confirmation'],
+        );
+    }
+
+    private function handleSeatRejectedAction(string $text, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+
+        if (str_contains($normalized, 'ganti seat') || str_contains($normalized, 'seat') || $normalized === '1') {
+            $state['current_step'] = 'ask_seat';
+
+            return $this->buildResult(
+                replyText: 'Baik, silakan pilih seat lain yang diinginkan, Bapak/Ibu.',
+                intent: 'seat_change',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step' => 'ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildSeatInteractiveList(),
+                ],
+            );
+        }
+
+        if (str_contains($normalized, 'ganti jam') || str_contains($normalized, 'jam') || $normalized === '2') {
+            $state['current_step'] = 'ask_departure_time';
+            $state['booking_data']['departure_time'] = null;
+            $state['booking_data']['departure_time_label'] = null;
+            $state['booking_data']['seat'] = null;
+
+            return $this->buildResult(
+                replyText: "Baik, silakan pilih jam keberangkatan yang baru.",
+                intent: 'change_time',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step' => 'ask_departure_time',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildDepartureTimeInteractiveList(),
+                ],
+            );
+        }
+
+        if (str_contains($normalized, 'ganti tanggal') || str_contains($normalized, 'tanggal') || $normalized === '3') {
+            $state['current_step'] = 'ask_departure_date';
+            $state['booking_data']['departure_date'] = null;
+            $state['booking_data']['departure_date_label'] = null;
+            $state['booking_data']['departure_time'] = null;
+            $state['booking_data']['departure_time_label'] = null;
+            $state['booking_data']['seat'] = null;
+
+            return $this->buildResult(
+                replyText: "Baik, silakan pilih tanggal keberangkatan yang baru.",
+                intent: 'change_date',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step' => 'ask_departure_date',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildDepartureDateInteractiveList(),
+                ],
+            );
+        }
+
+        return $this->buildResult(
+            replyText: "Izin Bapak/Ibu, silakan pilih:\n1. Ganti seat\n2. Ganti jam keberangkatan\n3. Ganti tanggal keberangkatan",
+            intent: 'seat_rejected_retry',
+            state: $state,
+            actions: [],
+            meta: ['step' => 'seat_rejected_choose_action'],
         );
     }
 
@@ -1604,14 +1758,19 @@ class TravelMessageRouterService
 
     private function buildSeatInteractiveList(): array
     {
-        $seatLabels = (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']);
+        $seatLabels = (array) config('chatbot.jet.seat_labels', ['CC', 'BS Kiri', 'BS Kanan', 'BS Tengah', 'Belakang Kiri', 'Belakang Kanan']);
+        $requiresConfirmation = (array) config('chatbot.jet.seat_requires_admin_confirmation', ['BS Tengah']);
         $rows = [];
 
         foreach ($seatLabels as $seat) {
+            $description = in_array($seat, $requiresConfirmation, true)
+                ? 'Perlu konfirmasi Admin'
+                : 'Pilih seat '.$seat;
+
             $rows[] = [
                 'id'          => 'seat:'.$this->normalizeSelectionValue($seat),
                 'title'       => mb_substr((string) $seat, 0, 24),
-                'description' => 'Pilih seat '.$seat,
+                'description' => $description,
             ];
         }
 

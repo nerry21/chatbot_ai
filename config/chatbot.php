@@ -348,11 +348,16 @@ return [
 
         'seat_labels' => [
             'CC',
-            'BS',
-            'Tengah',
+            'BS Kiri',
+            'BS Kanan',
+            'BS Tengah',
             'Belakang Kiri',
             'Belakang Kanan',
-            'Belakang Sekali',
+        ],
+
+        // Seats that require admin confirmation before booking can proceed.
+        'seat_requires_admin_confirmation' => [
+            'BS Tengah',
         ],
     ],
 
