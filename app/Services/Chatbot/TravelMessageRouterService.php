@@ -78,43 +78,49 @@ class TravelMessageRouterService
             );
         }
 
-        // 1. Pure greeting when no booking is active
+        // 1. Pure greeting when no booking is active — show service menu
         if ($this->isGreetingOnly($text) && $state['status'] === 'idle') {
             return $this->handleGreetingOnly($text, $state, $now);
         }
 
-        // 2. Pertanyaan jadwal sederhana harus dibaca sebagai travel inquiry,
-        // bukan diseret ke repeat-booking atau fallback generic.
-        if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
-            return $this->handleSimpleScheduleQuestion($text, $state);
-        }
-
-        // 3. Offer repeat booking / schedule change after a completed booking
-        if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
-            return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
-        }
-
-        // 4. Schedule change start trigger
-        if ($this->isScheduleChangeMessage($text)) {
-            return $this->handleScheduleChangeStart($text, $phone, $state, $now);
-        }
-
-        // 5. Schedule change continuation
-        if ($state['status'] === 'schedule_change') {
-            return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
-        }
-
-        // 6. Booking start trigger
-        if ($this->isBookingStartMessage($text)) {
-            return $this->handleBookingStart($state);
-        }
-
-        // 7. Booking continuation
+        // 2. Booking continuation (must be BEFORE schedule/greeting checks)
         if ($state['status'] === 'booking') {
             return $this->handleBookingFlow($text, $phone, $state, $now);
         }
 
-        // 8. Fare question
+        // 3. Schedule change continuation
+        if ($state['status'] === 'schedule_change') {
+            return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
+        }
+
+        // 4. Dropping / Rental / Paket → forward to admin
+        if ($this->isDroppingOrRentalOrPaketRequest($text)) {
+            return $this->handleNonRegularService($phone, $state, $text);
+        }
+
+        // 5. Booking start trigger (reguler / booking / pesan / boking)
+        //    This MUST be checked BEFORE schedule question, because
+        //    "saya mau boking malam" contains both "booking" and "malam"
+        if ($this->isBookingStartMessage($text)) {
+            return $this->handleBookingStartWithGreeting($text, $state, $now);
+        }
+
+        // 6. Schedule change start trigger
+        if ($this->isScheduleChangeMessage($text)) {
+            return $this->handleScheduleChangeStart($text, $phone, $state, $now);
+        }
+
+        // 7. Offer repeat booking / schedule change after a completed booking
+        if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
+            return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
+        }
+
+        // 8. Pertanyaan jadwal sederhana (ONLY when not a booking request)
+        if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
+            return $this->handleSimpleScheduleQuestion($text, $state);
+        }
+
+        // 9. Fare question
         if ($this->looksLikeFareQuestion($text)) {
             $fareResponse = $this->tryHandleFareQuestion($text, $state);
             if ($fareResponse !== null) {
@@ -122,7 +128,7 @@ class TravelMessageRouterService
             }
         }
 
-        // 9. Knowledge base / FAQ
+        // 10. Knowledge base / FAQ
         $faqMatch = $this->faqMatcherService->match($text);
         if ($faqMatch !== null && $faqMatch['score'] >= TravelFaqMatcherService::FALLBACK_SCORE_THRESHOLD) {
             return $this->buildResult(
@@ -134,7 +140,7 @@ class TravelMessageRouterService
             );
         }
 
-        // 9. Escalate to admin
+        // 11. Escalate to admin
         return $this->handleFallbackToAdmin($phone, $state, $text);
     }
 
@@ -149,8 +155,130 @@ class TravelMessageRouterService
                 : 'greeting_general',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['greeting_key' => $this->greetingService->getGreetingLabel($now)],
+            meta: [
+                'greeting_key' => $this->greetingService->getGreetingLabel($now),
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildServiceMenuInteractiveList(),
+            ],
         );
+    }
+
+    // ─── Service menu (Reguler / Dropping / Rental / Paket) ────────────────────
+
+    private function isDroppingOrRentalOrPaketRequest(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach (['dropping', 'rental', 'sewa mobil', 'paket', 'kirim paket', 'pengiriman paket'] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function handleNonRegularService(string $phone, array $state, string $text): array
+    {
+        $notifKey = 'non_regular:'.md5($phone.'|'.$this->normalizeText($text));
+        $actions  = [['type' => 'save_state']];
+
+        if (($state['last_admin_notification_key'] ?? null) !== $notifKey) {
+            $actions[] = [
+                'type'    => 'notify_admin',
+                'channel' => 'main_admin',
+                'message' => "Bos, ada pertanyaan layanan dari No {$phone}:\n\"{$text}\"\n\nBisa bantu jawab, Bos?",
+            ];
+            $state['last_admin_notification_key'] = $notifKey;
+        }
+
+        return $this->buildResult(
+            replyText: 'Izin Bapak/Ibu, terima kasih atas pertanyaannya. Izin kami konsultasikan dahulu ya. Admin kami akan segera menghubungi Bapak/Ibu.',
+            intent: 'non_regular_service',
+            state: $state,
+            actions: $actions,
+            meta: ['service_type' => 'non_regular'],
+        );
+    }
+
+    private function buildServiceMenuInteractiveList(): array
+    {
+        return [
+            'button'   => 'Pilih Layanan',
+            'header'   => 'Layanan JET Travel',
+            'body'     => 'Silakan pilih layanan yang diinginkan.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Pilihan Layanan',
+                    'rows'  => [
+                        ['id' => 'service:reguler',  'title' => 'Reguler',           'description' => 'Antar-jemput standar mulai Rp 150.000'],
+                        ['id' => 'service:dropping', 'title' => 'Dropping',          'description' => '1 mobil langsung ke tujuan'],
+                        ['id' => 'service:rental',   'title' => 'Rental',            'description' => 'Sewa mobil min. 2 hari'],
+                        ['id' => 'service:paket',    'title' => 'Pengiriman Paket',  'description' => 'Kirim barang antar kota'],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    // ─── Booking start with greeting ───────────────────────────────────────────
+
+    private function handleBookingStartWithGreeting(string $text, array $state, Carbon $now): array
+    {
+        $hasIslamic = $this->greetingService->shouldReplyIslamicGreeting($text);
+        $prefix = '';
+
+        if ($hasIslamic) {
+            $prefix = "Waalaikumsalam warahmatullahi wabarakatuh\n\n";
+        }
+
+        // Detect if text contains a greeting word
+        $hasGreeting = $this->containsGreeting($text);
+        if ($hasGreeting && !$hasIslamic) {
+            $timeLabel = $this->greetingService->getTimeBasedGreeting($now);
+            $prefix = $timeLabel.".\n\n";
+        }
+
+        $state['status']       = 'booking';
+        $state['current_step'] = 'ask_passenger_count';
+        $state['booking_data'] = [
+            'departure_date'       => null,
+            'departure_date_label' => null,
+            'departure_time'       => null,
+            'departure_time_label' => null,
+            'passenger_count'      => null,
+            'seat'                 => null,
+            'pickup_point'         => null,
+            'pickup_address'       => null,
+            'dropoff_point'        => null,
+            'passenger_names'      => [],
+            'contact_number'       => null,
+        ];
+
+        return $this->buildResult(
+            replyText: $prefix."Baik, saya bantu bookingnya ya.\n\nUntuk keberangkatan ini ada berapa orang penumpangnya, Bapak/Ibu?",
+            intent: 'start_booking',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'booking_started'  => true,
+                'step'             => 'ask_passenger_count',
+            ],
+        );
+    }
+
+    private function containsGreeting(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach (['halo', 'hallo', 'hai', 'hi', 'hello', 'pagi', 'siang', 'sore', 'malam', 'selamat'] as $word) {
+            if (str_contains($normalized, $word)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ─── Booking flow ──────────────────────────────────────────────────────────
@@ -357,30 +485,34 @@ class TravelMessageRouterService
             replyText: 'Baik, jam keberangkatan sudah saya catat: '
                 .$bookingData['departure_time'].' WIB.'
                 ."\n\nIzin Bapak/Ibu, untuk ketersediaan seat tempat duduk di jam ".$bookingData['departure_time'].' WIB'
-                .' berdasarkan '.$passengerCount.' orang penumpang, pilihannya: '
-                .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
-                .'. Seat mana yang diinginkan?',
+                .' berdasarkan '.$passengerCount.' orang penumpang, silakan pilih seat yang diinginkan.',
             intent: 'departure_time',
             state: $state,
             actions: [['type' => 'save_state']],
             meta: [
-                'step'           => 'ask_seat',
-                'departure_slot' => $slot,
+                'step'             => 'ask_seat',
+                'departure_slot'   => $slot,
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildSeatInteractiveList(),
             ],
         );
     }
 
     private function handleSeatStep(string $text, array $state): array
     {
-        $seat = trim($text);
+        $seat = $this->extractSelectedSeatFromInteractive($text) ?? trim($text);
 
         if ($seat === '') {
             return $this->buildResult(
-                replyText: 'Izin Bapak/Ibu, mohon pilih atau tuliskan seat yang diinginkan.',
+                replyText: 'Izin Bapak/Ibu, mohon pilih seat yang diinginkan.',
                 intent: 'seat',
                 state: $state,
                 actions: [],
-                meta: ['step' => 'ask_seat'],
+                meta: [
+                    'step' => 'ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildSeatInteractiveList(),
+                ],
             );
         }
 
@@ -615,7 +747,7 @@ class TravelMessageRouterService
         );
 
         return $this->buildResult(
-            replyText: 'Baik Bapak/Ibu, booking sudah kami catat. Terima kasih dan semoga perjalanannya lancar.',
+            replyText: "Baik Bapak/Ibu, booking sudah kami catat. Terima kasih dan semoga perjalanannya lancar.\n\nKami akan kembali menghubungi Bapak/Ibu melalui kanal WA ini atau dari Admin Utama.",
             intent: 'booking_confirmed',
             state: $state,
             actions: [
@@ -991,6 +1123,8 @@ class TravelMessageRouterService
             'booking',
             'boking',
             'bookin',
+            'reguler',
+            'service:reguler',
             'reservasi',
             'pesan tiket',
             'mau berangkat',
@@ -1447,6 +1581,33 @@ class TravelMessageRouterService
         ];
     }
 
+    private function buildSeatInteractiveList(): array
+    {
+        $seatLabels = (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']);
+        $rows = [];
+
+        foreach ($seatLabels as $seat) {
+            $rows[] = [
+                'id'          => 'seat:'.$this->normalizeSelectionValue($seat),
+                'title'       => mb_substr((string) $seat, 0, 24),
+                'description' => 'Pilih seat '.$seat,
+            ];
+        }
+
+        return [
+            'button'   => 'Pilih Seat',
+            'header'   => 'Pilihan Seat',
+            'body'     => 'Silakan pilih seat tempat duduk yang diinginkan.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Seat Tersedia',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
     private function buildPickupPointInteractiveList(): array
     {
         $rows = [];
@@ -1603,6 +1764,30 @@ class TravelMessageRouterService
         return $this->bookingRuleService->findDepartureTime($value);
     }
 
+    private function extractSelectedSeatFromInteractive(string $text): ?string
+    {
+        $normalized = trim($text);
+
+        if (! str_starts_with($normalized, 'seat:')) {
+            return null;
+        }
+
+        $value = trim(substr($normalized, strlen('seat:')));
+        if ($value === '') {
+            return null;
+        }
+
+        $seatLabels = (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']);
+
+        foreach ($seatLabels as $seat) {
+            if ($this->normalizeSelectionValue($seat) === $value) {
+                return $seat;
+            }
+        }
+
+        return null;
+    }
+
     private function extractSelectedPickupLocationFromInteractive(string $text): ?string
     {
         $normalized = trim($text);
@@ -1717,6 +1902,21 @@ class TravelMessageRouterService
             ? implode(', ', $passengerNames)
             : '-';
 
+        // Calculate fare
+        $fareDisplay = '-';
+        if ($pickupPoint !== '' && $dropoffPoint !== '') {
+            $fare = $this->fareService->findFare($pickupPoint, $dropoffPoint);
+            if ($fare !== null) {
+                $unitFare = $fare['unit_fare'];
+                $count = max(1, (int) $passengerCount);
+                $totalFare = $unitFare * $count;
+                $fareDisplay = $this->fareService->formatRupiah($totalFare);
+                if ($count > 1) {
+                    $fareDisplay .= ' ('.$count.' x '.$this->fareService->formatRupiah($unitFare).')';
+                }
+            }
+        }
+
         $lines = [
             'Baik Bapak/Ibu, berikut review booking perjalanannya:',
             '',
@@ -1729,6 +1929,7 @@ class TravelMessageRouterService
             'Tujuan antar          : '.($dropoffPoint !== '' ? $dropoffPoint : '-'),
             'Nama penumpang        : '.$passengerNamesDisplay,
             'No HP                 : '.($contactNumber !== '' ? $contactNumber : '-'),
+            'Ongkos perjalanan     : '.$fareDisplay,
             '',
             'Izin konfirmasi Bapak/Ibu, apakah data perjalanan ini sudah tepat?',
             '',

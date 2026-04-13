@@ -43,6 +43,7 @@ class TravelGreetingService
         }
 
         $parts[] = $time['label'].', semoga hari ini membawa berkah dan rahmat. Izin Bapak/Ibu, kalau boleh tahu ada keperluan apa menghubungi JET (Jasa Executive Travel)?';
+        $parts[] = "Berikut layanan yang kami sediakan:\n1. *Reguler* — Layanan antar-jemput standar, mulai dari Rp 150.000\n2. *Dropping* — Pemesanan 1 mobil langsung ke tujuan, harga disepakati bersama\n3. *Rental* — Sewa mobil minimum 2 hari, siap antar ke mana saja\n4. *Pengiriman Paket* — Pengiriman barang antar kota\n\nSilakan pilih layanan yang diinginkan, Bapak/Ibu.";
 
         return implode("\n\n", $parts);
     }

@@ -150,8 +150,7 @@ class RuleEngineService
             $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
             $missing = is_array($booking['missing_fields'] ?? null) ? $booking['missing_fields'] : [];
 
-            // Ask only the FIRST missing field, not all at once.
-            // This creates a natural step-by-step booking flow.
+            // Ask only the FIRST missing field — natural step-by-step flow.
             $firstMissing = $missing[0] ?? null;
             $firstMissingLabel = $firstMissing !== null ? self::humanizeFieldName($firstMissing) : 'data booking';
 
