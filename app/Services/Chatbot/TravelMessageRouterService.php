@@ -158,7 +158,7 @@ class TravelMessageRouterService
     private function handleBookingStart(array $state): array
     {
         $state['status']       = 'booking';
-        $state['current_step'] = 'ask_departure_date';
+        $state['current_step'] = 'ask_passenger_count';
         $state['booking_data'] = [
             'departure_date'       => null,
             'departure_date_label' => null,
@@ -174,15 +174,13 @@ class TravelMessageRouterService
         ];
 
         return $this->buildResult(
-            replyText: "Baik, saya bantu bookingnya ya.\n\nSilakan pilih tanggal keberangkatannya terlebih dahulu.",
+            replyText: "Baik, saya bantu bookingnya ya.\n\nUntuk keberangkatan ini ada berapa orang penumpangnya, Bapak/Ibu?",
             intent: 'start_booking',
             state: $state,
             actions: [['type' => 'save_state']],
             meta: [
                 'booking_started'  => true,
-                'step'             => 'ask_departure_date',
-                'interactive_type' => 'list',
-                'interactive_list' => $this->buildDepartureDateInteractiveList(),
+                'step'             => 'ask_passenger_count',
             ],
         );
     }
@@ -236,26 +234,28 @@ class TravelMessageRouterService
 
         $state['booking_data']['passenger_count']                = $count;
         $state['booking_data']['requires_passenger_confirmation'] = $validation['requires_confirmation'];
-        $state['current_step']                                   = 'ask_seat';
+        $state['current_step']                                   = 'ask_departure_date';
 
         if (!empty($state['booking_edit_mode'])) {
             return $this->buildEditModeReturnToReview($state);
         }
 
         $reply = $validation['requires_confirmation']
-            ? $validation['message'].' '
+            ? $validation['message']."\n\n"
             : '';
 
-        $reply .= 'Baik. Untuk seat, pilihannya: '
-            .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
-            .'. Seat mana yang diinginkan?';
+        $reply .= "Baik, {$count} orang penumpang sudah saya catat.\n\nIzin Bapak/Ibu, kalau boleh tahu untuk keberangkatan di tanggal berapa?";
 
         return $this->buildResult(
             replyText: trim($reply),
             intent: 'passenger_count',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: ['step' => 'ask_seat'],
+            meta: [
+                'step'                       => 'ask_departure_date',
+                'interactive_type'           => 'list',
+                'interactive_list'           => $this->buildDepartureDateInteractiveList(),
+            ],
         );
     }
 
@@ -345,21 +345,26 @@ class TravelMessageRouterService
         $bookingData['departure_time_label'] = (string) ($slot['label'] ?? $bookingData['departure_time']);
 
         $state['booking_data'] = $bookingData;
-        $state['current_step'] = 'ask_passenger_count';
+        $state['current_step'] = 'ask_seat';
 
         if (!empty($state['booking_edit_mode'])) {
             return $this->buildEditModeReturnToReview($state);
         }
 
+        $passengerCount = (int) ($state['booking_data']['passenger_count'] ?? 1);
+
         return $this->buildResult(
             replyText: 'Baik, jam keberangkatan sudah saya catat: '
                 .$bookingData['departure_time'].' WIB.'
-                ."\n\nUntuk keberangkatan ini ada berapa orang penumpangnya?",
+                ."\n\nIzin Bapak/Ibu, untuk ketersediaan seat tempat duduk di jam ".$bookingData['departure_time'].' WIB'
+                .' berdasarkan '.$passengerCount.' orang penumpang, pilihannya: '
+                .implode(', ', (array) config('chatbot.jet.seat_labels', ['CC', 'BS', 'Tengah', 'Belakang Kiri', 'Belakang Kanan', 'Belakang Sekali']))
+                .'. Seat mana yang diinginkan?',
             intent: 'departure_time',
             state: $state,
             actions: [['type' => 'save_state']],
             meta: [
-                'step'         => 'ask_passenger_count',
+                'step'           => 'ask_seat',
                 'departure_slot' => $slot,
             ],
         );
@@ -1105,9 +1110,9 @@ class TravelMessageRouterService
             'keberangkatan',
             'berangkat',
             'jam 5',
-            'jam 8',
-            'jam 10',
-            'jam 14',
+            'jam 7',
+            'jam 9',
+            'jam 13',
             'jam 16',
             'jam 19',
             'ongkos',
