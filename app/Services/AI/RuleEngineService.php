@@ -150,18 +150,25 @@ class RuleEngineService
             $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
             $missing = is_array($booking['missing_fields'] ?? null) ? $booking['missing_fields'] : [];
 
+            // Ask only the FIRST missing field, not all at once.
+            // This creates a natural step-by-step booking flow.
+            $firstMissing = $missing[0] ?? null;
+            $firstMissingLabel = $firstMissing !== null ? self::humanizeFieldName($firstMissing) : 'data booking';
+
             return [
-                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', array_map([self::class, 'humanizeFieldName'], $missing)).'.',
+                'reply' => 'Baik, saya bantu lanjutkan. Izin Bapak/Ibu, mohon dibantu isi '.$firstMissingLabel.'-nya terlebih dahulu ya.',
                 'tone' => 'ramah',
                 'should_escalate' => false,
                 'handoff_reason' => null,
                 'next_action' => 'ask_missing_data',
-                'data_requests' => array_values($missing),
+                'data_requests' => $firstMissing !== null ? [$firstMissing] : [],
                 'used_crm_facts' => ['booking.missing_fields'],
                 'safety_notes' => $ruleHits,
                 'meta' => [
                     'force_handoff' => false,
                     'source' => 'rule_engine_missing_data_fallback',
+                    'first_missing_field' => $firstMissing,
+                    'total_missing_count' => count($missing),
                 ],
             ];
         }

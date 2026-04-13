@@ -182,7 +182,12 @@ class TravelWhatsAppPipelineService
         $keywords = [
             'travel',
             'booking',
+            'boking',
+            'bookin',
+            'bking',
             'pesan',
+            'mau pesan',
+            'reservasi',
             'jadwal',
             'keberangkatan',
             'berangkat',

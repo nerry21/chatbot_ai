@@ -197,14 +197,18 @@ class HallucinationGuardService
         $booking = is_array($crm['booking'] ?? null) ? $crm['booking'] : [];
 
         if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
+            $firstMissing = $booking['missing_fields'][0] ?? null;
+            $firstMissingLabel = $firstMissing !== null ? RuleEngineService::humanizeFieldName($firstMissing) : 'data booking';
+            $replyText = 'Baik, saya bantu lanjutkan. Izin Bapak/Ibu, mohon dibantu isi '.$firstMissingLabel.'-nya terlebih dahulu ya.';
+
             return [
-                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', array_map([RuleEngineService::class, 'humanizeFieldName'], $booking['missing_fields'])).'.',
-                'text' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', array_map([RuleEngineService::class, 'humanizeFieldName'], $booking['missing_fields'])).'.',
+                'reply' => $replyText,
+                'text' => $replyText,
                 'tone' => 'ramah',
                 'should_escalate' => false,
                 'handoff_reason' => null,
                 'next_action' => 'ask_missing_data',
-                'data_requests' => array_values($booking['missing_fields']),
+                'data_requests' => $firstMissing !== null ? [$firstMissing] : [],
                 'used_crm_facts' => ['booking.missing_fields'],
                 'safety_notes' => array_values($riskReport['risk_flags'] ?? []),
                 'message_type' => 'text',
@@ -213,6 +217,8 @@ class HallucinationGuardService
                 'meta' => array_merge([
                     'force_handoff' => false,
                     'source' => 'hallucination_guard_missing_data_fallback',
+                    'first_missing_field' => $firstMissing,
+                    'total_missing_count' => count($booking['missing_fields']),
                 ], $groundingMeta),
             ];
         }

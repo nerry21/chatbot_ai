@@ -985,14 +985,18 @@ class TravelMessageRouterService
 
         foreach ([
             'mau booking',
+            'mau boking',
             'mau pesan',
             'pesan travel',
             'booking',
+            'boking',
+            'bookin',
             'reservasi',
             'pesan tiket',
             'mau berangkat',
             'saya mau berangkat',
             'lanjut booking',
+            'lanjut boking',
             'lanjut pesan',
         ] as $pattern) {
             if (str_contains($normalized, $pattern)) {
