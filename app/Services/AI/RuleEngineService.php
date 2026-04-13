@@ -5,6 +5,26 @@ namespace App\Services\AI;
 class RuleEngineService
 {
     /**
+     * Translate internal field names to customer-friendly Indonesian labels.
+     */
+    public static function humanizeFieldName(string $field): string
+    {
+        return match ($field) {
+            'departure_date', 'travel_date' => 'tanggal keberangkatan',
+            'departure_time', 'travel_time' => 'jam keberangkatan',
+            'passenger_count' => 'jumlah penumpang',
+            'selected_seats' => 'pilihan seat',
+            'pickup_location' => 'titik penjemputan',
+            'pickup_full_address' => 'alamat lengkap penjemputan',
+            'destination' => 'tujuan pengantaran',
+            'destination_full_address' => 'alamat lengkap tujuan',
+            'passenger_name', 'passenger_names' => 'nama penumpang',
+            'contact_number' => 'nomor kontak',
+            default => str_replace('_', ' ', $field),
+        };
+    }
+
+    /**
      * @param  array<string, mixed>  $context
      * @param  array<string, mixed>  $intentResult
      * @param  array<string, mixed>  $replyResult
@@ -131,7 +151,7 @@ class RuleEngineService
             $missing = is_array($booking['missing_fields'] ?? null) ? $booking['missing_fields'] : [];
 
             return [
-                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', $missing).'.',
+                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', array_map([self::class, 'humanizeFieldName'], $missing)).'.',
                 'tone' => 'ramah',
                 'should_escalate' => false,
                 'handoff_reason' => null,

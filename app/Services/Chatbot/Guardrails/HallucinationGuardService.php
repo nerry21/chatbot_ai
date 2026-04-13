@@ -4,6 +4,7 @@ namespace App\Services\Chatbot\Guardrails;
 
 use App\Enums\IntentType;
 use App\Models\Conversation;
+use App\Services\AI\RuleEngineService;
 use App\Support\WaLog;
 
 class HallucinationGuardService
@@ -197,8 +198,8 @@ class HallucinationGuardService
 
         if (! empty($booking['missing_fields']) && is_array($booking['missing_fields'])) {
             return [
-                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', $booking['missing_fields']).'.',
-                'text' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', $booking['missing_fields']).'.',
+                'reply' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', array_map([RuleEngineService::class, 'humanizeFieldName'], $booking['missing_fields'])).'.',
+                'text' => 'Baik, saya bantu lanjutkan. Sebelum itu, mohon lengkapi data berikut terlebih dahulu: '.implode(', ', array_map([RuleEngineService::class, 'humanizeFieldName'], $booking['missing_fields'])).'.',
                 'tone' => 'ramah',
                 'should_escalate' => false,
                 'handoff_reason' => null,
