@@ -148,8 +148,130 @@ class TravelWhatsAppPipelineService
             $this->persistBookingRequest($conversation, $customer, $bookingData);
         }
 
-        // If router defers to LLM, return false so the LLM+CRM pipeline handles it
+        // If router defers to LLM, handle it here directly using LLM
         if (($result['intent'] ?? null) === 'defer_to_llm') {
+            $originalText = (string) ($result['router_result']['meta']['original_text'] ?? $text);
+            $customerName = $customer->name ?? 'Bapak/Ibu';
+
+            try {
+                $llmClient = app(\App\Services\AI\LlmClientService::class);
+                $knowledgeBase = app(\App\Services\Knowledge\KnowledgeBaseService::class);
+
+                // Fetch knowledge articles for context
+                $knowledgeHits = $knowledgeBase->search($originalText, ['max_in_prompt' => 3]);
+                $knowledgeContext = '';
+                foreach ($knowledgeHits as $hit) {
+                    $knowledgeContext .= "\n\n--- " . ($hit['title'] ?? '') . " ---\n" . ($hit['content'] ?? '');
+                }
+
+                // Build fare info
+                $fareRules = (array) config('chatbot.jet.fare_rules', []);
+                $fareLines = [];
+                foreach ($fareRules as $rule) {
+                    $aLocs = implode(', ', (array) ($rule['a'] ?? []));
+                    $bLocs = implode(', ', (array) ($rule['b'] ?? []));
+                    $amount = number_format((int) ($rule['amount'] ?? 0), 0, ',', '.');
+                    $fareLines[] = "• {$aLocs} ↔ {$bLocs}: Rp {$amount}";
+                }
+                $fareInfo = implode("\n", $fareLines);
+
+                // Build schedule info
+                $slots = (array) config('chatbot.jet.departure_slots', []);
+                $scheduleLines = [];
+                foreach ($slots as $slot) {
+                    $scheduleLines[] = "• " . ($slot['label'] ?? '') . " (" . ($slot['time'] ?? '') . " WIB)";
+                }
+                $scheduleInfo = implode("\n", $scheduleLines);
+
+                // Build locations info
+                $locations = (array) config('chatbot.jet.locations', []);
+                $locationLabels = array_map(fn($loc) => $loc['label'] ?? '', $locations);
+                $locationLabels = array_filter($locationLabels);
+                $locationInfo = implode(', ', $locationLabels);
+
+                $system = <<<SYSTEM
+Kamu adalah admin travel WhatsApp bernama JET (Jaya Executive Transport).
+Tugasmu: menjawab pertanyaan customer dengan natural, sopan, hangat, dan ringkas.
+Gunakan bahasa Indonesia kasual-sopan seperti admin travel sungguhan.
+Gunakan emoji secukupnya (🙏, 😊) agar terasa ramah.
+
+ATURAN WAJIB:
+1. Jawab HANYA berdasarkan FAKTA RESMI di bawah. DILARANG mengarang harga, jadwal, atau fakta bisnis.
+2. Jika fakta tidak cukup untuk menjawab, bilang akan dikonsultasikan ke admin. Jangan menebak.
+3. Maksimal 3-4 kalimat. Ringkas dan natural, jangan terasa seperti mesin.
+4. Jangan memulai booking. Jika customer ingin booking, arahkan untuk mengatakan "mau booking" atau "pesan".
+5. Jika customer bilang terima kasih, oke, atau menutup percakapan — balas singkat dan ramah.
+6. Jika customer minta dikonfirmasi/dikabari — cukup bilang siap dan akan dihubungi kembali.
+7. Sapa customer dengan "Bapak/Ibu" atau "kak" secara natural.
+
+=== JADWAL KEBERANGKATAN ===
+Travel beroperasi setiap hari termasuk Minggu dan hari libur.
+{$scheduleInfo}
+
+=== TARIF (per orang, sekali jalan) ===
+{$fareInfo}
+Semua rute berlaku bolak-balik. Ongkos final dikonfirmasi admin menyesuaikan lokasi jemput/antar.
+
+=== LOKASI LAYANAN ===
+{$locationInfo}
+
+=== SEAT TERSEDIA ===
+CC, BS Kiri, BS Kanan, BS Tengah (perlu konfirmasi admin), Belakang Kiri, Belakang Kanan.
+Ketersediaan seat real-time perlu dicek per jadwal.
+
+=== KNOWLEDGE BASE ===
+{$knowledgeContext}
+
+Jawab langsung tanpa format JSON. Cukup teks balasan natural saja.
+SYSTEM;
+
+                $llmResult = $llmClient->composeGroundedResponse([
+                    'conversation_id' => $conversation->id,
+                    'message_id' => $message->id,
+                    'message_text' => $originalText,
+                    'system' => $system,
+                    'user' => "Customer ({$customerName}) berkata: \"{$originalText}\"\n\nBalas secara natural:",
+                ]);
+
+                $llmReply = trim((string) ($llmResult['text'] ?? ''));
+
+                // Try parsing JSON if LLM returned JSON
+                if ($llmReply !== '' && str_starts_with($llmReply, '{')) {
+                    $decoded = json_decode($llmReply, true);
+                    if (is_array($decoded) && isset($decoded['text'])) {
+                        $llmReply = trim((string) $decoded['text']);
+                    }
+                }
+
+                if ($llmReply !== '') {
+                    $deliveryMeta = [
+                        'source' => 'travel_whatsapp_pipeline_llm',
+                        'conversation_id' => $conversation->id,
+                    ];
+
+                    $delivery = $this->sender->sendText($phone, $llmReply, $deliveryMeta);
+
+                    $this->conversationManager->appendOutboundMessage(
+                        $conversation,
+                        $llmReply,
+                        [
+                            'source' => 'travel_whatsapp_pipeline_llm',
+                            'delivery' => $delivery,
+                            'meta' => ['intent' => 'llm_natural_response'],
+                        ],
+                        'text'
+                    );
+
+                    return true;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[TravelWhatsAppPipeline] LLM call failed', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            // Fallback: if LLM fails, return false to let Pipeline 2 handle
             return false;
         }
 
