@@ -115,6 +115,18 @@ class TravelMessageRouterService
             return $this->handleSimpleScheduleQuestion($text, $state);
         }
 
+        // 2c. Any other question (seat availability, general inquiry) during booking or idle
+        //     → defer to LLM for natural response instead of forcing booking flow
+        if ($this->looksLikeGeneralQuestion($text)) {
+            return $this->buildResult(
+                replyText: '',
+                intent: 'defer_to_llm',
+                state: $state,
+                actions: [],
+                meta: ['defer_to_llm' => true, 'original_text' => $text, 'reason' => 'general_question_detected'],
+            );
+        }
+
         // 3. New booking request while already in booking → reset and start fresh.
         if ($state['status'] === 'booking' && $this->isBookingStartMessage($text)) {
             return $this->handleBookingStartWithGreeting($text, $state, $now);
@@ -1337,6 +1349,10 @@ class TravelMessageRouterService
 
     private function tryHandleFareQuestion(string $text, array $state): ?array
     {
+        // When answering a fare question, reset booking state so next message is fresh
+        $state['status'] = 'idle';
+        $state['current_step'] = null;
+
         [$origin, $destination] = $this->extractOriginDestination($text);
 
         if ($origin === null || $destination === null) {
@@ -1513,6 +1529,53 @@ class TravelMessageRouterService
         }
 
         return $hasTravelContext;
+    }
+
+    private function looksLikeGeneralQuestion(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+        $wordCount = count(explode(' ', $normalized));
+
+        // Too short messages (1-2 words) are likely booking flow answers, not questions
+        if ($wordCount <= 2) {
+            return false;
+        }
+
+        // Check for question indicators
+        $hasQuestionIndicator = false;
+        foreach ([
+            'apakah', 'apa kah', 'apakah masih', 'apakah ada',
+            'ada gak', 'ada nggak', 'ada tidak', 'ada ga', 'masih ada',
+            'gimana', 'bagaimana', 'gmn', 'gmna',
+            'bisa gak', 'bisa tidak', 'boleh gak', 'boleh tidak',
+            'kenapa', 'mengapa', 'knp',
+            'dimana', 'di mana', 'dmn',
+            'siapa', 'berapa lama',
+            'apa saja', 'apa aja',
+        ] as $q) {
+            if (str_contains($normalized, $q)) {
+                $hasQuestionIndicator = true;
+                break;
+            }
+        }
+
+        // Also check if message ends with question mark
+        if (str_ends_with(trim($text), '?')) {
+            $hasQuestionIndicator = true;
+        }
+
+        if (! $hasQuestionIndicator) {
+            return false;
+        }
+
+        // Make sure this is not a simple booking answer being misinterpreted
+        // Booking answers are typically short and direct (just a name, number, location)
+        // Questions are longer and exploratory
+        if ($wordCount >= 5) {
+            return true;
+        }
+
+        return false;
     }
 
     private function isPostBookingCloseIntent(string $text): bool
