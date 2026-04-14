@@ -258,7 +258,7 @@ return [
         ],
 
         'locations' => [
-            // Section 1: Kec. Rambah Hilir, Rambah dan Rambah Samo
+            // Section 1: Rambah Hilir / Rambah / Rambah Samo
             ['order' => 1,  'label' => 'SKPD',             'menu' => true,  'aliases' => ['skpd']],
             ['order' => 2,  'label' => 'Simpang D',        'menu' => true,  'aliases' => ['simpang d', 'simpangd']],
             ['order' => 3,  'label' => 'SKPC',             'menu' => true,  'aliases' => ['skpc']],
@@ -268,17 +268,20 @@ return [
             ['order' => 7,  'label' => 'Muara Rumbai',     'menu' => true,  'aliases' => ['muara rumbai', 'muararumbai']],
             ['order' => 8,  'label' => 'Surau Tinggi',     'menu' => true,  'aliases' => ['surau tinggi', 'surautinggi']],
             ['order' => 9,  'label' => 'Pasir Pengaraian', 'menu' => true,  'aliases' => ['pasirpengaraian', 'pasir pengaraian']],
-            // Section 2: Kec. Ujung Batu, Kec. Tandun
+
+            // Section 2: Ujung Batu / Tandun
             ['order' => 10, 'label' => 'Ujung Batu',       'menu' => true,  'aliases' => ['ujung batu', 'ujungbatu']],
             ['order' => 11, 'label' => 'Tandun',           'menu' => true,  'aliases' => ['tandun']],
-            // Section 3: Kab. Kampar dan Kota Pekanbaru
+
+            // Section 3: Kampar / Pekanbaru
             ['order' => 12, 'label' => 'Petapahan',        'menu' => true,  'aliases' => ['petapahan']],
             ['order' => 13, 'label' => 'Suram',            'menu' => true,  'aliases' => ['suram']],
             ['order' => 14, 'label' => 'Aliantan',         'menu' => true,  'aliases' => ['aliantan']],
             ['order' => 15, 'label' => 'Kuok',             'menu' => true,  'aliases' => ['kuok']],
             ['order' => 16, 'label' => 'Kabun',            'menu' => true,  'aliases' => ['kabun']],
             ['order' => 17, 'label' => 'Bangkinang',       'menu' => true,  'aliases' => ['bangkinang']],
-            ['order' => 18, 'label' => 'Pekanbaru',        'menu' => true,  'aliases' => ['pekanbaru', 'pku']],
+            ['order' => 18, 'label' => 'Silam',            'menu' => true,  'aliases' => ['silam']],
+            ['order' => 19, 'label' => 'Pekanbaru',        'menu' => true,  'aliases' => ['pekanbaru', 'pku']],
         ],
 
         'fare_rules' => [

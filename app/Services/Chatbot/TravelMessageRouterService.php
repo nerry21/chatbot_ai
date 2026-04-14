@@ -1830,46 +1830,72 @@ class TravelMessageRouterService
         ];
     }
 
-    private function buildPickupPointInteractiveList(): array
+    /**
+     * @param  array<int, string>  $allLocations
+     * @param  string  $prefix
+     * @param  string  $description
+     * @return array<int, array{title: string, rows: array<int, array{id: string, title: string, description: string}>}>
+     */
+    private function buildLocationSections(array $allLocations, string $prefix, string $description): array
     {
-        $allLocations = $this->fareService->getAllLocations();
-
-        // Section 1: Kec. Rambah Hilir, Rambah dan Rambah Samo (first 9)
         $section1Locations = array_slice($allLocations, 0, 9);
-        // Section 2: Kec. Ujung Batu, Kec. Tandun (next 2)
         $section2Locations = array_slice($allLocations, 9, 2);
-        // Section 3: Kab. Kampar dan Kota Pekanbaru (remaining)
         $section3Locations = array_slice($allLocations, 11);
 
-        $buildRows = function (array $locations, string $desc) {
+        $buildRows = function (array $locations) use ($prefix, $description): array {
             $rows = [];
+
             foreach ($locations as $location) {
                 $rows[] = [
-                    'id'          => 'pickup_location:'.$this->normalizeSelectionValue($location),
+                    'id'          => $prefix.':'.$this->normalizeSelectionValue($location),
                     'title'       => mb_substr((string) $location, 0, 24),
-                    'description' => $desc,
+                    'description' => $description,
                 ];
             }
+
             return $rows;
         };
 
         $sections = [];
+
         if ($section1Locations !== []) {
-            $sections[] = ['title' => 'Kec. Rambah Hilir, Rambah, Rambah Samo', 'rows' => $buildRows($section1Locations, 'Titik jemput')];
+            $sections[] = [
+                'title' => 'Rambah Area',
+                'rows'  => $buildRows($section1Locations),
+            ];
         }
+
         if ($section2Locations !== []) {
-            $sections[] = ['title' => 'Kec. Ujung Batu, Kec. Tandun', 'rows' => $buildRows($section2Locations, 'Titik jemput')];
+            $sections[] = [
+                'title' => 'Ujung Batu',
+                'rows'  => $buildRows($section2Locations),
+            ];
         }
+
         if ($section3Locations !== []) {
-            $sections[] = ['title' => 'Kab. Kampar & Kota Pekanbaru', 'rows' => $buildRows($section3Locations, 'Titik jemput')];
+            $sections[] = [
+                'title' => 'Kampar/Pekanbaru',
+                'rows'  => $buildRows($section3Locations),
+            ];
         }
+
+        return $sections;
+    }
+
+    private function buildPickupPointInteractiveList(): array
+    {
+        $allLocations = $this->fareService->getAllLocations();
 
         return [
             'button'   => 'Pilih Jemput',
             'header'   => 'Titik Penjemputan',
             'body'     => 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
             'footer'   => 'JET Travel Rokan Hulu',
-            'sections' => $sections,
+            'sections' => $this->buildLocationSections(
+                allLocations: $allLocations,
+                prefix: 'pickup_location',
+                description: 'Titik jemput',
+            ),
         ];
     }
 
@@ -1877,42 +1903,16 @@ class TravelMessageRouterService
     {
         $allLocations = $this->fareService->getAllLocations();
 
-        // Section 1: Kec. Rambah Hilir, Rambah dan Rambah Samo (first 9)
-        $section1Locations = array_slice($allLocations, 0, 9);
-        // Section 2: Kec. Ujung Batu, Kec. Tandun (next 2)
-        $section2Locations = array_slice($allLocations, 9, 2);
-        // Section 3: Kab. Kampar dan Kota Pekanbaru (remaining)
-        $section3Locations = array_slice($allLocations, 11);
-
-        $buildRows = function (array $locations, string $desc) {
-            $rows = [];
-            foreach ($locations as $location) {
-                $rows[] = [
-                    'id'          => 'dropoff_location:'.$this->normalizeSelectionValue($location),
-                    'title'       => mb_substr((string) $location, 0, 24),
-                    'description' => $desc,
-                ];
-            }
-            return $rows;
-        };
-
-        $sections = [];
-        if ($section1Locations !== []) {
-            $sections[] = ['title' => 'Kec. Rambah Hilir, Rambah, Rambah Samo', 'rows' => $buildRows($section1Locations, 'Tujuan antar')];
-        }
-        if ($section2Locations !== []) {
-            $sections[] = ['title' => 'Kec. Ujung Batu, Kec. Tandun', 'rows' => $buildRows($section2Locations, 'Tujuan antar')];
-        }
-        if ($section3Locations !== []) {
-            $sections[] = ['title' => 'Kab. Kampar & Kota Pekanbaru', 'rows' => $buildRows($section3Locations, 'Tujuan antar')];
-        }
-
         return [
             'button'   => 'Pilih Tujuan',
             'header'   => 'Tujuan Pengantaran',
             'body'     => 'Untuk pengantarannya ke mana, Bapak/Ibu? Silakan pilih lokasinya.',
             'footer'   => 'JET Travel Rokan Hulu',
-            'sections' => $sections,
+            'sections' => $this->buildLocationSections(
+                allLocations: $allLocations,
+                prefix: 'dropoff_location',
+                description: 'Tujuan antar',
+            ),
         ];
     }
 
