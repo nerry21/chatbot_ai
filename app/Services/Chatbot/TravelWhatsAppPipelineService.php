@@ -148,13 +148,12 @@ class TravelWhatsAppPipelineService
             $this->persistBookingRequest($conversation, $customer, $bookingData);
         }
 
-        // If router defers to LLM, handle it here directly using LLM
+        // If router defers to LLM, handle it here directly using OpenAI
         if (($result['intent'] ?? null) === 'defer_to_llm') {
             $originalText = (string) ($result['router_result']['meta']['original_text'] ?? $text);
             $customerName = $customer->name ?? 'Bapak/Ibu';
 
             try {
-                $llmClient = app(\App\Services\AI\LlmClientService::class);
                 $knowledgeBase = app(\App\Services\Knowledge\KnowledgeBaseService::class);
 
                 // Fetch knowledge articles for context
@@ -189,80 +188,81 @@ class TravelWhatsAppPipelineService
                 $locationLabels = array_filter($locationLabels);
                 $locationInfo = implode(', ', $locationLabels);
 
-                $system = <<<SYSTEM
-Kamu adalah admin travel WhatsApp bernama JET (Jaya Executive Transport).
-Tugasmu: menjawab pertanyaan customer dengan natural, sopan, hangat, dan ringkas.
-Gunakan bahasa Indonesia kasual-sopan seperti admin travel sungguhan.
-Gunakan emoji secukupnya (🙏, 😊) agar terasa ramah.
+                $systemPrompt = "Kamu adalah admin travel WhatsApp bernama JET (Jaya Executive Transport).\n"
+                    . "Tugasmu: menjawab pertanyaan customer dengan natural, sopan, hangat, dan ringkas.\n"
+                    . "Gunakan bahasa Indonesia kasual-sopan seperti admin travel sungguhan.\n"
+                    . "Gunakan emoji secukupnya (🙏, 😊) agar terasa ramah.\n\n"
+                    . "ATURAN WAJIB:\n"
+                    . "1. Jawab HANYA berdasarkan FAKTA RESMI di bawah. DILARANG mengarang.\n"
+                    . "2. Jika fakta tidak cukup, bilang akan dikonsultasikan ke admin.\n"
+                    . "3. Maksimal 3-4 kalimat. Ringkas dan natural.\n"
+                    . "4. JANGAN memulai proses booking. Jika customer ingin booking, arahkan untuk bilang 'mau booking'.\n"
+                    . "5. Jika customer bilang terima kasih atau menutup percakapan, balas singkat dan ramah.\n"
+                    . "6. Jika customer minta dikonfirmasi/dikabari, cukup bilang siap.\n\n"
+                    . "=== JADWAL ===\n" . $scheduleInfo . "\n\n"
+                    . "=== TARIF (per orang) ===\n" . $fareInfo . "\n\n"
+                    . "=== LOKASI ===\n" . $locationInfo . "\n\n"
+                    . "=== SEAT ===\nCC, BS Kiri, BS Kanan, BS Tengah, Belakang Kiri, Belakang Kanan\n\n"
+                    . "=== KNOWLEDGE BASE ===" . $knowledgeContext;
 
-ATURAN WAJIB:
-1. Jawab HANYA berdasarkan FAKTA RESMI di bawah. DILARANG mengarang harga, jadwal, atau fakta bisnis.
-2. Jika fakta tidak cukup untuk menjawab, bilang akan dikonsultasikan ke admin. Jangan menebak.
-3. Maksimal 3-4 kalimat. Ringkas dan natural, jangan terasa seperti mesin.
-4. Jangan memulai booking. Jika customer ingin booking, arahkan untuk mengatakan "mau booking" atau "pesan".
-5. Jika customer bilang terima kasih, oke, atau menutup percakapan — balas singkat dan ramah.
-6. Jika customer minta dikonfirmasi/dikabari — cukup bilang siap dan akan dihubungi kembali.
-7. Sapa customer dengan "Bapak/Ibu" atau "kak" secara natural.
+                $apiKey = (string) (config('openai.api_key') ?: env('OPENAI_API_KEY'));
+                $baseUrl = rtrim((string) (config('openai.base_url') ?: 'https://api.openai.com/v1'), '/');
+                $model = (string) config('chatbot.llm.models.grounded_response', config('chatbot.llm.models.reply', 'gpt-4o-mini'));
 
-=== JADWAL KEBERANGKATAN ===
-Travel beroperasi setiap hari termasuk Minggu dan hari libur.
-{$scheduleInfo}
-
-=== TARIF (per orang, sekali jalan) ===
-{$fareInfo}
-Semua rute berlaku bolak-balik. Ongkos final dikonfirmasi admin menyesuaikan lokasi jemput/antar.
-
-=== LOKASI LAYANAN ===
-{$locationInfo}
-
-=== SEAT TERSEDIA ===
-CC, BS Kiri, BS Kanan, BS Tengah (perlu konfirmasi admin), Belakang Kiri, Belakang Kanan.
-Ketersediaan seat real-time perlu dicek per jadwal.
-
-=== KNOWLEDGE BASE ===
-{$knowledgeContext}
-
-Jawab langsung tanpa format JSON. Cukup teks balasan natural saja.
-SYSTEM;
-
-                $llmResult = $llmClient->composeGroundedResponse([
-                    'conversation_id' => $conversation->id,
-                    'message_id' => $message->id,
-                    'message_text' => $originalText,
-                    'system' => $system,
-                    'user' => "Customer ({$customerName}) berkata: \"{$originalText}\"\n\nBalas secara natural:",
-                ]);
-
-                $llmReply = trim((string) ($llmResult['text'] ?? ''));
-
-                // Try parsing JSON if LLM returned JSON
-                if ($llmReply !== '' && str_starts_with($llmReply, '{')) {
-                    $decoded = json_decode($llmReply, true);
-                    if (is_array($decoded) && isset($decoded['text'])) {
-                        $llmReply = trim((string) $decoded['text']);
-                    }
+                if ($apiKey === '') {
+                    Log::warning('[TravelWhatsAppPipeline] OpenAI API key not set');
+                    return false;
                 }
 
-                if ($llmReply !== '') {
-                    $deliveryMeta = [
-                        'source' => 'travel_whatsapp_pipeline_llm',
-                        'conversation_id' => $conversation->id,
-                    ];
-
-                    $delivery = $this->sender->sendText($phone, $llmReply, $deliveryMeta);
-
-                    $this->conversationManager->appendOutboundMessage(
-                        $conversation,
-                        $llmReply,
-                        [
-                            'source' => 'travel_whatsapp_pipeline_llm',
-                            'delivery' => $delivery,
-                            'meta' => ['intent' => 'llm_natural_response'],
+                $response = \Illuminate\Support\Facades\Http::withToken($apiKey)
+                    ->timeout(30)
+                    ->post("{$baseUrl}/chat/completions", [
+                        'model' => $model,
+                        'messages' => [
+                            ['role' => 'system', 'content' => $systemPrompt],
+                            ['role' => 'user', 'content' => $originalText],
                         ],
-                        'text'
-                    );
+                        'max_tokens' => 500,
+                        'temperature' => 0.7,
+                    ]);
 
-                    return true;
+                if ($response->successful()) {
+                    $llmReply = trim((string) ($response->json('choices.0.message.content') ?? ''));
+
+                    // Clean JSON wrapper if present
+                    if ($llmReply !== '' && str_starts_with($llmReply, '{')) {
+                        $decoded = json_decode($llmReply, true);
+                        if (is_array($decoded) && isset($decoded['text'])) {
+                            $llmReply = trim((string) $decoded['text']);
+                        }
+                    }
+
+                    if ($llmReply !== '') {
+                        $deliveryMeta = [
+                            'source' => 'travel_whatsapp_pipeline_llm',
+                            'conversation_id' => $conversation->id,
+                        ];
+
+                        $delivery = $this->sender->sendText($phone, $llmReply, $deliveryMeta);
+
+                        $this->conversationManager->appendOutboundMessage(
+                            $conversation,
+                            $llmReply,
+                            [
+                                'source' => 'travel_whatsapp_pipeline_llm',
+                                'delivery' => $delivery,
+                                'meta' => ['intent' => 'llm_natural_response', 'model' => $model],
+                            ],
+                            'text'
+                        );
+
+                        return true;
+                    }
+                } else {
+                    Log::warning('[TravelWhatsAppPipeline] OpenAI API error', [
+                        'status' => $response->status(),
+                        'body' => $response->body(),
+                    ]);
                 }
             } catch (\Throwable $e) {
                 Log::warning('[TravelWhatsAppPipeline] LLM call failed', [
@@ -271,8 +271,20 @@ SYSTEM;
                 ]);
             }
 
-            // Fallback: if LLM fails, return false to let Pipeline 2 handle
-            return false;
+            // Fallback: if LLM fails, send a generic friendly message
+            $fallbackReply = 'Izin Bapak/Ibu, pertanyaannya sedang kami konsultasikan ke admin ya. Mohon tunggu sebentar 🙏';
+            $this->sender->sendText($phone, $fallbackReply, [
+                'source' => 'travel_whatsapp_pipeline_llm_fallback',
+                'conversation_id' => $conversation->id,
+            ]);
+            $this->conversationManager->appendOutboundMessage(
+                $conversation,
+                $fallbackReply,
+                ['source' => 'travel_whatsapp_pipeline_llm_fallback', 'delivery' => ['status' => 'sent']],
+                'text'
+            );
+
+            return true;
         }
 
         return true;
