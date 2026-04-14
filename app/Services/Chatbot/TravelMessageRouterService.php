@@ -120,17 +120,23 @@ class TravelMessageRouterService
             return $this->handleScheduleChangeStart($text, $phone, $state, $now);
         }
 
-        // 8. Offer repeat booking / schedule change after a completed booking
+        // 8. After booking confirmed, acknowledge close intent gracefully
+        if (($state['status'] ?? 'idle') === 'booking_confirmed' && $this->isPostBookingCloseIntent($text)) {
+            return $this->buildResult(
+                replyText: '🙏',
+                intent: 'close_after_booking',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: ['step' => 'post_booking_close'],
+            );
+        }
+
+        // 9. Offer repeat booking / schedule change after a completed booking
         if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
             return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
         }
 
-        // 9. Pertanyaan jadwal sederhana (ONLY when not a booking request)
-        if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
-            return $this->handleSimpleScheduleQuestion($text, $state);
-        }
-
-        // 9. Fare question
+        // 9. Fare question (check before schedule to avoid false matches on "sore/pagi/siang/malam")
         if ($this->looksLikeFareQuestion($text)) {
             $fareResponse = $this->tryHandleFareQuestion($text, $state);
             if ($fareResponse !== null) {
@@ -138,7 +144,12 @@ class TravelMessageRouterService
             }
         }
 
-        // 10. Knowledge base / FAQ
+        // 10. Pertanyaan jadwal sederhana (ONLY when not a booking request)
+        if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
+            return $this->handleSimpleScheduleQuestion($text, $state);
+        }
+
+        // 11. Knowledge base / FAQ
         $faqMatch = $this->faqMatcherService->match($text);
         if ($faqMatch !== null && $faqMatch['score'] >= TravelFaqMatcherService::FALLBACK_SCORE_THRESHOLD) {
             return $this->buildResult(
@@ -150,8 +161,14 @@ class TravelMessageRouterService
             );
         }
 
-        // 11. Escalate to admin
-        return $this->handleFallbackToAdmin($phone, $state, $text);
+        // 12. Defer to LLM+CRM pipeline for natural conversation
+        return $this->buildResult(
+            replyText: '',
+            intent: 'defer_to_llm',
+            state: $state,
+            actions: [],
+            meta: ['defer_to_llm' => true, 'original_text' => $text],
+        );
     }
 
     // ─── Greeting ──────────────────────────────────────────────────────────────
@@ -1381,6 +1398,24 @@ class TravelMessageRouterService
 
     // ─── Intent detection helpers ──────────────────────────────────────────────
 
+    private function isPostBookingCloseIntent(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        $closeWords = [
+            'oke', 'ok', 'oke terima kasih', 'ok terima kasih',
+            'baik', 'baik terima kasih', 'siap', 'sip',
+            'terima kasih', 'makasih', 'thanks', 'thank you',
+            'ya', 'iya', 'sudah', 'mantap',
+            'oke makasih', 'ok makasih', 'baik makasih',
+            'siap terima kasih', 'sip terima kasih',
+            'oke siap', 'baik siap', 'amin',
+            'ya sudah', 'yaudah', 'udah',
+        ];
+
+        return in_array($normalized, $closeWords, true);
+    }
+
     private function isGreetingOnly(string $text): bool
     {
         $normalized = $this->normalizeText($text);
@@ -1573,21 +1608,57 @@ class TravelMessageRouterService
     {
         $normalized = $this->normalizeText($text);
 
+        // Time words like pagi/siang/sore/malam should only match when combined with schedule context
         foreach ([
             'jadwal',
             'keberangkatan',
             'berangkat',
-            'jam ',
-            'pagi',
-            'siang',
-            'sore',
-            'malam',
             'apakah ada',
             'ada keberangkatan',
         ] as $pattern) {
             if (str_contains($normalized, $pattern)) {
                 return true;
             }
+        }
+
+        // Only match "jam" followed by time-like content, not standalone
+        if (preg_match('/\bjam\s+\d/', $normalized)) {
+            return true;
+        }
+
+        // Time-of-day words only count as schedule question if they appear with schedule context
+        $hasTimeWord = false;
+        foreach (['pagi', 'siang', 'sore', 'malam'] as $timeWord) {
+            if (str_contains($normalized, $timeWord)) {
+                $hasTimeWord = true;
+                break;
+            }
+        }
+
+        if ($hasTimeWord) {
+            // If it also has greeting words, it's likely a greeting not a schedule question
+            $hasGreeting = false;
+            foreach (['halo', 'hallo', 'hai', 'hi', 'hello', 'selamat', 'assalamualaikum'] as $greeting) {
+                if (str_contains($normalized, $greeting)) {
+                    $hasGreeting = true;
+                    break;
+                }
+            }
+
+            // If it has greeting + time word but also other content (fare, booking, etc), it's NOT a schedule question
+            if ($hasGreeting) {
+                return false;
+            }
+
+            // Pure time word without greeting - could be schedule question
+            // But only if no other intent keywords present
+            foreach (['ongkos', 'harga', 'tarif', 'berapa', 'booking', 'boking', 'pesan'] as $otherIntent) {
+                if (str_contains($normalized, $otherIntent)) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         if ($this->bookingRuleService->findDepartureTime($text) !== null) {

@@ -148,6 +148,11 @@ class TravelWhatsAppPipelineService
             $this->persistBookingRequest($conversation, $customer, $bookingData);
         }
 
+        // If router defers to LLM, return false so the LLM+CRM pipeline handles it
+        if (($result['intent'] ?? null) === 'defer_to_llm') {
+            return false;
+        }
+
         return true;
     }
 
