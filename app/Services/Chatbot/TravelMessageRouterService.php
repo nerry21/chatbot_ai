@@ -499,13 +499,24 @@ class TravelMessageRouterService
             return $this->buildEditModeReturnToReview($state);
         }
 
+        // Initialize selected_seats array
+        $state['booking_data']['selected_seats'] = [];
+
         $passengerCount = (int) ($state['booking_data']['passenger_count'] ?? 1);
 
+        $seatPrompt = 'Baik, jam keberangkatan sudah saya catat: '
+            .$bookingData['departure_time'].' WIB.'
+            ."\n\nIzin Bapak/Ibu, untuk ketersediaan seat tempat duduk di jam ".$bookingData['departure_time'].' WIB'
+            .' berdasarkan '.$passengerCount.' orang penumpang, ';
+
+        if ($passengerCount > 1) {
+            $seatPrompt .= 'silakan pilih seat penumpang pertama yang diinginkan. Setelah ini sistem akan mengunci seat yang dipilih sehingga penumpang kedua tidak bisa memilih seat yang sama. Ini berlaku juga untuk pemesanan berikutnya yang memesan di tanggal dan di jam yang sama.';
+        } else {
+            $seatPrompt .= 'silakan pilih seat yang diinginkan.';
+        }
+
         return $this->buildResult(
-            replyText: 'Baik, jam keberangkatan sudah saya catat: '
-                .$bookingData['departure_time'].' WIB.'
-                ."\n\nIzin Bapak/Ibu, untuk ketersediaan seat tempat duduk di jam ".$bookingData['departure_time'].' WIB'
-                .' berdasarkan '.$passengerCount.' orang penumpang, silakan pilih seat yang diinginkan.',
+            replyText: $seatPrompt,
             intent: 'departure_time',
             state: $state,
             actions: [['type' => 'save_state']],
@@ -521,22 +532,55 @@ class TravelMessageRouterService
     private function handleSeatStep(string $text, array $state): array
     {
         $seat = $this->extractSelectedSeatFromInteractive($text) ?? trim($text);
+        $passengerCount = (int) ($state['booking_data']['passenger_count'] ?? 1);
+
+        // Initialize selected_seats array if not exists
+        if (!isset($state['booking_data']['selected_seats']) || !is_array($state['booking_data']['selected_seats'])) {
+            $state['booking_data']['selected_seats'] = [];
+        }
 
         if ($seat === '') {
+            $selectedCount = count($state['booking_data']['selected_seats']);
+            $passengerNumber = $selectedCount + 1;
+            $promptText = $passengerCount > 1 && $selectedCount === 0
+                ? 'Izin Bapak/Ibu, silakan pilih seat penumpang pertama yang diinginkan. Setelah ini sistem akan mengunci seat yang dipilih sehingga penumpang kedua tidak bisa memilih seat yang sama. Ini berlaku juga untuk pemesanan berikutnya yang memesan di tanggal dan di jam yang sama.'
+                : ($selectedCount > 0
+                    ? 'Silakan pilih seat penumpang ke-'.$passengerNumber.' yang diinginkan.'
+                    : 'Izin Bapak/Ibu, mohon pilih seat yang diinginkan.');
+
             return $this->buildResult(
-                replyText: 'Izin Bapak/Ibu, mohon pilih seat yang diinginkan.',
+                replyText: $promptText,
                 intent: 'seat',
                 state: $state,
                 actions: [],
                 meta: [
                     'step' => 'ask_seat',
                     'interactive_type' => 'list',
-                    'interactive_list' => $this->buildSeatInteractiveList(),
+                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats']),
                 ],
             );
         }
 
-        $state['booking_data']['seat'] = $seat;
+        // Check if seat already selected
+        if (in_array($seat, $state['booking_data']['selected_seats'], true)) {
+            $selectedCount = count($state['booking_data']['selected_seats']);
+            $passengerNumber = $selectedCount + 1;
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, seat '.$seat.' sudah dipilih sebelumnya. Silakan pilih seat lain untuk penumpang ke-'.$passengerNumber.'.',
+                intent: 'seat',
+                state: $state,
+                actions: [],
+                meta: [
+                    'step' => 'ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats']),
+                ],
+            );
+        }
+
+        $state['booking_data']['selected_seats'][] = $seat;
+        // Keep backward compatibility
+        $state['booking_data']['seat'] = implode(', ', $state['booking_data']['selected_seats']);
 
         // Check if seat requires admin confirmation (e.g., BS Tengah)
         $requiresAdminConfirmation = in_array(
@@ -549,7 +593,6 @@ class TravelMessageRouterService
             $state['current_step'] = 'wait_admin_seat_confirmation';
 
             $phone = $state['booking_data']['contact_number'] ?? '-';
-            $passengerCount = $state['booking_data']['passenger_count'] ?? 1;
             $departureTime = $state['booking_data']['departure_time'] ?? '-';
             $departureDate = $state['booking_data']['departure_date_label'] ?? $state['booking_data']['departure_date'] ?? '-';
 
@@ -569,6 +612,25 @@ class TravelMessageRouterService
                     ['type' => 'save_state'],
                 ],
                 meta: ['step' => 'wait_admin_seat_confirmation', 'seat_requires_confirmation' => true],
+            );
+        }
+
+        // Check if more seats needed
+        $selectedCount = count($state['booking_data']['selected_seats']);
+        if ($selectedCount < $passengerCount) {
+            $passengerNumber = $selectedCount + 1;
+            $state['current_step'] = 'ask_seat';
+
+            return $this->buildResult(
+                replyText: 'Baik, seat '.$seat.' sudah dicatat. Silakan pilih seat penumpang ke-'.$passengerNumber.' yang diinginkan.',
+                intent: 'seat',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step' => 'ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats']),
+                ],
             );
         }
 
@@ -647,6 +709,8 @@ class TravelMessageRouterService
 
         if (str_contains($normalized, 'ganti seat') || str_contains($normalized, 'seat') || $normalized === '1') {
             $state['current_step'] = 'ask_seat';
+            $state['booking_data']['selected_seats'] = [];
+            $state['booking_data']['seat'] = null;
 
             return $this->buildResult(
                 replyText: 'Baik, silakan pilih seat lain yang diinginkan, Bapak/Ibu.',
@@ -921,7 +985,7 @@ class TravelMessageRouterService
         );
 
         return $this->buildResult(
-            replyText: "Baik Bapak/Ibu, booking sudah kami catat. Terima kasih dan semoga perjalanannya lancar.\n\nKami akan kembali menghubungi Bapak/Ibu melalui kanal WA ini atau dari Admin Utama.",
+            replyText: "Baik, data pemesanan Anda sudah lengkap dan telah kami terima 🙏🙂\nTerima kasih telah memilih JET (Jaya Executive Transport) sebagai partner perjalanan Anda 🙏🙂\nPemesanan Anda telah kami terima dan sedang kami siapkan dengan sebaik-baiknya.\nKami berharap Anda mendapatkan pengalaman perjalanan yang aman, nyaman, dan berkesan bersama JET.\nTerima kasih atas kepercayaan dan kesempatan yang Anda berikan kepada kami 🙏🙂\nKami akan kembali menghubungi Bapak/Ibu melalui kanal WA ini atau dari Admin Utama jika ada perubahan jadwal, informasi keberangkatan atau konfirmasi keberangkatan.",
             intent: 'booking_confirmed',
             state: $state,
             actions: [
@@ -1576,8 +1640,18 @@ class TravelMessageRouterService
     private function extractLocation(string $text): ?string
     {
         $normalized = $this->normalizeText($text);
+        $allLocations = $this->fareService->getAllLocations();
 
-        foreach ($this->fareService->getAllLocations() as $location) {
+        // Check if input is a number matching location index
+        $trimmed = trim($text);
+        if (preg_match('/^\d+$/', $trimmed)) {
+            $index = (int) $trimmed - 1;
+            if ($index >= 0 && $index < count($allLocations)) {
+                return $allLocations[$index];
+            }
+        }
+
+        foreach ($allLocations as $location) {
             $normalizedLocation = $this->normalizeText($location);
 
             if (
@@ -1798,13 +1872,18 @@ class TravelMessageRouterService
         ];
     }
 
-    private function buildSeatInteractiveList(): array
+    private function buildSeatInteractiveList(array $excludeSeats = []): array
     {
         $seatLabels = (array) config('chatbot.jet.seat_labels', ['CC', 'BS Kiri', 'BS Kanan', 'BS Tengah', 'Belakang Kiri', 'Belakang Kanan']);
         $requiresConfirmation = (array) config('chatbot.jet.seat_requires_admin_confirmation', ['BS Tengah']);
         $rows = [];
 
         foreach ($seatLabels as $seat) {
+            // Skip already selected seats
+            if (in_array($seat, $excludeSeats, true)) {
+                continue;
+            }
+
             $description = in_array($seat, $requiresConfirmation, true)
                 ? 'Perlu konfirmasi Admin'
                 : null;
@@ -2185,7 +2264,7 @@ class TravelMessageRouterService
             'Tujuan antar          : '.($dropoffPoint !== '' ? $dropoffPoint : '-'),
             'Nama penumpang        : '.$passengerNamesDisplay,
             'No HP                 : '.($contactNumber !== '' ? $contactNumber : '-'),
-            'Ongkos perjalanan     : '.$fareDisplay,
+            'Ongkos perjalanan     : '.$fareDisplay.' (Ongkos akan dikonfirmasi ulang Admin Utama, mengingat untuk menyesuaikan Lokasi Jemput dan Pengantaran)',
             '',
             'Izin konfirmasi Bapak/Ibu, apakah data perjalanan ini sudah tepat?',
             '',

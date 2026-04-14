@@ -85,6 +85,22 @@ class TravelWhatsAppPipelineService
                     ];
 
                     if ($interactiveType === 'list' && $interactiveList !== []) {
+                        // Send greeting text separately before interactive menu
+                        $greetingKey = (string) ($meta['greeting_key'] ?? '');
+                        if ($greetingKey !== '' && trim($replyText) !== '') {
+                            $this->sender->sendText($toPhone, $replyText, $deliveryMeta);
+                            $this->conversationManager->appendOutboundMessage(
+                                $conversation,
+                                $replyText,
+                                [
+                                    'source' => 'travel_whatsapp_pipeline',
+                                    'delivery' => ['status' => 'sent'],
+                                    'meta' => $meta,
+                                ],
+                                'text'
+                            );
+                        }
+
                         $fallbackText = $this->resolveInteractiveFallbackText($replyText, $meta, $interactiveList);
                         $sendResult = $this->sendInteractiveOrTextFallback(
                             to: $toPhone,
