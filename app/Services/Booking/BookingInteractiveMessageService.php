@@ -94,7 +94,7 @@ class BookingInteractiveMessageService
             locations: $locations,
             prefix: 'pickup_location',
             sectionLabel: 'Lokasi jemput',
-            footer: $footer ?? 'Jika menu tidak tampil, balas angka atau nama lokasi jemput.',
+            footer: $footer ?? 'Jika menu tidak tampil, balas dengan nomor yang sesuai dengan lokasi.',
         );
     }
 
@@ -110,7 +110,7 @@ class BookingInteractiveMessageService
             locations: $locations,
             prefix: 'dropoff_location',
             sectionLabel: 'Lokasi antar',
-            footer: $footer ?? 'Jika menu tidak tampil, balas angka atau nama lokasi tujuan.',
+            footer: $footer ?? 'Jika menu tidak tampil, balas dengan nomor yang sesuai dengan lokasi.',
         );
     }
 

@@ -193,13 +193,13 @@ class TravelWhatsAppPipelineService
                 interactivePayload: $interactivePayload,
                 intro: 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
                 listLabel: 'Pilihan lokasi:',
-                closing: 'Silakan balas nama lokasi yang dipilih.',
+                closing: 'Silakan balas dengan nomor yang sesuai dengan lokasi, sebagai contoh ketik 19 otomatis sama dengan Pekanbaru.',
             ),
             'ask_dropoff_point' => $this->buildNumberedLocationFallbackText(
                 interactivePayload: $interactivePayload,
                 intro: 'Untuk pengantarannya ke mana, Bapak/Ibu? Silakan pilih lokasinya.',
                 listLabel: 'Pilihan tujuan:',
-                closing: 'Silakan balas nama lokasi tujuan.',
+                closing: 'Silakan balas dengan nomor yang sesuai dengan lokasi, sebagai contoh ketik 19 otomatis sama dengan Pekanbaru.',
             ),
             default => trim($replyText) !== ''
                 ? $replyText
@@ -249,23 +249,20 @@ class TravelWhatsAppPipelineService
             : null;
 
         BookingRequest::create([
-            'conversation_id'          => $conversation->id,
-            'customer_id'              => $customer->id,
-            'departure_date'           => $bookingData['departure_date'] ?? null,
-            'departure_time'           => $bookingData['departure_time'] ?? null,
-            'passenger_count'          => $bookingData['passenger_count'] ?? null,
-            'passenger_names'          => is_array($passengerNames) ? $passengerNames : null,
-            'passenger_name'           => $passengerName,
-            'pickup_location'          => $bookingData['pickup_point'] ?? null,
-            'pickup_full_address'      => $bookingData['pickup_address'] ?? null,
-            'destination'              => $bookingData['dropoff_point'] ?? null,
-            'destination_full_address' => $bookingData['dropoff_address'] ?? null,
-            'selected_seats'           => !empty($bookingData['selected_seats'])
-                ? array_values((array) $bookingData['selected_seats'])
-                : (isset($bookingData['seat']) && $bookingData['seat'] !== null ? [$bookingData['seat']] : null),
-            'contact_number'           => $bookingData['contact_number'] ?? null,
-            'booking_status'           => BookingStatus::Confirmed,
-            'confirmed_at'             => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
+            'conversation_id'  => $conversation->id,
+            'customer_id'      => $customer->id,
+            'departure_date'   => $bookingData['departure_date'] ?? null,
+            'departure_time'   => $bookingData['departure_time'] ?? null,
+            'passenger_count'  => $bookingData['passenger_count'] ?? null,
+            'passenger_names'  => is_array($passengerNames) ? $passengerNames : null,
+            'passenger_name'   => $passengerName,
+            'pickup_location'  => $bookingData['pickup_point'] ?? null,
+            'pickup_full_address' => $bookingData['pickup_address'] ?? null,
+            'destination'      => $bookingData['dropoff_point'] ?? null,
+            'selected_seats'   => isset($bookingData['seat']) ? [$bookingData['seat']] : null,
+            'contact_number'   => $bookingData['contact_number'] ?? null,
+            'booking_status'   => BookingStatus::Confirmed,
+            'confirmed_at'     => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
         ]);
     }
 

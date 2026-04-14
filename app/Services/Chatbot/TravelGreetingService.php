@@ -42,8 +42,7 @@ class TravelGreetingService
             $parts[] = 'Waalaikumsalam warahmatullahi wabarakatuh';
         }
 
-        $parts[] = $time['label'].', semoga hari ini membawa berkah dan rahmat. Izin Bapak/Ibu, kalau boleh tahu ada keperluan apa menghubungi JET (Jasa Executive Travel)?';
-        $parts[] = "Berikut layanan yang kami sediakan:\n1. *Reguler* — Layanan antar-jemput standar, mulai dari Rp 150.000\n2. *Dropping* — Pemesanan 1 mobil langsung ke tujuan, harga disepakati bersama\n3. *Rental* — Sewa mobil minimum 2 hari, siap antar ke mana saja\n4. *Pengiriman Paket* — Pengiriman barang antar kota\n\nSilakan pilih layanan yang diinginkan, Bapak/Ibu.";
+        $parts[] = "Halo, selamat datang di JET (Jaya Executive Transport) 🙏🙂\nMerupakan kebanggaan bagi kami dapat menjadi bagian dari perjalanan Anda.\nKami siap melayani rute Pekanbaru – Rokan Hulu dan Rokan Hulu – Pekanbaru dengan layanan yang nyaman, aman, dan berkelas.\nSilakan informasikan kebutuhan perjalanan Anda, tim kami siap memberikan pelayanan terbaik untuk Anda 🙏🙂";
 
         return implode("\n\n", $parts);
     }

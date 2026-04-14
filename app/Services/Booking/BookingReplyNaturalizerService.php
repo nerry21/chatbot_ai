@@ -168,14 +168,15 @@ class BookingReplyNaturalizerService
     public function askSeatSelection(int $needed, array $availableSeats, array $selectedSeats = []): string
     {
         if ($selectedSeats !== [] && $needed > 0) {
-            return 'Izin Bapak/Ibu, seat yang sudah dipilih '.$this->joinLabels($selectedSeats).'. Mohon pilih '.$needed.' seat lagi ya.';
+            $passengerNumber = count($selectedSeats) + 1;
+            return 'Izin Bapak/Ibu, seat yang sudah dipilih '.$this->joinLabels($selectedSeats).'. Silakan pilih seat penumpang ke-'.$passengerNumber.' yang diinginkan.';
         }
 
         if ($needed <= 1) {
             return 'Izin Bapak/Ibu, silakan pilih seat yang diinginkan ya.';
         }
 
-        return 'Izin Bapak/Ibu, silakan pilih '.$needed.' seat yang diinginkan ya. Jika lebih mudah, boleh kirim beberapa seat sekaligus dipisah koma.';
+        return 'Izin Bapak/Ibu, silakan pilih seat penumpang pertama yang diinginkan. Setelah ini sistem akan mengunci seat yang dipilih sehingga penumpang kedua tidak bisa memilih seat yang sama. Ini berlaku juga untuk pemesanan berikutnya yang memesan di tanggal dan di jam yang sama.';
     }
 
     public function seatSelectionInvalid(int $needed, ?string $reason = null): string
@@ -347,7 +348,7 @@ class BookingReplyNaturalizerService
 
     public function confirmed(): string
     {
-        return 'Baik Bapak/Ibu, data sudah kami terima. Kami akan kembali menghubungi melalui kanal WA ini atau dari Admin Utama ya.';
+        return "Baik, data pemesanan Anda sudah lengkap dan telah kami terima 🙏🙂\nTerima kasih telah memilih JET (Jaya Executive Transport) sebagai partner perjalanan Anda 🙏🙂\nPemesanan Anda telah kami terima dan sedang kami siapkan dengan sebaik-baiknya.\nKami berharap Anda mendapatkan pengalaman perjalanan yang aman, nyaman, dan berkesan bersama JET.\nTerima kasih atas kepercayaan dan kesempatan yang Anda berikan kepada kami 🙏🙂\nKami akan kembali menghubungi Bapak/Ibu melalui kanal WA ini atau dari Admin Utama jika ada perubahan jadwal, informasi keberangkatan atau konfirmasi keberangkatan.";
     }
 
     public function closing(?string $seed = null): string
