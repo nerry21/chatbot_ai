@@ -90,61 +90,18 @@ class TravelMessageRouterService
             return $this->handleGreetingOnly($text, $state, $now);
         }
 
-        // 2. New booking request while already in booking → reset and start fresh.
-        if ($state['status'] === 'booking' && $this->isBookingStartMessage($text)) {
-            return $this->handleBookingStartWithGreeting($text, $state, $now);
-        }
-
-        // 2b. Even during booking, if customer clearly asks about fare, answer it first
-        if ($state['status'] === 'booking' && $this->looksLikeFareQuestion($text)) {
-            $fareResponse = $this->tryHandleFareQuestion($text, $state);
-            if ($fareResponse !== null) {
-                return $fareResponse;
-            }
-        }
-
-        // 3. Booking continuation
-        if ($state['status'] === 'booking') {
-            return $this->handleBookingFlow($text, $phone, $state, $now);
-        }
-
-        // 4. Schedule change continuation
-        if ($state['status'] === 'schedule_change') {
-            return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
-        }
-
-        // 5. Dropping / Rental / Paket → forward to admin
-        if ($this->isDroppingOrRentalOrPaketRequest($text)) {
-            return $this->handleNonRegularService($phone, $state, $text);
-        }
-
-        // 6. Booking start trigger (reguler / booking / pesan / boking / pemesanan)
-        if ($this->isBookingStartMessage($text)) {
-            return $this->handleBookingStartWithGreeting($text, $state, $now);
-        }
-
-        // 7. Schedule change start trigger
-        if ($this->isScheduleChangeMessage($text)) {
-            return $this->handleScheduleChangeStart($text, $phone, $state, $now);
-        }
-
-        // 8. After booking confirmed, acknowledge close intent gracefully
-        if (($state['status'] ?? 'idle') === 'booking_confirmed' && $this->isPostBookingCloseIntent($text)) {
+        // 1b. Acknowledge/thank you in ANY status — respond gracefully
+        if ($this->isThankYouOrAcknowledge($text)) {
             return $this->buildResult(
                 replyText: '🙏',
-                intent: 'close_after_booking',
+                intent: 'acknowledge',
                 state: $state,
                 actions: [['type' => 'save_state']],
-                meta: ['step' => 'post_booking_close'],
+                meta: ['step' => 'acknowledge'],
             );
         }
 
-        // 9. Offer repeat booking / schedule change after a completed booking
-        if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
-            return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
-        }
-
-        // 9. Fare question (check before schedule to avoid false matches on "sore/pagi/siang/malam")
+        // 2. Even during booking, if customer clearly asks about fare, answer it first
         if ($this->looksLikeFareQuestion($text)) {
             $fareResponse = $this->tryHandleFareQuestion($text, $state);
             if ($fareResponse !== null) {
@@ -152,12 +109,48 @@ class TravelMessageRouterService
             }
         }
 
-        // 10. Pertanyaan jadwal sederhana (ONLY when not a booking request)
-        if ($state['status'] === 'idle' && $this->looksLikeSimpleScheduleQuestion($text)) {
+        // 2b. Schedule/jadwal question takes priority over booking start
+        //     "ingin berangkat subuh apakah ada jadwal?" is a question, not a booking request
+        if ($this->looksLikeScheduleOrInfoQuestion($text)) {
             return $this->handleSimpleScheduleQuestion($text, $state);
         }
 
-        // 11. Knowledge base / FAQ
+        // 3. New booking request while already in booking → reset and start fresh.
+        if ($state['status'] === 'booking' && $this->isBookingStartMessage($text)) {
+            return $this->handleBookingStartWithGreeting($text, $state, $now);
+        }
+
+        // 4. Booking continuation
+        if ($state['status'] === 'booking') {
+            return $this->handleBookingFlow($text, $phone, $state, $now);
+        }
+
+        // 5. Schedule change continuation
+        if ($state['status'] === 'schedule_change') {
+            return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
+        }
+
+        // 6. Dropping / Rental / Paket → forward to admin
+        if ($this->isDroppingOrRentalOrPaketRequest($text)) {
+            return $this->handleNonRegularService($phone, $state, $text);
+        }
+
+        // 7. Booking start trigger (reguler / booking / pesan / boking / pemesanan)
+        if ($this->isBookingStartMessage($text)) {
+            return $this->handleBookingStartWithGreeting($text, $state, $now);
+        }
+
+        // 8. Schedule change start trigger
+        if ($this->isScheduleChangeMessage($text)) {
+            return $this->handleScheduleChangeStart($text, $phone, $state, $now);
+        }
+
+        // 9. Offer repeat booking / schedule change after a completed booking
+        if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
+            return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
+        }
+
+        // 10. Knowledge base / FAQ
         $faqMatch = $this->faqMatcherService->match($text);
         if ($faqMatch !== null && $faqMatch['score'] >= TravelFaqMatcherService::FALLBACK_SCORE_THRESHOLD) {
             return $this->buildResult(
@@ -1442,6 +1435,86 @@ class TravelMessageRouterService
 
     // ─── Intent detection helpers ──────────────────────────────────────────────
 
+    private function isThankYouOrAcknowledge(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        // Pure thank you / acknowledge messages (no other intent mixed in)
+        $thankYouPatterns = [
+            'oke', 'ok', 'baik', 'siap', 'sip', 'mantap',
+            'terima kasih', 'makasih', 'thanks', 'thank you',
+            'oke terima kasih', 'ok terima kasih', 'oke makasih', 'ok makasih',
+            'baik terima kasih', 'baik makasih', 'siap terima kasih',
+            'sip terima kasih', 'sip makasih',
+            'oke siap', 'baik siap', 'amin',
+            'ya sudah', 'yaudah', 'udah',
+            'oke terimakasih', 'ok terimakasih', 'baik terimakasih',
+            'oke terimakasih informasi nya', 'ok terimakasih informasinya',
+            'oke makasih info nya', 'oke makasih infonya',
+            'terima kasih info nya', 'terimakasih infonya',
+            'makasih info nya', 'makasih infonya',
+            'oke terima kasih informasinya', 'baik terima kasih informasinya',
+        ];
+
+        // Exact match
+        if (in_array($normalized, $thankYouPatterns, true)) {
+            return true;
+        }
+
+        // Fuzzy: short message (< 8 words) containing thank-you keywords and no booking/question intent
+        $wordCount = count(explode(' ', $normalized));
+        if ($wordCount <= 8) {
+            $hasThankYou = false;
+            foreach (['terima kasih', 'terimakasih', 'makasih', 'thanks', 'thank'] as $ty) {
+                if (str_contains($normalized, $ty)) {
+                    $hasThankYou = true;
+                    break;
+                }
+            }
+
+            if ($hasThankYou) {
+                // Make sure it's not also a question or booking intent
+                foreach (['berapa', 'ongkos', 'harga', 'jadwal', 'booking', 'pesan', 'berangkat', 'kapan', 'dimana'] as $intent) {
+                    if (str_contains($normalized, $intent)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function looksLikeScheduleOrInfoQuestion(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        // Must contain a question indicator
+        $hasQuestionWord = false;
+        foreach (['apakah', 'ada gak', 'ada nggak', 'ada tidak', 'ada ga', 'ada kah', 'berapa jam', 'jam berapa', 'kapan', 'jadwal'] as $q) {
+            if (str_contains($normalized, $q)) {
+                $hasQuestionWord = true;
+                break;
+            }
+        }
+
+        if (! $hasQuestionWord) {
+            return false;
+        }
+
+        // Must contain travel context
+        $hasTravelContext = false;
+        foreach (['berangkat', 'keberangkatan', 'subuh', 'pagi', 'siang', 'sore', 'malam', 'jadwal', 'travel'] as $tc) {
+            if (str_contains($normalized, $tc)) {
+                $hasTravelContext = true;
+                break;
+            }
+        }
+
+        return $hasTravelContext;
+    }
+
     private function isPostBookingCloseIntent(string $text): bool
     {
         $normalized = $this->normalizeText($text);
@@ -1480,6 +1553,13 @@ class TravelMessageRouterService
     private function isBookingStartMessage(string $text): bool
     {
         $normalized = $this->normalizeText($text);
+
+        // If the message is clearly a question (contains question words), don't treat as booking start
+        foreach (['apakah', 'ada gak', 'ada nggak', 'ada tidak', 'ada ga', 'ada kah', 'berapa', 'kapan'] as $questionWord) {
+            if (str_contains($normalized, $questionWord)) {
+                return false;
+            }
+        }
 
         foreach ([
             'mau booking',
