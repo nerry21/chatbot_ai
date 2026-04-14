@@ -259,9 +259,11 @@ class TravelMessageRouterService
             'departure_time_label' => null,
             'passenger_count'      => null,
             'seat'                 => null,
+            'selected_seats'       => [],
             'pickup_point'         => null,
             'pickup_address'       => null,
             'dropoff_point'        => null,
+            'dropoff_address'      => null,
             'passenger_names'      => [],
             'contact_number'       => null,
         ];
@@ -306,9 +308,11 @@ class TravelMessageRouterService
             'departure_time_label' => null,
             'passenger_count'      => null,
             'seat'                 => null,
+            'selected_seats'       => [],
             'pickup_point'         => null,
             'pickup_address'       => null,
             'dropoff_point'        => null,
+            'dropoff_address'      => null,
             'passenger_names'      => [],
             'contact_number'       => null,
         ];
@@ -342,6 +346,7 @@ class TravelMessageRouterService
             'ask_pickup_point'                => $this->handlePickupPointStep($text, $state),
             'ask_pickup_address'              => $this->handlePickupAddressStep($text, $state),
             'ask_dropoff_point'               => $this->handleDropoffPointStep($text, $state),
+            'ask_dropoff_address'             => $this->handleDropoffAddressStep($text, $state),
             'ask_passenger_name'              => $this->handlePassengerNameStep($text, $state),
             'ask_contact_number'              => $this->handleContactStep($text, $state, $phone),
             'ask_review_confirmation'         => $this->handleReviewConfirmationStep($text, $phone, $state, $now),
@@ -380,9 +385,11 @@ class TravelMessageRouterService
             );
         }
 
-        $state['booking_data']['passenger_count']                = $count;
+        $state['booking_data']['passenger_count']                 = $count;
         $state['booking_data']['requires_passenger_confirmation'] = $validation['requires_confirmation'];
-        $state['current_step']                                   = 'ask_departure_date';
+        $state['booking_data']['seat']                            = null;
+        $state['booking_data']['selected_seats']                  = [];
+        $state['current_step']                                    = 'ask_departure_date';
 
         if (!empty($state['booking_edit_mode'])) {
             return $this->buildEditModeReturnToReview($state);
@@ -500,12 +507,15 @@ class TravelMessageRouterService
         }
 
         $passengerCount = (int) ($state['booking_data']['passenger_count'] ?? 1);
+        $seatPrompt = $passengerCount > 1
+            ? 'silakan pilih seat satu per satu. Sekarang pilih seat ke-1.'
+            : 'silakan pilih seat yang diinginkan.';
 
         return $this->buildResult(
             replyText: 'Baik, jam keberangkatan sudah saya catat: '
                 .$bookingData['departure_time'].' WIB.'
                 ."\n\nIzin Bapak/Ibu, untuk ketersediaan seat tempat duduk di jam ".$bookingData['departure_time'].' WIB'
-                .' berdasarkan '.$passengerCount.' orang penumpang, silakan pilih seat yang diinginkan.',
+                .' berdasarkan '.$passengerCount.' orang penumpang, '.$seatPrompt,
             intent: 'departure_time',
             state: $state,
             actions: [['type' => 'save_state']],
@@ -536,7 +546,26 @@ class TravelMessageRouterService
             );
         }
 
-        $state['booking_data']['seat'] = $seat;
+        $selectedSeats = array_values(array_filter((array) ($state['booking_data']['selected_seats'] ?? [])));
+        $passengerCount = max(1, (int) ($state['booking_data']['passenger_count'] ?? 1));
+
+        if (in_array($seat, $selectedSeats, true)) {
+            $currentSeatNumber = count($selectedSeats) + 1;
+
+            return $this->buildResult(
+                replyText: 'Seat *'.$seat.'* sudah dipilih sebelumnya.'
+                    ."\n\nSeat yang sudah dipilih: ".implode(', ', $selectedSeats)
+                    ."\nSilakan pilih seat ke-{$currentSeatNumber} yang lain ya, Bapak/Ibu.",
+                intent: 'seat_duplicate',
+                state: $state,
+                actions: [],
+                meta: [
+                    'step' => 'ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildSeatInteractiveList(),
+                ],
+            );
+        }
 
         // Check if seat requires admin confirmation (e.g., BS Tengah)
         $requiresAdminConfirmation = in_array(
@@ -546,10 +575,9 @@ class TravelMessageRouterService
         );
 
         if ($requiresAdminConfirmation) {
+            $state['booking_data']['seat'] = $seat;
             $state['current_step'] = 'wait_admin_seat_confirmation';
 
-            $phone = $state['booking_data']['contact_number'] ?? '-';
-            $passengerCount = $state['booking_data']['passenger_count'] ?? 1;
             $departureTime = $state['booking_data']['departure_time'] ?? '-';
             $departureDate = $state['booking_data']['departure_date_label'] ?? $state['booking_data']['departure_date'] ?? '-';
 
@@ -572,6 +600,29 @@ class TravelMessageRouterService
             );
         }
 
+        $selectedSeats[] = $seat;
+        $selectedSeats = array_values(array_unique($selectedSeats));
+
+        $state['booking_data']['selected_seats'] = $selectedSeats;
+        $state['booking_data']['seat'] = implode(', ', $selectedSeats);
+
+        if (count($selectedSeats) < $passengerCount) {
+            $nextSeatNumber = count($selectedSeats) + 1;
+
+            return $this->buildResult(
+                replyText: 'Baik, seat yang sudah dipilih: '.implode(', ', $selectedSeats).'.'
+                    ."\n\nSilakan pilih seat ke-{$nextSeatNumber}.",
+                intent: 'seat',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step' => 'ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildSeatInteractiveList(),
+                ],
+            );
+        }
+
         $state['current_step'] = 'ask_pickup_point';
 
         if (!empty($state['booking_edit_mode'])) {
@@ -579,7 +630,9 @@ class TravelMessageRouterService
         }
 
         return $this->buildResult(
-            replyText: 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
+            replyText: "Izin Bapak/Ibu, silakan pilih titik penjemputannya.\n\n"
+                .$this->buildLocationNumberedMenuText()
+                ."\n\nCukup balas angkanya saja.",
             intent: 'seat',
             state: $state,
             actions: [['type' => 'save_state']],
@@ -599,11 +652,50 @@ class TravelMessageRouterService
         if (str_contains($normalized, 'izinkan') || str_contains($normalized, 'approve')
             || str_contains($normalized, 'boleh') || str_contains($normalized, 'oke')
             || str_contains($normalized, 'setuju') || str_contains($normalized, 'ya')) {
+            $selectedSeats = array_values(array_filter((array) ($state['booking_data']['selected_seats'] ?? [])));
+            $approvedSeat = trim((string) ($state['booking_data']['seat'] ?? ''));
+            $passengerCount = max(1, (int) ($state['booking_data']['passenger_count'] ?? 1));
+
+            if ($approvedSeat !== '' && !in_array($approvedSeat, $selectedSeats, true)) {
+                $selectedSeats[] = $approvedSeat;
+                $selectedSeats = array_values(array_unique($selectedSeats));
+            }
+
+            $state['booking_data']['selected_seats'] = $selectedSeats;
+            $state['booking_data']['seat'] = $selectedSeats !== []
+                ? implode(', ', $selectedSeats)
+                : $approvedSeat;
+
+            if (count($selectedSeats) < $passengerCount) {
+                $nextSeatNumber = count($selectedSeats) + 1;
+                $state['current_step'] = 'ask_seat';
+
+                return $this->buildResult(
+                    replyText: "Baik Bapak/Ibu, seat *BS Tengah* sudah dikonfirmasi oleh Admin.\n\n"
+                        .'Seat yang sudah dipilih: '.implode(', ', $selectedSeats).'.'
+                        ."\n\nSilakan pilih seat ke-{$nextSeatNumber}.",
+                    intent: 'seat_confirmed',
+                    state: $state,
+                    actions: [['type' => 'save_state']],
+                    meta: [
+                        'step' => 'ask_seat',
+                        'interactive_type' => 'list',
+                        'interactive_list' => $this->buildSeatInteractiveList(),
+                    ],
+                );
+            }
 
             $state['current_step'] = 'ask_pickup_point';
 
+            if (!empty($state['booking_edit_mode'])) {
+                return $this->buildEditModeReturnToReview($state);
+            }
+
             return $this->buildResult(
-                replyText: "Baik Bapak/Ibu, seat *BS Tengah* sudah dikonfirmasi oleh Admin.\n\nSekarang, izin Bapak/Ibu silakan pilih titik penjemputannya.",
+                replyText: "Baik Bapak/Ibu, seat *BS Tengah* sudah dikonfirmasi oleh Admin.\n\n"
+                    ."Sekarang, izin Bapak/Ibu silakan pilih titik penjemputannya.\n\n"
+                    .$this->buildLocationNumberedMenuText()
+                    ."\n\nCukup balas angkanya saja.",
                 intent: 'seat_confirmed',
                 state: $state,
                 actions: [['type' => 'save_state']],
@@ -621,6 +713,7 @@ class TravelMessageRouterService
 
             $state['current_step'] = 'seat_rejected_choose_action';
             $state['booking_data']['seat'] = null;
+            $state['booking_data']['selected_seats'] = [];
 
             return $this->buildResult(
                 replyText: "Mohon maaf Bapak/Ibu, seat *BS Tengah* tidak tersedia saat ini.\n\nSilakan pilih:\n1. Ganti seat\n2. Ganti jam keberangkatan\n3. Ganti tanggal keberangkatan",
@@ -666,6 +759,7 @@ class TravelMessageRouterService
             $state['booking_data']['departure_time'] = null;
             $state['booking_data']['departure_time_label'] = null;
             $state['booking_data']['seat'] = null;
+            $state['booking_data']['selected_seats'] = [];
 
             return $this->buildResult(
                 replyText: "Baik, silakan pilih jam keberangkatan yang baru.",
@@ -687,6 +781,7 @@ class TravelMessageRouterService
             $state['booking_data']['departure_time'] = null;
             $state['booking_data']['departure_time_label'] = null;
             $state['booking_data']['seat'] = null;
+            $state['booking_data']['selected_seats'] = [];
 
             return $this->buildResult(
                 replyText: "Baik, silakan pilih tanggal keberangkatan yang baru.",
@@ -713,11 +808,14 @@ class TravelMessageRouterService
     private function handlePickupPointStep(string $text, array $state): array
     {
         $location = $this->extractSelectedPickupLocationFromInteractive($text)
+            ?? $this->extractLocationByNumber($text)
             ?? $this->extractLocation($text);
 
         if ($location === null) {
             return $this->buildResult(
-                replyText: 'Izin Bapak/Ibu, mohon pilih titik penjemputannya.',
+                replyText: "Izin Bapak/Ibu, mohon pilih titik penjemputannya.\n\n"
+                    .$this->buildLocationNumberedMenuText()
+                    ."\n\nCukup balas angkanya saja.",
                 intent: 'pickup_location',
                 state: $state,
                 actions: [],
@@ -782,11 +880,14 @@ class TravelMessageRouterService
     private function handleDropoffPointStep(string $text, array $state): array
     {
         $location = $this->extractSelectedDropoffLocationFromInteractive($text)
+            ?? $this->extractLocationByNumber($text)
             ?? $this->extractLocation($text);
 
         if ($location === null) {
             return $this->buildResult(
-                replyText: 'Izin Bapak/Ibu, mohon pilih tujuan pengantarannya.',
+                replyText: "Izin Bapak/Ibu, mohon pilih tujuan pengantarannya.\n\n"
+                    .$this->buildLocationNumberedMenuText()
+                    ."\n\nCukup balas angkanya saja.",
                 intent: 'dropoff_location',
                 state: $state,
                 actions: [],
@@ -799,6 +900,33 @@ class TravelMessageRouterService
         }
 
         $state['booking_data']['dropoff_point'] = $location;
+        $state['booking_data']['dropoff_address'] = null;
+        $state['current_step'] = 'ask_dropoff_address';
+
+        return $this->buildResult(
+            replyText: 'Baik Bapak/Ibu, boleh dibantu alamat lengkap pengantarannya di '.$location.'?',
+            intent: 'dropoff_location',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'ask_dropoff_address'],
+        );
+    }
+
+    private function handleDropoffAddressStep(string $text, array $state): array
+    {
+        $address = trim($text);
+
+        if ($address === '') {
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, mohon dibantu alamat lengkap pengantarannya.',
+                intent: 'dropoff_address',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'ask_dropoff_address'],
+            );
+        }
+
+        $state['booking_data']['dropoff_address'] = $address;
         $state['current_step'] = 'ask_passenger_name';
 
         if (!empty($state['booking_edit_mode'])) {
@@ -812,7 +940,7 @@ class TravelMessageRouterService
 
         return $this->buildResult(
             replyText: $question,
-            intent: 'dropoff_location',
+            intent: 'dropoff_address',
             state: $state,
             actions: [['type' => 'save_state']],
             meta: ['step' => 'ask_passenger_name'],
@@ -1591,6 +1719,36 @@ class TravelMessageRouterService
         return null;
     }
 
+    private function extractLocationByNumber(string $text): ?string
+    {
+        $normalized = $this->normalizeText($text);
+
+        if (!preg_match('/^\d{1,2}$/', $normalized)) {
+            return null;
+        }
+
+        $index = ((int) $normalized) - 1;
+        $locations = $this->fareService->getAllLocations();
+
+        if (!isset($locations[$index])) {
+            return null;
+        }
+
+        return $locations[$index];
+    }
+
+    private function buildLocationNumberedMenuText(): string
+    {
+        $lines = ['Pilihan lokasi:', ''];
+
+        foreach ($this->fareService->getAllLocations() as $index => $location) {
+            $number = $index + 1;
+            $lines[] = $number.'. '.$location;
+        }
+
+        return implode("\n", $lines);
+    }
+
     /**
      * @return array{0: string|null, 1: string|null}
      */
@@ -2136,7 +2294,16 @@ class TravelMessageRouterService
         $pickupPoint        = trim((string) ($bookingData['pickup_point'] ?? ''));
         $pickupAddress      = trim((string) ($bookingData['pickup_address'] ?? ''));
         $dropoffPoint       = trim((string) ($bookingData['dropoff_point'] ?? ''));
+        $dropoffAddress     = trim((string) ($bookingData['dropoff_address'] ?? ''));
         $contactNumber      = trim((string) ($bookingData['contact_number'] ?? ''));
+
+        $selectedSeatsRaw = $bookingData['selected_seats'] ?? [];
+        $selectedSeats = is_array($selectedSeatsRaw)
+            ? array_values(array_filter(array_map(
+                static fn ($item) => trim((string) $item),
+                $selectedSeatsRaw
+            )))
+            : [];
 
         $passengerNamesRaw = $bookingData['passenger_names'] ?? [];
         $passengerNames = is_array($passengerNamesRaw)
@@ -2153,6 +2320,10 @@ class TravelMessageRouterService
         $departureTimeDisplay = $departureTimeValue !== ''
             ? $departureTimeValue.' WIB'
             : ($departureTimeLabel !== '' ? $departureTimeLabel : '-');
+
+        $seatDisplay = $selectedSeats !== []
+            ? implode(', ', $selectedSeats)
+            : ($seat !== '' ? $seat : '-');
 
         $passengerNamesDisplay = $passengerNames !== []
             ? implode(', ', $passengerNames)
@@ -2179,10 +2350,11 @@ class TravelMessageRouterService
             'Tanggal keberangkatan : '.$departureDateDisplay,
             'Jam keberangkatan     : '.$departureTimeDisplay,
             'Jumlah penumpang      : '.($passengerCount !== '' ? $passengerCount.' orang' : '-'),
-            'Seat terpilih         : '.($seat !== '' ? $seat : '-'),
+            'Seat terpilih         : '.$seatDisplay,
             'Titik jemput          : '.($pickupPoint !== '' ? $pickupPoint : '-'),
             'Alamat jemput         : '.($pickupAddress !== '' ? $pickupAddress : '-'),
             'Tujuan antar          : '.($dropoffPoint !== '' ? $dropoffPoint : '-'),
+            'Alamat tujuan antar   : '.($dropoffAddress !== '' ? $dropoffAddress : '-'),
             'Nama penumpang        : '.$passengerNamesDisplay,
             'No HP                 : '.($contactNumber !== '' ? $contactNumber : '-'),
             'Ongkos perjalanan     : '.$fareDisplay,

@@ -249,20 +249,23 @@ class TravelWhatsAppPipelineService
             : null;
 
         BookingRequest::create([
-            'conversation_id'  => $conversation->id,
-            'customer_id'      => $customer->id,
-            'departure_date'   => $bookingData['departure_date'] ?? null,
-            'departure_time'   => $bookingData['departure_time'] ?? null,
-            'passenger_count'  => $bookingData['passenger_count'] ?? null,
-            'passenger_names'  => is_array($passengerNames) ? $passengerNames : null,
-            'passenger_name'   => $passengerName,
-            'pickup_location'  => $bookingData['pickup_point'] ?? null,
-            'pickup_full_address' => $bookingData['pickup_address'] ?? null,
-            'destination'      => $bookingData['dropoff_point'] ?? null,
-            'selected_seats'   => isset($bookingData['seat']) ? [$bookingData['seat']] : null,
-            'contact_number'   => $bookingData['contact_number'] ?? null,
-            'booking_status'   => BookingStatus::Confirmed,
-            'confirmed_at'     => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
+            'conversation_id'          => $conversation->id,
+            'customer_id'              => $customer->id,
+            'departure_date'           => $bookingData['departure_date'] ?? null,
+            'departure_time'           => $bookingData['departure_time'] ?? null,
+            'passenger_count'          => $bookingData['passenger_count'] ?? null,
+            'passenger_names'          => is_array($passengerNames) ? $passengerNames : null,
+            'passenger_name'           => $passengerName,
+            'pickup_location'          => $bookingData['pickup_point'] ?? null,
+            'pickup_full_address'      => $bookingData['pickup_address'] ?? null,
+            'destination'              => $bookingData['dropoff_point'] ?? null,
+            'destination_full_address' => $bookingData['dropoff_address'] ?? null,
+            'selected_seats'           => !empty($bookingData['selected_seats'])
+                ? array_values((array) $bookingData['selected_seats'])
+                : (isset($bookingData['seat']) && $bookingData['seat'] !== null ? [$bookingData['seat']] : null),
+            'contact_number'           => $bookingData['contact_number'] ?? null,
+            'booking_status'           => BookingStatus::Confirmed,
+            'confirmed_at'             => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
         ]);
     }
 

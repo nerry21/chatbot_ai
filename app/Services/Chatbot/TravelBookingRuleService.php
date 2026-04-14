@@ -104,7 +104,10 @@ class TravelBookingRuleService
             'iya', 'ya', 'yep', 'yap', 'oke', 'ok', 'okay',
             'benar', 'betul', 'setuju', 'sesuai', 'confirm', 'lanjut',
             'sudah benar', 'sudah betul', 'sudah sesuai', 'ya benar', 'iya benar',
-            'siap', 'bisa',
+            'oke sudah benar', 'ok sudah benar', 'oke benar', 'ok benar',
+            'oke sudah sesuai', 'ok sudah sesuai',
+            'sip', 'sip lanjut', 'siap', 'siap lanjut',
+            'aman', 'pas', 'cocok', 'bisa',
         ];
 
         foreach ($confirmWords as $word) {
@@ -113,6 +116,27 @@ class TravelBookingRuleService
                 || $normalized === $word.' min'
                 || $normalized === $word.' admin'
             ) {
+                return true;
+            }
+        }
+
+        foreach ([
+            'sudah benar',
+            'sudah sesuai',
+            'sudah pas',
+            'sudah oke',
+            'sudah ok',
+            'data sudah benar',
+            'data sudah sesuai',
+            'booking sudah benar',
+            'booking sudah sesuai',
+            'lanjut saja',
+            'iya lanjut',
+            'ya lanjut',
+            'oke lanjut',
+            'ok lanjut',
+        ] as $phrase) {
+            if (str_contains($normalized, $phrase)) {
                 return true;
             }
         }
