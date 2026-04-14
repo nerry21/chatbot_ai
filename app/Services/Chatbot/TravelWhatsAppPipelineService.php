@@ -275,6 +275,7 @@ class TravelWhatsAppPipelineService
             'pickup_location'  => $bookingData['pickup_point'] ?? null,
             'pickup_full_address' => $bookingData['pickup_address'] ?? null,
             'destination'      => $bookingData['dropoff_point'] ?? null,
+            'destination_full_address' => $bookingData['dropoff_address'] ?? null,
             'selected_seats'   => isset($bookingData['seat']) ? [$bookingData['seat']] : null,
             'contact_number'   => $bookingData['contact_number'] ?? null,
             'booking_status'   => BookingStatus::Confirmed,

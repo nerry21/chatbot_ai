@@ -338,6 +338,7 @@ class TravelChatbotOrchestratorService
             'ask_pickup_point'              => 'titik penjemputan',
             'ask_pickup_address'            => 'alamat lengkap penjemputan',
             'ask_dropoff_point'             => 'tujuan pengantaran',
+            'ask_dropoff_address'           => 'alamat lengkap pengantaran',
             'ask_passenger_name'            => 'nama penumpang',
             'ask_contact_number'            => 'nomor kontak',
             'ask_review_confirmation'       => 'konfirmasi review perjalanan',

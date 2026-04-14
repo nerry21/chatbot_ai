@@ -262,6 +262,7 @@ class TravelMessageRouterService
             'pickup_point'         => null,
             'pickup_address'       => null,
             'dropoff_point'        => null,
+            'dropoff_address'      => null,
             'passenger_names'      => [],
             'contact_number'       => null,
         ];
@@ -309,6 +310,7 @@ class TravelMessageRouterService
             'pickup_point'         => null,
             'pickup_address'       => null,
             'dropoff_point'        => null,
+            'dropoff_address'      => null,
             'passenger_names'      => [],
             'contact_number'       => null,
         ];
@@ -342,6 +344,7 @@ class TravelMessageRouterService
             'ask_pickup_point'                => $this->handlePickupPointStep($text, $state),
             'ask_pickup_address'              => $this->handlePickupAddressStep($text, $state),
             'ask_dropoff_point'               => $this->handleDropoffPointStep($text, $state),
+            'ask_dropoff_address'             => $this->handleDropoffAddressStep($text, $state),
             'ask_passenger_name'              => $this->handlePassengerNameStep($text, $state),
             'ask_contact_number'              => $this->handleContactStep($text, $state, $phone),
             'ask_review_confirmation'         => $this->handleReviewConfirmationStep($text, $phone, $state, $now),
@@ -871,6 +874,36 @@ class TravelMessageRouterService
         }
 
         $state['booking_data']['dropoff_point'] = $location;
+        $state['current_step'] = 'ask_dropoff_address';
+
+        if (!empty($state['booking_edit_mode'])) {
+            return $this->buildEditModeReturnToReview($state);
+        }
+
+        return $this->buildResult(
+            replyText: 'Boleh minta alamat lengkap pengantarannya, Bapak/Ibu?',
+            intent: 'dropoff_location',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'ask_dropoff_address'],
+        );
+    }
+
+    private function handleDropoffAddressStep(string $text, array $state): array
+    {
+        $address = trim($text);
+
+        if ($address === '') {
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, mohon dibantu alamat lengkap pengantarannya.',
+                intent: 'dropoff_address',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'ask_dropoff_address'],
+            );
+        }
+
+        $state['booking_data']['dropoff_address'] = $address;
         $state['current_step'] = 'ask_contact_number';
 
         if (!empty($state['booking_edit_mode'])) {
@@ -879,7 +912,7 @@ class TravelMessageRouterService
 
         return $this->buildResult(
             replyText: 'Untuk nomor kontak yang bisa dihubungi, boleh dikirimkan? Jika sama dengan nomor ini cukup ketik "sama".',
-            intent: 'dropoff_location',
+            intent: 'dropoff_address',
             state: $state,
             actions: [['type' => 'save_state']],
             meta: ['step' => 'ask_contact_number'],
@@ -1015,6 +1048,7 @@ class TravelMessageRouterService
             'change_field:pickup_point'      => 'ask_pickup_point',
             'change_field:pickup_address'    => 'ask_pickup_address',
             'change_field:dropoff_point'     => 'ask_dropoff_point',
+            'change_field:dropoff_address'   => 'ask_dropoff_address',
             'change_field:passenger_names'   => 'ask_passenger_name',
             'change_field:contact_number'    => 'ask_contact_number',
         ];
@@ -1031,28 +1065,30 @@ class TravelMessageRouterService
 
         // Teks bebas → coba cocokkan kata kunci
         $keywordMap = [
-            'tanggal'      => 'ask_departure_date',
-            'jam'          => 'ask_departure_time',
-            'penumpang'    => 'ask_passenger_count',
-            'seat'         => 'ask_seat',
-            'kursi'        => 'ask_seat',
-            'titik jemput' => 'ask_pickup_point',
-            'jemput'       => 'ask_pickup_point',
-            'alamat'       => 'ask_pickup_address',
-            'tujuan'       => 'ask_dropoff_point',
-            'nama'         => 'ask_passenger_name',
-            'kontak'       => 'ask_contact_number',
-            'hp'           => 'ask_contact_number',
-            'nomor'        => 'ask_contact_number',
-            '1'            => 'ask_departure_date',
-            '2'            => 'ask_departure_time',
-            '3'            => 'ask_passenger_count',
-            '4'            => 'ask_seat',
-            '5'            => 'ask_pickup_point',
-            '6'            => 'ask_pickup_address',
-            '7'            => 'ask_dropoff_point',
-            '8'            => 'ask_passenger_name',
-            '9'            => 'ask_contact_number',
+            'tanggal'        => 'ask_departure_date',
+            'jam'            => 'ask_departure_time',
+            'penumpang'      => 'ask_passenger_count',
+            'seat'           => 'ask_seat',
+            'kursi'          => 'ask_seat',
+            'titik jemput'   => 'ask_pickup_point',
+            'jemput'         => 'ask_pickup_point',
+            'alamat jemput'  => 'ask_pickup_address',
+            'alamat antar'   => 'ask_dropoff_address',
+            'tujuan'         => 'ask_dropoff_point',
+            'nama'           => 'ask_passenger_name',
+            'kontak'         => 'ask_contact_number',
+            'hp'             => 'ask_contact_number',
+            'nomor'          => 'ask_contact_number',
+            '1'              => 'ask_departure_date',
+            '2'              => 'ask_departure_time',
+            '3'              => 'ask_passenger_count',
+            '4'              => 'ask_seat',
+            '5'              => 'ask_pickup_point',
+            '6'              => 'ask_pickup_address',
+            '7'              => 'ask_dropoff_point',
+            '8'              => 'ask_dropoff_address',
+            '9'              => 'ask_passenger_name',
+            '10'             => 'ask_contact_number',
         ];
 
         $normalizedLower = $this->normalizeText($text);
@@ -2018,8 +2054,9 @@ class TravelMessageRouterService
             ['id' => 'change_field:pickup_point',    'title' => '5. Titik Jemput',          'description' => 'Ubah titik penjemputan'],
             ['id' => 'change_field:pickup_address',  'title' => '6. Alamat Jemput',         'description' => 'Ubah alamat penjemputan'],
             ['id' => 'change_field:dropoff_point',   'title' => '7. Tujuan Antar',          'description' => 'Ubah tujuan pengantaran'],
-            ['id' => 'change_field:passenger_names', 'title' => '8. Nama Penumpang',        'description' => 'Ubah nama penumpang'],
-            ['id' => 'change_field:contact_number',  'title' => '9. No HP',                 'description' => 'Ubah nomor kontak'],
+            ['id' => 'change_field:dropoff_address', 'title' => '8. Alamat Antar',          'description' => 'Ubah alamat pengantaran'],
+            ['id' => 'change_field:passenger_names', 'title' => '9. Nama Penumpang',        'description' => 'Ubah nama penumpang'],
+            ['id' => 'change_field:contact_number',  'title' => '10. No HP',                'description' => 'Ubah nomor kontak'],
         ];
 
         $rows = array_map(static fn ($f) => [
@@ -2228,6 +2265,7 @@ class TravelMessageRouterService
         $pickupPoint        = trim((string) ($bookingData['pickup_point'] ?? ''));
         $pickupAddress      = trim((string) ($bookingData['pickup_address'] ?? ''));
         $dropoffPoint       = trim((string) ($bookingData['dropoff_point'] ?? ''));
+        $dropoffAddress     = trim((string) ($bookingData['dropoff_address'] ?? ''));
         $contactNumber      = trim((string) ($bookingData['contact_number'] ?? ''));
 
         $passengerNamesRaw = $bookingData['passenger_names'] ?? [];
@@ -2282,6 +2320,7 @@ class TravelMessageRouterService
             'Titik jemput          : '.($pickupPoint !== '' ? $pickupPoint : '-'),
             'Alamat jemput         : '.($pickupAddress !== '' ? $pickupAddress : '-'),
             'Tujuan antar          : '.($dropoffPoint !== '' ? $dropoffPoint : '-'),
+            'Alamat antar          : '.($dropoffAddress !== '' ? $dropoffAddress : '-'),
             'Nama penumpang        : '.$passengerNamesDisplay,
             'No HP                 : '.($contactNumber !== '' ? $contactNumber : '-'),
             'Ongkos perjalanan     : '.$fareDisplay.' (Ongkos akan dikonfirmasi ulang Admin Utama, mengingat untuk menyesuaikan Lokasi Jemput dan Pengantaran)',
