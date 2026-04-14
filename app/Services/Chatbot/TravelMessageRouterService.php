@@ -528,7 +528,7 @@ class TravelMessageRouterService
                 'step'             => 'ask_seat',
                 'departure_slot'   => $slot,
                 'interactive_type' => 'list',
-                'interactive_list' => $this->buildSeatInteractiveList(),
+                'interactive_list' => $this->buildSeatInteractiveList([], $firstName),
             ],
         );
     }
@@ -563,7 +563,7 @@ class TravelMessageRouterService
                 meta: [
                     'step' => 'ask_seat',
                     'interactive_type' => 'list',
-                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats']),
+                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats'], $selectedCount === 0 ? $firstName : $currentName),
                 ],
             );
         }
@@ -580,7 +580,7 @@ class TravelMessageRouterService
                 meta: [
                     'step' => 'ask_seat',
                     'interactive_type' => 'list',
-                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats']),
+                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats'], $currentName),
                 ],
             );
         }
@@ -637,7 +637,7 @@ class TravelMessageRouterService
                 meta: [
                     'step' => 'ask_seat',
                     'interactive_type' => 'list',
-                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats']),
+                    'interactive_list' => $this->buildSeatInteractiveList($state['booking_data']['selected_seats'], $nextName),
                 ],
             );
         }
@@ -1881,7 +1881,7 @@ class TravelMessageRouterService
         ];
     }
 
-    private function buildSeatInteractiveList(array $excludeSeats = []): array
+    private function buildSeatInteractiveList(array $excludeSeats = [], ?string $passengerName = null): array
     {
         $seatLabels = (array) config('chatbot.jet.seat_labels', ['CC', 'BS Kiri', 'BS Kanan', 'BS Tengah', 'Belakang Kiri', 'Belakang Kanan']);
         $requiresConfirmation = (array) config('chatbot.jet.seat_requires_admin_confirmation', ['BS Tengah']);
@@ -1904,10 +1904,14 @@ class TravelMessageRouterService
             ];
         }
 
+        $bodyText = $passengerName !== null
+            ? 'Silakan pilih seat tempat duduk '.$passengerName.' yang tersedia.'
+            : 'Silakan pilih seat tempat duduk yang diinginkan.';
+
         return [
             'button'   => 'Pilih Seat',
             'header'   => 'Pilihan Seat',
-            'body'     => 'Silakan pilih seat tempat duduk yang diinginkan.',
+            'body'     => $bodyText,
             'footer'   => 'JET Travel Rokan Hulu',
             'sections' => [
                 [
@@ -2242,9 +2246,16 @@ class TravelMessageRouterService
             ? $departureTimeValue.' WIB'
             : ($departureTimeLabel !== '' ? $departureTimeLabel : '-');
 
-        $passengerNamesDisplay = $passengerNames !== []
-            ? implode(', ', $passengerNames)
-            : '-';
+        $passengerNamesDisplay = '-';
+        if ($passengerNames !== []) {
+            $selectedSeats = is_array($bookingData['selected_seats'] ?? null) ? $bookingData['selected_seats'] : [];
+            $nameWithSeatParts = [];
+            foreach ($passengerNames as $index => $name) {
+                $seatForPassenger = $selectedSeats[$index] ?? '-';
+                $nameWithSeatParts[] = ($index + 1).'. '.$name.' (Seat: '.$seatForPassenger.')';
+            }
+            $passengerNamesDisplay = "\n        ".implode("\n        ", $nameWithSeatParts);
+        }
 
         // Calculate fare
         $fareDisplay = '-';
