@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\WhatsApp\WhatsAppSenderService;
+use Illuminate\Support\Facades\Log;
 
 class TravelWhatsAppPipelineService
 {
@@ -77,29 +78,30 @@ class TravelWhatsAppPipelineService
                     $meta = is_array($context['meta'] ?? null) ? $context['meta'] : [];
                     $interactiveType = (string) ($meta['interactive_type'] ?? '');
                     $interactiveList = is_array($meta['interactive_list'] ?? null) ? $meta['interactive_list'] : [];
+                    $loggedText = $replyText;
+                    $deliveryMeta = [
+                        'source' => 'travel_whatsapp_pipeline',
+                        'conversation_id' => $conversation->id,
+                    ];
 
                     if ($interactiveType === 'list' && $interactiveList !== []) {
-                        $delivery = $this->sender->sendInteractiveList($toPhone, $interactiveList, [
-                            'source' => 'travel_whatsapp_pipeline',
-                            'conversation_id' => $conversation->id,
-                        ]);
+                        $fallbackText = $this->resolveInteractiveFallbackText($replyText, $meta, $interactiveList);
+                        $sendResult = $this->sendInteractiveOrTextFallback(
+                            to: $toPhone,
+                            interactivePayload: $interactiveList,
+                            fallbackText: $fallbackText,
+                            deliveryMeta: $deliveryMeta,
+                        );
 
-                        if (trim($replyText) !== '') {
-                            $this->sender->sendText($toPhone, $replyText, [
-                                'source' => 'travel_whatsapp_pipeline_followup_text',
-                                'conversation_id' => $conversation->id,
-                            ]);
-                        }
+                        $delivery = $sendResult['delivery'];
+                        $loggedText = $sendResult['used_text_fallback'] ? $fallbackText : $replyText;
                     } else {
-                        $delivery = $this->sender->sendText($toPhone, $replyText, [
-                            'source' => 'travel_whatsapp_pipeline',
-                            'conversation_id' => $conversation->id,
-                        ]);
+                        $delivery = $this->sender->sendText($toPhone, $replyText, $deliveryMeta);
                     }
 
                     $this->conversationManager->appendOutboundMessage(
                         $conversation,
-                        $replyText,
+                        $loggedText,
                         [
                             'source' => 'travel_whatsapp_pipeline',
                             'delivery' => $delivery,
@@ -131,6 +133,109 @@ class TravelWhatsAppPipelineService
         }
 
         return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $interactivePayload
+     * @param  array<string, mixed>  $deliveryMeta
+     * @return array{delivery: array<string, mixed>, used_text_fallback: bool}
+     */
+    private function sendInteractiveOrTextFallback(
+        string $to,
+        array $interactivePayload,
+        string $fallbackText,
+        array $deliveryMeta = [],
+    ): array {
+        try {
+            $result = $this->sender->sendInteractiveList($to, $interactivePayload, array_merge(
+                $deliveryMeta,
+                ['disable_interactive_text_fallback' => true],
+            ));
+
+            if (($result['status'] ?? null) === 'sent') {
+                return [
+                    'delivery' => $result,
+                    'used_text_fallback' => false,
+                ];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Interactive list send failed, fallback to text', [
+                'to' => $to,
+                'header' => $interactivePayload['header'] ?? null,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return [
+            'delivery' => $this->sender->sendText(
+                $to,
+                $fallbackText,
+                array_merge($deliveryMeta, [
+                    'source' => ((string) ($deliveryMeta['source'] ?? 'travel_whatsapp_pipeline')).'_fallback_text',
+                    'fallback_from' => 'interactive_list',
+                ]),
+            ),
+            'used_text_fallback' => true,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $meta
+     * @param  array<string, mixed>  $interactivePayload
+     */
+    private function resolveInteractiveFallbackText(
+        string $replyText,
+        array $meta,
+        array $interactivePayload,
+    ): string {
+        return match ((string) ($meta['step'] ?? '')) {
+            'ask_pickup_point' => $this->buildNumberedLocationFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
+                listLabel: 'Pilihan lokasi:',
+                closing: 'Silakan balas nama lokasi yang dipilih.',
+            ),
+            'ask_dropoff_point' => $this->buildNumberedLocationFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Untuk pengantarannya ke mana, Bapak/Ibu? Silakan pilih lokasinya.',
+                listLabel: 'Pilihan tujuan:',
+                closing: 'Silakan balas nama lokasi tujuan.',
+            ),
+            default => trim($replyText) !== ''
+                ? $replyText
+                : (string) ($interactivePayload['body'] ?? 'Silakan pilih salah satu.'),
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $interactivePayload
+     */
+    private function buildNumberedLocationFallbackText(
+        array $interactivePayload,
+        string $intro,
+        string $listLabel,
+        string $closing,
+    ): string {
+        $lines = [$intro, '', $listLabel];
+        $index = 1;
+
+        foreach ((array) ($interactivePayload['sections'] ?? []) as $section) {
+            foreach ((array) ($section['rows'] ?? []) as $row) {
+                $title = trim((string) ($row['title'] ?? ''));
+
+                if ($title === '') {
+                    continue;
+                }
+
+                $lines[] = $index.'. '.$title;
+                $index++;
+            }
+        }
+
+        $lines[] = '';
+        $lines[] = $closing;
+
+        return implode("\n", $lines);
     }
 
     private function persistBookingRequest(

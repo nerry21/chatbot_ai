@@ -150,7 +150,7 @@ class WhatsAppSenderService
             $errorMsg = (string) ($response->json('error.message') ?? $response->body());
             $errorCode = (int) ($response->json('error.code') ?? 0);
 
-            if ($this->shouldFallbackInteractiveToText($resolvedType, $response->status(), $errorMsg)) {
+            if ($this->shouldFallbackInteractiveToText($resolvedType, $response->status(), $errorMsg, $meta)) {
                 WaLog::warning('[Sender] Interactive send rejected, retrying as text fallback', array_merge([
                     'to' => WaLog::maskPhone($normalizedE164),
                     'http_status' => $response->status(),
@@ -611,9 +611,21 @@ class WhatsAppSenderService
         return 'text';
     }
 
-    private function shouldFallbackInteractiveToText(string $resolvedType, int $httpStatus, string $errorMessage): bool
+    /**
+     * @param  array<string, mixed>  $meta
+     */
+    private function shouldFallbackInteractiveToText(
+        string $resolvedType,
+        int $httpStatus,
+        string $errorMessage,
+        array $meta = [],
+    ): bool
     {
         if ($resolvedType !== 'interactive') {
+            return false;
+        }
+
+        if (($meta['disable_interactive_text_fallback'] ?? false) === true) {
             return false;
         }
 

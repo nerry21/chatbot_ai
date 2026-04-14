@@ -67,6 +67,57 @@ class WhatsAppSenderServiceTest extends TestCase
         $this->assertCount(2, $requests);
     }
 
+    public function test_it_can_disable_interactive_text_fallback_per_request(): void
+    {
+        config()->set('chatbot.whatsapp.enabled', true);
+        config()->set('chatbot.whatsapp.access_token', 'test-token');
+        config()->set('chatbot.whatsapp.phone_number_id', '123456789');
+        config()->set('chatbot.whatsapp.interactive_enabled', true);
+        config()->set('chatbot.whatsapp.interactive_text_fallback_enabled', true);
+
+        $requests = [];
+
+        Http::fake(function ($request) use (&$requests) {
+            $body = json_decode($request->body(), true);
+            $requests[] = $body;
+
+            return Http::response([
+                'error' => ['message' => 'Unsupported interactive parameter'],
+            ], 400);
+        });
+
+        $service = app(WhatsAppSenderService::class);
+
+        $result = $service->sendMessage(
+            toPhoneE164: '+6281234567890',
+            text: "Izin Bapak/Ibu, mohon pilih lokasi penjemputannya ya.\n\n1. SKPD\n2. Simpang D",
+            messageType: 'interactive',
+            providerPayload: [
+                'interactive' => [
+                    'type' => 'list',
+                    'body' => ['text' => 'Pilih lokasi'],
+                    'action' => [
+                        'button' => 'Pilih',
+                        'sections' => [[
+                            'title' => 'Lokasi',
+                            'rows' => [
+                                ['id' => 'pickup_location:skpd', 'title' => 'SKPD'],
+                            ],
+                        ]],
+                    ],
+                ],
+            ],
+            meta: [
+                'disable_interactive_text_fallback' => true,
+            ],
+        );
+
+        $this->assertSame('failed', $result['status']);
+        $this->assertArrayNotHasKey('fallback_used', $result);
+        $this->assertSame('interactive', $requests[0]['type'] ?? null);
+        $this->assertCount(1, $requests);
+    }
+
     public function test_it_falls_back_to_template_when_24_hour_window_is_closed(): void
     {
         config()->set('chatbot.whatsapp.enabled', true);
