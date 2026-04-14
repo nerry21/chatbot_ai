@@ -70,16 +70,15 @@ class TravelMessageRouterService
 
         if ($text === '') {
             return $this->buildResult(
-                replyText: $this->faqMatcherService->buildFallbackCustomerMessage(),
-                intent: 'empty_message',
+                replyText: '',
+                intent: 'defer_to_llm',
                 state: $state,
                 actions: [],
-                meta: ['reason' => 'empty_text'],
+                meta: ['defer_to_llm' => true, 'reason' => 'empty_text'],
             );
         }
 
-        // 1. Pure greeting — ALWAYS reset and show service menu, regardless of current state.
-        //    If customer sends "Hallo selamat pagi" they want to start fresh.
+        // ─── 1. Pure greeting → reset and show service menu ───────────────
         if ($this->isGreetingOnly($text)) {
             $state['status']               = 'idle';
             $state['current_step']         = null;
@@ -90,91 +89,46 @@ class TravelMessageRouterService
             return $this->handleGreetingOnly($text, $state, $now);
         }
 
-        // 1b. Acknowledge/thank you in ANY status — respond gracefully
-        if ($this->isThankYouOrAcknowledge($text)) {
-            return $this->buildResult(
-                replyText: '🙏',
-                intent: 'acknowledge',
-                state: $state,
-                actions: [['type' => 'save_state']],
-                meta: ['step' => 'acknowledge'],
-            );
-        }
-
-        // 2. Even during booking, if customer clearly asks about fare, answer it first
-        if ($this->looksLikeFareQuestion($text)) {
-            $fareResponse = $this->tryHandleFareQuestion($text, $state);
-            if ($fareResponse !== null) {
-                return $fareResponse;
-            }
-        }
-
-        // 2b. Schedule/jadwal question takes priority over booking start
-        //     "ingin berangkat subuh apakah ada jadwal?" is a question, not a booking request
-        if ($this->looksLikeScheduleOrInfoQuestion($text)) {
-            return $this->handleSimpleScheduleQuestion($text, $state);
-        }
-
-        // 2c. Any other question (seat availability, general inquiry) during booking or idle
-        //     → defer to LLM for natural response instead of forcing booking flow
-        if ($this->looksLikeGeneralQuestion($text)) {
-            return $this->buildResult(
-                replyText: '',
-                intent: 'defer_to_llm',
-                state: $state,
-                actions: [],
-                meta: ['defer_to_llm' => true, 'original_text' => $text, 'reason' => 'general_question_detected'],
-            );
-        }
-
-        // 3. New booking request while already in booking → reset and start fresh.
-        if ($state['status'] === 'booking' && $this->isBookingStartMessage($text)) {
-            return $this->handleBookingStartWithGreeting($text, $state, $now);
-        }
-
-        // 4. Booking continuation
+        // ─── 2. BOOKING FLOW (rule-based ketat) ───────────────────────────
+        //    Hanya aktif saat status = 'booking'.
+        //    Semua input selama booking diproses oleh state machine.
         if ($state['status'] === 'booking') {
+            // Jika customer memulai booking baru → reset
+            if ($this->isBookingStartMessage($text)) {
+                return $this->handleBookingStartWithGreeting($text, $state, $now);
+            }
+
             return $this->handleBookingFlow($text, $phone, $state, $now);
         }
 
-        // 5. Schedule change continuation
+        // ─── 3. SCHEDULE CHANGE FLOW (rule-based ketat) ───────────────────
         if ($state['status'] === 'schedule_change') {
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
         }
 
-        // 6. Dropping / Rental / Paket → forward to admin
-        if ($this->isDroppingOrRentalOrPaketRequest($text)) {
-            return $this->handleNonRegularService($phone, $state, $text);
-        }
-
-        // 7. Booking start trigger (reguler / booking / pesan / boking / pemesanan)
-        if ($this->isBookingStartMessage($text)) {
+        // ─── 4. BOOKING START TRIGGER ─────────────────────────────────────
+        //    Hanya jika pesan jelas ingin booking (bukan pertanyaan)
+        if ($this->isBookingStartMessage($text) && ! $this->looksLikeQuestion($text)) {
             return $this->handleBookingStartWithGreeting($text, $state, $now);
         }
 
-        // 8. Schedule change start trigger
+        // ─── 5. SCHEDULE CHANGE START TRIGGER ─────────────────────────────
         if ($this->isScheduleChangeMessage($text)) {
             return $this->handleScheduleChangeStart($text, $phone, $state, $now);
         }
 
-        // 9. Offer repeat booking / schedule change after a completed booking
-        if ($this->shouldOfferRepeatBookingOrScheduleChange($state, $text)) {
-            return $this->handleRepeatBookingOrScheduleChangeQuestion($state);
+        // ─── 6. Dropping / Rental / Paket → forward to admin ─────────────
+        if ($this->isDroppingOrRentalOrPaketRequest($text)) {
+            return $this->handleNonRegularService($phone, $state, $text);
         }
 
-        // 10. Knowledge base / FAQ
-        $faqMatch = $this->faqMatcherService->match($text);
-        if ($faqMatch !== null && $faqMatch['score'] >= TravelFaqMatcherService::FALLBACK_SCORE_THRESHOLD) {
-            return $this->buildResult(
-                replyText: $faqMatch['answer'],
-                intent: 'faq_match',
-                state: $state,
-                actions: [['type' => 'save_state']],
-                meta: ['faq_title' => $faqMatch['title'], 'faq_score' => $faqMatch['score']],
-            );
-        }
-
-        // 12. Defer to LLM+CRM pipeline for natural conversation
+        // ─── 7. SEMUA YANG LAIN → LLM+CRM ────────────────────────────────
+        //    LLM akan menjawab berdasarkan:
+        //    - Knowledge base (jadwal, harga, seat, rute, dll)
+        //    - CRM context (riwayat customer)
+        //    - Official facts (fare rules, departure slots)
+        //    - Conversation summary
+        //    LLM tidak boleh mengarang di luar fakta yang diberikan.
         return $this->buildResult(
             replyText: '',
             intent: 'defer_to_llm',
@@ -1594,6 +1548,25 @@ class TravelMessageRouterService
         ];
 
         return in_array($normalized, $closeWords, true);
+    }
+
+    private function looksLikeQuestion(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        // Check for question words
+        foreach (['apakah', 'ada gak', 'ada nggak', 'ada tidak', 'berapa', 'kapan', 'gimana', 'bagaimana', 'dimana', 'apa saja', 'bisa gak', 'bisa tidak'] as $q) {
+            if (str_contains($normalized, $q)) {
+                return true;
+            }
+        }
+
+        // Check for question mark
+        if (str_ends_with(trim($text), '?')) {
+            return true;
+        }
+
+        return false;
     }
 
     private function isGreetingOnly(string $text): bool
