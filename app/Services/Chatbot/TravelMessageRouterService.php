@@ -274,6 +274,8 @@ class TravelMessageRouterService
             meta: [
                 'booking_started'  => true,
                 'step'             => 'ask_passenger_count',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPassengerCountInteractiveList(),
             ],
         );
     }
@@ -319,6 +321,8 @@ class TravelMessageRouterService
             meta: [
                 'booking_started'  => true,
                 'step'             => 'ask_passenger_count',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPassengerCountInteractiveList(),
             ],
         );
     }
@@ -352,11 +356,15 @@ class TravelMessageRouterService
 
         if ($count === null) {
             return $this->buildResult(
-                replyText: 'Izin Bapak/Ibu, mohon dibantu isi jumlah penumpangnya terlebih dahulu.',
+                replyText: 'Izin Bapak/Ibu, mohon pilih jumlah penumpangnya.',
                 intent: 'passenger_count',
                 state: $state,
                 actions: [],
-                meta: ['step' => 'ask_passenger_count'],
+                meta: [
+                    'step' => 'ask_passenger_count',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildPassengerCountInteractiveList(),
+                ],
             );
         }
 
@@ -1518,6 +1526,13 @@ class TravelMessageRouterService
 
     private function extractPassengerCount(string $text): ?int
     {
+        $trimmed = trim($text);
+
+        // Handle interactive selection: "passenger_count_2"
+        if (preg_match('/^passenger_count_(\d+)$/i', $trimmed, $m)) {
+            return (int) $m[1];
+        }
+
         if (preg_match('/\b([1-9][0-9]?)\b/u', $text, $matches)) {
             return (int) $matches[1];
         }
@@ -1750,6 +1765,33 @@ class TravelMessageRouterService
             'sections' => [
                 [
                     'title' => 'Pilihan Jam',
+                    'rows'  => $rows,
+                ],
+            ],
+        ];
+    }
+
+    private function buildPassengerCountInteractiveList(): array
+    {
+        $rows = [];
+
+        for ($i = 1; $i <= 6; $i++) {
+            $desc = $i <= 5 ? "{$i} orang penumpang" : "{$i} orang (perlu konfirmasi admin)";
+            $rows[] = [
+                'id'          => 'passenger_count_'.$i,
+                'title'       => $i.' Orang',
+                'description' => $desc,
+            ];
+        }
+
+        return [
+            'button'   => 'Pilih Jumlah',
+            'header'   => 'Jumlah Penumpang',
+            'body'     => 'Silakan pilih jumlah penumpang untuk keberangkatan ini.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [
+                [
+                    'title' => 'Jumlah Penumpang',
                     'rows'  => $rows,
                 ],
             ],

@@ -166,67 +166,15 @@ class TravelWhatsAppPipelineService
      */
     private function isTravelRelated(string $text, array $state): bool
     {
-        $status = (string) ($state['status'] ?? 'idle');
-        $currentStep = (string) ($state['current_step'] ?? '');
-
-        if (in_array($status, ['booking', 'schedule_change', 'booking_confirmed'], true)) {
-            return true;
-        }
-
-        if ($currentStep !== '') {
-            return true;
-        }
-
-        $normalized = mb_strtolower(trim($text), 'UTF-8');
-
-        $keywords = [
-            'travel',
-            'booking',
-            'boking',
-            'bookin',
-            'reguler',
-            'dropping',
-            'rental',
-            'paket',
-            'pesan',
-            'pemesanan',
-            'mau pesan',
-            'reservasi',
-            'tiket',
-            'order',
-            'jadwal',
-            'keberangkatan',
-            'berangkat',
-            'jam 5',
-            'jam 7',
-            'jam 9',
-            'jam 13',
-            'jam 16',
-            'jam 19',
-            'harga',
-            'ongkos',
-            'tarif',
-            'seat',
-            'kursi',
-            'jemput',
-            'antar',
-            'tujuan',
-            'pickup',
-            'dropoff',
-            'ubah jadwal',
-            'ganti jadwal',
-            'pekanbaru',
-            'ujung batu',
-            'pasir pengaraian',
-            'kabun',
-        ];
-
-        foreach ($keywords as $keyword) {
-            if (str_contains($normalized, $keyword)) {
-                return true;
-            }
-        }
-
-        return false;
+        // ALL WhatsApp messages are handled by the Travel Pipeline.
+        // The TravelMessageRouterService decides what to do with each message:
+        // - Greetings → show service menu
+        // - Booking keywords → start booking flow
+        // - Dropping/Rental/Paket → forward to admin
+        // - Unknown → escalate to admin
+        //
+        // This prevents the LLM pipeline from running in parallel and
+        // sending duplicate/conflicting messages.
+        return true;
     }
 }

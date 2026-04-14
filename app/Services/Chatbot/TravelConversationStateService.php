@@ -402,6 +402,11 @@ class TravelConversationStateService
             return true;
         }
 
+        // Reset when greeting is sent during active booking/schedule_change.
+        if (in_array($status, ['booking', 'schedule_change'], true) && $isShortFreshOpen) {
+            return true;
+        }
+
         // Reset completed booking immediately when greeting is sent.
         if ($status === 'booking_confirmed' && $isShortFreshOpen) {
             return true;
