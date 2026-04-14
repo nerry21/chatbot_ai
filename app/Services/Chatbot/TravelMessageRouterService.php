@@ -1832,24 +1832,36 @@ class TravelMessageRouterService
 
     private function buildPickupPointInteractiveList(): array
     {
-        $rows = [];
+        $allLocations = $this->fareService->getAllLocations();
 
-        foreach ($this->fareService->getAllLocations() as $location) {
-            $rows[] = [
-                'id'          => 'pickup_location:'.$this->normalizeSelectionValue($location),
-                'title'       => mb_substr((string) $location, 0, 24),
-                'description' => 'Titik jemput',
-            ];
-        }
+        // Section 1: Kec. Rambah Hilir, Rambah dan Rambah Samo (first 9)
+        $section1Locations = array_slice($allLocations, 0, 9);
+        // Section 2: Kec. Ujung Batu, Kec. Tandun (next 2)
+        $section2Locations = array_slice($allLocations, 9, 2);
+        // Section 3: Kab. Kampar dan Kota Pekanbaru (remaining)
+        $section3Locations = array_slice($allLocations, 11);
 
-        // WhatsApp API limit: max 10 rows per section
+        $buildRows = function (array $locations, string $desc) {
+            $rows = [];
+            foreach ($locations as $location) {
+                $rows[] = [
+                    'id'          => 'pickup_location:'.$this->normalizeSelectionValue($location),
+                    'title'       => mb_substr((string) $location, 0, 24),
+                    'description' => $desc,
+                ];
+            }
+            return $rows;
+        };
+
         $sections = [];
-        $chunks = array_chunk($rows, 10);
-        foreach ($chunks as $index => $chunk) {
-            $sections[] = [
-                'title' => $index === 0 ? 'Lokasi Jemput' : 'Lokasi Jemput (lanjutan)',
-                'rows'  => $chunk,
-            ];
+        if ($section1Locations !== []) {
+            $sections[] = ['title' => 'Kec. Rambah Hilir, Rambah, Rambah Samo', 'rows' => $buildRows($section1Locations, 'Titik jemput')];
+        }
+        if ($section2Locations !== []) {
+            $sections[] = ['title' => 'Kec. Ujung Batu, Kec. Tandun', 'rows' => $buildRows($section2Locations, 'Titik jemput')];
+        }
+        if ($section3Locations !== []) {
+            $sections[] = ['title' => 'Kab. Kampar & Kota Pekanbaru', 'rows' => $buildRows($section3Locations, 'Titik jemput')];
         }
 
         return [
@@ -1863,24 +1875,36 @@ class TravelMessageRouterService
 
     private function buildDropoffPointInteractiveList(): array
     {
-        $rows = [];
+        $allLocations = $this->fareService->getAllLocations();
 
-        foreach ($this->fareService->getAllLocations() as $location) {
-            $rows[] = [
-                'id'          => 'dropoff_location:'.$this->normalizeSelectionValue($location),
-                'title'       => mb_substr((string) $location, 0, 24),
-                'description' => 'Tujuan antar',
-            ];
-        }
+        // Section 1: Kec. Rambah Hilir, Rambah dan Rambah Samo (first 9)
+        $section1Locations = array_slice($allLocations, 0, 9);
+        // Section 2: Kec. Ujung Batu, Kec. Tandun (next 2)
+        $section2Locations = array_slice($allLocations, 9, 2);
+        // Section 3: Kab. Kampar dan Kota Pekanbaru (remaining)
+        $section3Locations = array_slice($allLocations, 11);
 
-        // WhatsApp API limit: max 10 rows per section
+        $buildRows = function (array $locations, string $desc) {
+            $rows = [];
+            foreach ($locations as $location) {
+                $rows[] = [
+                    'id'          => 'dropoff_location:'.$this->normalizeSelectionValue($location),
+                    'title'       => mb_substr((string) $location, 0, 24),
+                    'description' => $desc,
+                ];
+            }
+            return $rows;
+        };
+
         $sections = [];
-        $chunks = array_chunk($rows, 10);
-        foreach ($chunks as $index => $chunk) {
-            $sections[] = [
-                'title' => $index === 0 ? 'Lokasi Tujuan' : 'Lokasi Tujuan (lanjutan)',
-                'rows'  => $chunk,
-            ];
+        if ($section1Locations !== []) {
+            $sections[] = ['title' => 'Kec. Rambah Hilir, Rambah, Rambah Samo', 'rows' => $buildRows($section1Locations, 'Tujuan antar')];
+        }
+        if ($section2Locations !== []) {
+            $sections[] = ['title' => 'Kec. Ujung Batu, Kec. Tandun', 'rows' => $buildRows($section2Locations, 'Tujuan antar')];
+        }
+        if ($section3Locations !== []) {
+            $sections[] = ['title' => 'Kab. Kampar & Kota Pekanbaru', 'rows' => $buildRows($section3Locations, 'Tujuan antar')];
         }
 
         return [
