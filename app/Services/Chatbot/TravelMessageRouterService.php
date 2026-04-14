@@ -95,6 +95,14 @@ class TravelMessageRouterService
             return $this->handleBookingStartWithGreeting($text, $state, $now);
         }
 
+        // 2b. Even during booking, if customer clearly asks about fare, answer it first
+        if ($state['status'] === 'booking' && $this->looksLikeFareQuestion($text)) {
+            $fareResponse = $this->tryHandleFareQuestion($text, $state);
+            if ($fareResponse !== null) {
+                return $fareResponse;
+            }
+        }
+
         // 3. Booking continuation
         if ($state['status'] === 'booking') {
             return $this->handleBookingFlow($text, $phone, $state, $now);
@@ -1339,6 +1347,30 @@ class TravelMessageRouterService
         [$origin, $destination] = $this->extractOriginDestination($text);
 
         if ($origin === null || $destination === null) {
+            // If only 1 location found, try to answer with available routes
+            $singleLocation = $this->extractLocation($text);
+            if ($singleLocation !== null && $this->looksLikeFareQuestion($text)) {
+                $allLocations = $this->fareService->getAllLocations();
+                $routes = [];
+                foreach ($allLocations as $loc) {
+                    if ($loc === $singleLocation) continue;
+                    $fare = $this->fareService->findFare($singleLocation, $loc);
+                    if ($fare !== null) {
+                        $routes[] = '• '.$singleLocation.' ↔ '.$loc.': '.$fare['formatted_price'];
+                    }
+                }
+                if ($routes !== []) {
+                    $replyText = 'Izin Bapak/Ibu, berikut daftar ongkos dari/ke '.$singleLocation.":\n\n".implode("\n", $routes);
+                    $replyText .= "\n\nJika ingin lanjut booking, silakan kabari ya 🙏";
+                    return $this->buildResult(
+                        replyText: $replyText,
+                        intent: 'ask_fare',
+                        state: $state,
+                        actions: [['type' => 'save_state']],
+                        meta: ['location' => $singleLocation, 'fare_list' => true],
+                    );
+                }
+            }
             return null;
         }
 
@@ -1348,8 +1380,20 @@ class TravelMessageRouterService
             return null;
         }
 
+        // Add natural greeting if message contains greeting
+        $prefix = '';
+        $normalized = $this->normalizeText($text);
+        foreach (['halo', 'hallo', 'hai', 'hi', 'hello', 'assalamualaikum', 'min', 'kak', 'bang', 'pak', 'bu'] as $greeting) {
+            if (str_contains($normalized, $greeting)) {
+                $prefix = '';
+                break;
+            }
+        }
+
+        $suffix = "\n\nJika ingin lanjut booking, silakan kabari ya 🙏";
+
         return $this->buildResult(
-            replyText: $fareText,
+            replyText: $fareText.$suffix,
             intent: 'ask_fare',
             state: $state,
             actions: [['type' => 'save_state']],
@@ -1672,22 +1716,18 @@ class TravelMessageRouterService
     {
         $slot = $this->bookingRuleService->findDepartureTime($text);
 
-        $reply = 'Untuk jadwal keberangkatan travel, tersedia pilihan berikut:'
-            . "\n\n"
-            . $this->buildDepartureMenuText();
-
         if ($slot !== null) {
             $slotLabel = (string) ($slot['label'] ?? 'Jadwal');
             $slotTime  = substr((string) ($slot['time'] ?? ''), 0, 5);
 
-            $reply = "Izin Bapak/Ibu, untuk jam {$slotTime} WIB tersedia pada jadwal {$slotLabel}."
-                . "\n\n"
-                . 'Berikut pilihan jadwal yang tersedia:'
-                . "\n\n"
+            $reply = "Ada Bapak/Ibu, untuk jam {$slotTime} WIB tersedia pada jadwal {$slotLabel} 🙏"
+                . "\n\nJadwal keberangkatan yang tersedia setiap hari:\n"
                 . $this->buildDepartureMenuText()
-                . "\n\nJika ingin, saya bisa bantu lanjut bookingnya.";
+                . "\n\nKalau mau langsung booking, tinggal kabari saja ya 🙏";
         } else {
-            $reply .= "\n\nJika ingin, saya bisa bantu cek dan lanjutkan bookingnya.";
+            $reply = "Izin Bapak/Ibu, berikut jadwal keberangkatan yang tersedia setiap hari:\n\n"
+                . $this->buildDepartureMenuText()
+                . "\n\nKalau mau langsung booking, tinggal kabari saja ya 🙏";
         }
 
         return $this->buildResult(

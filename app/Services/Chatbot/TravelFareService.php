@@ -72,7 +72,7 @@ class TravelFareService
         }
 
         return sprintf(
-            'Untuk rute %s ke %s, ongkosnya %s.',
+            'Izin Bapak/Ibu, untuk rute %s ke %s ongkosnya %s per orang ya 🙏',
             $fare['origin'],
             $fare['destination'],
             $fare['formatted_price'],
