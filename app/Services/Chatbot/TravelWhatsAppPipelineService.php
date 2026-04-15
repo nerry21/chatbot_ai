@@ -148,139 +148,28 @@ class TravelWhatsAppPipelineService
             $this->persistBookingRequest($conversation, $customer, $bookingData);
         }
 
-        // If router defers to LLM, handle it here directly using OpenAI
+        // If router defers to LLM, handle it here with direct OpenAI call
         if (($result['intent'] ?? null) === 'defer_to_llm') {
             $originalText = (string) ($result['router_result']['meta']['original_text'] ?? $text);
             $customerName = $customer->name ?? 'Bapak/Ibu';
 
-            try {
-                $knowledgeBase = app(\App\Services\Knowledge\KnowledgeBaseService::class);
+            $llmReply = $this->callLlmForNaturalResponse($originalText, $customerName, $conversation, $message);
 
-                // Fetch knowledge articles for context
-                $knowledgeHits = $knowledgeBase->search($originalText, ['max_in_prompt' => 3]);
-                $knowledgeContext = '';
-                foreach ($knowledgeHits as $hit) {
-                    $knowledgeContext .= "\n\n--- " . ($hit['title'] ?? '') . " ---\n" . ($hit['content'] ?? '');
-                }
-
-                // Build fare info
-                $fareRules = (array) config('chatbot.jet.fare_rules', []);
-                $fareLines = [];
-                foreach ($fareRules as $rule) {
-                    $aLocs = implode(', ', (array) ($rule['a'] ?? []));
-                    $bLocs = implode(', ', (array) ($rule['b'] ?? []));
-                    $amount = number_format((int) ($rule['amount'] ?? 0), 0, ',', '.');
-                    $fareLines[] = "• {$aLocs} ↔ {$bLocs}: Rp {$amount}";
-                }
-                $fareInfo = implode("\n", $fareLines);
-
-                // Build schedule info
-                $slots = (array) config('chatbot.jet.departure_slots', []);
-                $scheduleLines = [];
-                foreach ($slots as $slot) {
-                    $scheduleLines[] = "• " . ($slot['label'] ?? '') . " (" . ($slot['time'] ?? '') . " WIB)";
-                }
-                $scheduleInfo = implode("\n", $scheduleLines);
-
-                // Build locations info
-                $locations = (array) config('chatbot.jet.locations', []);
-                $locationLabels = array_map(fn($loc) => $loc['label'] ?? '', $locations);
-                $locationLabels = array_filter($locationLabels);
-                $locationInfo = implode(', ', $locationLabels);
-
-                $systemPrompt = "Kamu adalah admin travel WhatsApp bernama JET (Jaya Executive Transport).\n"
-                    . "Tugasmu: menjawab pertanyaan customer dengan natural, sopan, hangat, dan ringkas.\n"
-                    . "Gunakan bahasa Indonesia kasual-sopan seperti admin travel sungguhan.\n"
-                    . "Gunakan emoji secukupnya (🙏, 😊) agar terasa ramah.\n\n"
-                    . "ATURAN WAJIB:\n"
-                    . "1. Jawab HANYA berdasarkan FAKTA RESMI di bawah. DILARANG mengarang.\n"
-                    . "2. Jika fakta tidak cukup, bilang akan dikonsultasikan ke admin.\n"
-                    . "3. Maksimal 3-4 kalimat. Ringkas dan natural.\n"
-                    . "4. JANGAN memulai proses booking. Jika customer ingin booking, arahkan untuk bilang 'mau booking'.\n"
-                    . "5. Jika customer bilang terima kasih atau menutup percakapan, balas singkat dan ramah.\n"
-                    . "6. Jika customer minta dikonfirmasi/dikabari, cukup bilang siap.\n\n"
-                    . "=== JADWAL ===\n" . $scheduleInfo . "\n\n"
-                    . "=== TARIF (per orang) ===\n" . $fareInfo . "\n\n"
-                    . "=== LOKASI ===\n" . $locationInfo . "\n\n"
-                    . "=== SEAT ===\nCC, BS Kiri, BS Kanan, BS Tengah, Belakang Kiri, Belakang Kanan\n\n"
-                    . "=== KNOWLEDGE BASE ===" . $knowledgeContext;
-
-                $apiKey = (string) (config('openai.api_key') ?: env('OPENAI_API_KEY'));
-                $baseUrl = rtrim((string) (config('openai.base_url') ?: 'https://api.openai.com/v1'), '/');
-                $model = (string) config('chatbot.llm.models.grounded_response', config('chatbot.llm.models.reply', 'gpt-4o-mini'));
-
-                if ($apiKey === '') {
-                    Log::warning('[TravelWhatsAppPipeline] OpenAI API key not set');
-                    return false;
-                }
-
-                $response = \Illuminate\Support\Facades\Http::withToken($apiKey)
-                    ->timeout(30)
-                    ->post("{$baseUrl}/chat/completions", [
-                        'model' => $model,
-                        'messages' => [
-                            ['role' => 'system', 'content' => $systemPrompt],
-                            ['role' => 'user', 'content' => $originalText],
-                        ],
-                        'max_tokens' => 500,
-                        'temperature' => 0.7,
-                    ]);
-
-                if ($response->successful()) {
-                    $llmReply = trim((string) ($response->json('choices.0.message.content') ?? ''));
-
-                    // Clean JSON wrapper if present
-                    if ($llmReply !== '' && str_starts_with($llmReply, '{')) {
-                        $decoded = json_decode($llmReply, true);
-                        if (is_array($decoded) && isset($decoded['text'])) {
-                            $llmReply = trim((string) $decoded['text']);
-                        }
-                    }
-
-                    if ($llmReply !== '') {
-                        $deliveryMeta = [
-                            'source' => 'travel_whatsapp_pipeline_llm',
-                            'conversation_id' => $conversation->id,
-                        ];
-
-                        $delivery = $this->sender->sendText($phone, $llmReply, $deliveryMeta);
-
-                        $this->conversationManager->appendOutboundMessage(
-                            $conversation,
-                            $llmReply,
-                            [
-                                'source' => 'travel_whatsapp_pipeline_llm',
-                                'delivery' => $delivery,
-                                'meta' => ['intent' => 'llm_natural_response', 'model' => $model],
-                            ],
-                            'text'
-                        );
-
-                        return true;
-                    }
-                } else {
-                    Log::warning('[TravelWhatsAppPipeline] OpenAI API error', [
-                        'status' => $response->status(),
-                        'body' => $response->body(),
-                    ]);
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[TravelWhatsAppPipeline] LLM call failed', [
-                    'conversation_id' => $conversation->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-
-            // Fallback: if LLM fails, send a generic friendly message
-            $fallbackReply = 'Izin Bapak/Ibu, pertanyaannya sedang kami konsultasikan ke admin ya. Mohon tunggu sebentar 🙏';
-            $this->sender->sendText($phone, $fallbackReply, [
-                'source' => 'travel_whatsapp_pipeline_llm_fallback',
+            $deliveryMeta = [
+                'source' => 'travel_whatsapp_pipeline_llm',
                 'conversation_id' => $conversation->id,
-            ]);
+            ];
+
+            $delivery = $this->sender->sendText($phone, $llmReply, $deliveryMeta);
+
             $this->conversationManager->appendOutboundMessage(
                 $conversation,
-                $fallbackReply,
-                ['source' => 'travel_whatsapp_pipeline_llm_fallback', 'delivery' => ['status' => 'sent']],
+                $llmReply,
+                [
+                    'source' => 'travel_whatsapp_pipeline_llm',
+                    'delivery' => $delivery,
+                    'meta' => ['intent' => 'llm_natural_response'],
+                ],
                 'text'
             );
 
@@ -420,6 +309,135 @@ class TravelWhatsAppPipelineService
             'booking_status'   => BookingStatus::Confirmed,
             'confirmed_at'     => now(config('chatbot.jet.timezone', 'Asia/Jakarta')),
         ]);
+    }
+
+    private function callLlmForNaturalResponse(
+        string $customerMessage,
+        string $customerName,
+        Conversation $conversation,
+        ConversationMessage $message,
+    ): string {
+        $fallbackReply = 'Izin Bapak/Ibu, pertanyaannya sedang kami konsultasikan ke admin ya. Mohon tunggu sebentar 🙏';
+
+        try {
+            // Build knowledge context
+            $knowledgeContext = '';
+            try {
+                $knowledgeBase = app(\App\Services\Knowledge\KnowledgeBaseService::class);
+                $knowledgeHits = $knowledgeBase->search($customerMessage, ['max_in_prompt' => 3]);
+                foreach ($knowledgeHits as $hit) {
+                    $knowledgeContext .= "\n\n--- " . ($hit['title'] ?? '') . " ---\n" . ($hit['content'] ?? '');
+                }
+            } catch (\Throwable $e) {
+                Log::debug('[LLM] Knowledge base search failed: ' . $e->getMessage());
+            }
+
+            // Build fare info from config
+            $fareLines = [];
+            foreach ((array) config('chatbot.jet.fare_rules', []) as $rule) {
+                $a = implode(', ', (array) ($rule['a'] ?? []));
+                $b = implode(', ', (array) ($rule['b'] ?? []));
+                $amt = number_format((int) ($rule['amount'] ?? 0), 0, ',', '.');
+                $fareLines[] = "• {$a} ↔ {$b}: Rp {$amt}";
+            }
+
+            // Build schedule info from config
+            $scheduleLines = [];
+            foreach ((array) config('chatbot.jet.departure_slots', []) as $slot) {
+                $scheduleLines[] = "• " . ($slot['label'] ?? '') . " (" . ($slot['time'] ?? '') . " WIB)";
+            }
+
+            // Build locations
+            $locationLabels = array_filter(array_map(
+                fn($loc) => $loc['label'] ?? '',
+                (array) config('chatbot.jet.locations', [])
+            ));
+
+            $systemPrompt = "Kamu adalah admin travel WhatsApp bernama JET (Jaya Executive Transport).\n"
+                . "Jawab pertanyaan customer dengan natural, sopan, hangat, dan ringkas.\n"
+                . "Gunakan bahasa Indonesia kasual-sopan. Gunakan emoji 🙏 😊 secukupnya.\n\n"
+                . "ATURAN:\n"
+                . "1. Jawab HANYA dari FAKTA di bawah. DILARANG mengarang.\n"
+                . "2. Jika tidak tahu, bilang akan dikonsultasikan ke admin.\n"
+                . "3. Maksimal 3-4 kalimat.\n"
+                . "4. JANGAN memulai proses booking.\n"
+                . "5. Jika customer bilang terima kasih/oke → balas singkat ramah.\n\n"
+                . "=== JADWAL (setiap hari) ===\n" . implode("\n", $scheduleLines) . "\n\n"
+                . "=== TARIF (per orang) ===\n" . implode("\n", $fareLines) . "\n\n"
+                . "=== LOKASI ===\n" . implode(', ', $locationLabels) . "\n\n"
+                . "=== SEAT ===\nCC, BS Kiri, BS Kanan, BS Tengah, Belakang Kiri, Belakang Kanan\n"
+                . $knowledgeContext;
+
+            // Get API config
+            $apiKey = (string) (config('openai.api_key') ?: env('OPENAI_API_KEY', ''));
+            $baseUrl = rtrim((string) (config('openai.base_url', 'https://api.openai.com/v1')), '/');
+
+            if ($apiKey === '') {
+                Log::error('[LLM] OpenAI API key not configured');
+                return $fallbackReply;
+            }
+
+            // Use gpt-4o-mini as safe default — always works
+            $model = 'gpt-4o-mini';
+
+            Log::info('[LLM] Calling OpenAI', [
+                'conversation_id' => $conversation->id,
+                'model' => $model,
+                'message_preview' => mb_substr($customerMessage, 0, 80),
+            ]);
+
+            $response = \Illuminate\Support\Facades\Http::withToken($apiKey)
+                ->timeout(30)
+                ->post("{$baseUrl}/chat/completions", [
+                    'model' => $model,
+                    'messages' => [
+                        ['role' => 'system', 'content' => $systemPrompt],
+                        ['role' => 'user', 'content' => $customerMessage],
+                    ],
+                    'max_completion_tokens' => 500,
+                    'temperature' => 0.7,
+                ]);
+
+            if (! $response->successful()) {
+                Log::error('[LLM] OpenAI API error', [
+                    'status' => $response->status(),
+                    'error' => mb_substr($response->body(), 0, 500),
+                    'model' => $model,
+                ]);
+                return $fallbackReply;
+            }
+
+            $llmReply = trim((string) ($response->json('choices.0.message.content') ?? ''));
+
+            // Clean JSON wrapper if LLM returned JSON
+            if ($llmReply !== '' && (str_starts_with($llmReply, '{') || str_starts_with($llmReply, '```'))) {
+                $cleaned = preg_replace('/^```json\s*|\s*```$/s', '', $llmReply) ?? $llmReply;
+                $decoded = json_decode(trim($cleaned), true);
+                if (is_array($decoded) && isset($decoded['text'])) {
+                    $llmReply = trim((string) $decoded['text']);
+                }
+            }
+
+            if ($llmReply === '') {
+                Log::warning('[LLM] Empty reply from OpenAI');
+                return $fallbackReply;
+            }
+
+            Log::info('[LLM] Success', [
+                'conversation_id' => $conversation->id,
+                'reply_preview' => mb_substr($llmReply, 0, 100),
+            ]);
+
+            return $llmReply;
+
+        } catch (\Throwable $e) {
+            Log::error('[LLM] Exception', [
+                'conversation_id' => $conversation->id,
+                'error' => $e->getMessage(),
+                'trace' => mb_substr($e->getTraceAsString(), 0, 500),
+            ]);
+            return $fallbackReply;
+        }
     }
 
     /**
