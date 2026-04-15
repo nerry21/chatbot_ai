@@ -377,8 +377,9 @@ class TravelWhatsAppPipelineService
                 return $fallbackReply;
             }
 
-            // Use gpt-4o-mini as safe default — always works
-            $model = 'gpt-4o-mini';
+            // Use model from config, fallback to gpt-5.4-mini
+            $model = (string) config('chatbot.llm.models.grounded_response',
+                config('chatbot.llm.models.reply', 'gpt-5.4-mini'));
 
             Log::info('[LLM] Calling OpenAI', [
                 'conversation_id' => $conversation->id,
@@ -386,17 +387,25 @@ class TravelWhatsAppPipelineService
                 'message_preview' => mb_substr($customerMessage, 0, 80),
             ]);
 
+            // GPT-5.x uses max_completion_tokens + reasoning.effort (no temperature)
+            $requestBody = [
+                'model' => $model,
+                'messages' => [
+                    ['role' => 'system', 'content' => $systemPrompt],
+                    ['role' => 'user', 'content' => $customerMessage],
+                ],
+                'max_completion_tokens' => 500,
+            ];
+
+            if (str_starts_with($model, 'gpt-5')) {
+                $requestBody['reasoning_effort'] = 'low';
+            } else {
+                $requestBody['temperature'] = 0.7;
+            }
+
             $response = \Illuminate\Support\Facades\Http::withToken($apiKey)
-                ->timeout(30)
-                ->post("{$baseUrl}/chat/completions", [
-                    'model' => $model,
-                    'messages' => [
-                        ['role' => 'system', 'content' => $systemPrompt],
-                        ['role' => 'user', 'content' => $customerMessage],
-                    ],
-                    'max_completion_tokens' => 500,
-                    'temperature' => 0.7,
-                ]);
+                ->timeout(60)
+                ->post("{$baseUrl}/chat/completions", $requestBody);
 
             if (! $response->successful()) {
                 Log::error('[LLM] OpenAI API error', [
