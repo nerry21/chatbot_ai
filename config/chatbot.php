@@ -187,6 +187,11 @@ return [
         'timezone'      => 'Asia/Jakarta',
         'admin_phone'   => env('JET_ADMIN_PHONE', '6281267975175'),
 
+        // Daftar nomor admin yang menerima notifikasi booking review.
+        // Semua nomor di array ini akan menerima review reguler, dropping, rental, dan paket.
+        // Format: E.164 tanpa tanda + (contoh: 6281267975175)
+        'admin_phones'  => array_filter(array_map('trim', explode(',', env('JET_ADMIN_PHONES', '6281267975175,6282364210642')))),
+
         'passenger' => [
             'standard_max'        => 5,
             'manual_confirm_max'  => 6,

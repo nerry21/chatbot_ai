@@ -54,9 +54,9 @@ class HumanEscalationService
             'normal',
         );
 
-        $adminPhone = $this->adminPhone();
+        $allPhones = $this->allAdminPhones();
 
-        if ($adminPhone === '') {
+        if ($allPhones === []) {
             WaLog::warning('[HumanEscalation] escalation not forwarded because admin phone is missing', [
                 'conversation_id' => $conversation->id,
                 'customer_id' => $customer->id,
@@ -68,34 +68,23 @@ class HumanEscalationService
 
         $this->rememberQuestionEscalation($conversation, $customer, $reason, 'pending');
 
-        $result = $this->senderService->sendText(
-            $adminPhone,
-            $this->formatter->formatQuestionEscalation((string) ($customer->phone_e164 ?? '')),
-            [
-                'conversation_id' => $conversation->id,
-                'customer_id' => $customer->id,
-                'context' => 'question_escalation',
-            ],
-        );
-        $this->rememberQuestionEscalation($conversation, $customer, $reason, $result['status']);
-
-        WaLog::info('[HumanEscalation] escalation forwarded to admin', [
+        $escalationMessage = $this->formatter->formatQuestionEscalation((string) ($customer->phone_e164 ?? ''));
+        $allResults = $this->sendToAllAdmins($escalationMessage, [
             'conversation_id' => $conversation->id,
             'customer_id' => $customer->id,
-            'admin_phone' => WaLog::maskPhone($adminPhone),
-            'reason' => $reason,
-            'status' => $result['status'],
+            'context' => 'question_escalation',
         ]);
 
-        if ($result['status'] !== 'sent') {
-            WaLog::warning('[HumanEscalation] escalation forward did not send successfully', [
-                'conversation_id' => $conversation->id,
-                'customer_id' => $customer->id,
-                'admin_phone' => WaLog::maskPhone($adminPhone),
-                'status' => $result['status'],
-                'error' => $result['error'],
-            ]);
-        }
+        $anySuccess = collect($allResults)->contains('status', 'sent');
+        $this->rememberQuestionEscalation($conversation, $customer, $reason, $anySuccess ? 'sent' : 'failed');
+
+        WaLog::info('[HumanEscalation] escalation forwarded to admins', [
+            'conversation_id' => $conversation->id,
+            'customer_id' => $customer->id,
+            'admin_count' => count($allResults),
+            'reason' => $reason,
+            'results' => $allResults,
+        ]);
     }
 
     public function forwardBooking(Conversation $conversation, Customer $customer, BookingRequest $booking): void
@@ -122,6 +111,7 @@ class HumanEscalationService
         }
 
         $adminPhone = $this->adminPhone();
+        $allPhones = $this->allAdminPhones();
         $summary = $this->formatter->formatBookingForward(
             booking: $booking,
             customerPhone: $customer->phone_e164 ?? '-',
@@ -129,7 +119,7 @@ class HumanEscalationService
         $adminForwardHash = $this->adminForwardHash($booking, $summary);
 
         try {
-            if ($adminPhone === '') {
+            if ($allPhones === []) {
                 WaLog::warning('[HumanEscalation] booking not forwarded because admin phone is missing', [
                     'conversation_id' => $conversation->id,
                     'booking_id' => $booking->id,
@@ -142,7 +132,7 @@ class HumanEscalationService
                 WaLog::info('[HumanEscalation] skipped duplicate booking forward', [
                     'conversation_id' => $conversation->id,
                     'booking_id' => $booking->id,
-                    'admin_phone' => WaLog::maskPhone($adminPhone),
+                    'admin_phones' => count($allPhones),
                     'admin_forward_hash' => $adminForwardHash,
                 ]);
 
@@ -151,36 +141,23 @@ class HumanEscalationService
 
             $this->rememberBookingForward($conversation, $booking, $customer, 'pending', $adminForwardHash);
 
-            $result = $this->senderService->sendText(
-                $adminPhone,
-                $summary,
-                [
-                    'conversation_id' => $conversation->id,
-                    'customer_id' => $customer->id,
-                    'booking_id' => $booking->id,
-                    'context' => 'booking_forward',
-                ],
-            );
-            $this->rememberBookingForward($conversation, $booking, $customer, $result['status'], $adminForwardHash);
-
-            WaLog::info('[HumanEscalation] booking forwarded to admin', [
+            $allResults = $this->sendToAllAdmins($summary, [
                 'conversation_id' => $conversation->id,
+                'customer_id' => $customer->id,
                 'booking_id' => $booking->id,
-                'admin_phone' => WaLog::maskPhone($adminPhone),
-                'status' => $result['status'],
-                'admin_forward_hash' => $adminForwardHash,
+                'context' => 'booking_forward',
             ]);
 
-            if ($result['status'] !== 'sent') {
-                WaLog::warning('[HumanEscalation] booking forward did not send successfully', [
-                    'conversation_id' => $conversation->id,
-                    'booking_id' => $booking->id,
-                    'admin_phone' => WaLog::maskPhone($adminPhone),
-                    'status' => $result['status'],
-                    'error' => $result['error'],
-                    'admin_forward_hash' => $adminForwardHash,
-                ]);
-            }
+            $anySuccess = collect($allResults)->contains('status', 'sent');
+            $this->rememberBookingForward($conversation, $booking, $customer, $anySuccess ? 'sent' : 'failed', $adminForwardHash);
+
+            WaLog::info('[HumanEscalation] booking forwarded to admins', [
+                'conversation_id' => $conversation->id,
+                'booking_id' => $booking->id,
+                'admin_count' => count($allResults),
+                'results' => $allResults,
+                'admin_forward_hash' => $adminForwardHash,
+            ]);
         } finally {
             rescue(static function () use ($bookingForwardLock): void {
                 $bookingForwardLock->release();
@@ -245,6 +222,44 @@ class HumanEscalationService
     private function adminPhone(): string
     {
         return trim((string) config('chatbot.jet.admin_phone', ''));
+    }
+
+    /**
+     * @return string[]
+     */
+    private function allAdminPhones(): array
+    {
+        $primary = $this->adminPhone();
+        $phones = array_filter(
+            (array) config('chatbot.jet.admin_phones', []),
+            static fn (string $phone): bool => trim($phone) !== '',
+        );
+
+        // Pastikan primary selalu ada di daftar
+        if ($primary !== '' && ! in_array($primary, $phones, true)) {
+            array_unshift($phones, $primary);
+        }
+
+        return array_values(array_unique($phones));
+    }
+
+    /**
+     * Kirim pesan ke semua nomor admin yang terdaftar.
+     *
+     * @return array<int, array{phone: string, status: string, error: string|null}>
+     */
+    private function sendToAllAdmins(string $message, array $meta = []): array
+    {
+        $results = [];
+        foreach ($this->allAdminPhones() as $phone) {
+            $result = $this->senderService->sendText($phone, $message, $meta);
+            $results[] = [
+                'phone'  => $phone,
+                'status' => $result['status'],
+                'error'  => $result['error'] ?? null,
+            ];
+        }
+        return $results;
     }
 
     private function syncEscalationState(Conversation $conversation, string $reason): void

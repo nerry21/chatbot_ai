@@ -235,13 +235,37 @@ class TravelChatbotOrchestratorService
             ]
         );
 
+        // Kirim juga ke semua nomor di admin_phones (selain admin_phone utama)
+        $extraPhones = array_filter(
+            (array) config('chatbot.jet.admin_phones', []),
+            static fn (string $phone): bool => $phone !== '' && $phone !== $adminPhone,
+        );
+
+        $extraResults = [];
+        foreach ($extraPhones as $extraPhone) {
+            $extraResults[] = $this->notifyAdmin(
+                adminPhone: $extraPhone,
+                message: $message,
+                conversation: $conversation,
+                handlers: $handlers,
+                context: [
+                    'intent'  => $incomingPayload['intent'] ?? null,
+                    'action'  => $action,
+                    'channel' => $incomingPayload['channel'] ?? 'whatsapp',
+                    'extra_admin' => true,
+                ]
+            );
+        }
+
         $this->stateService->markAdminNotified($conversation, $notificationKey, $now);
 
         return [
             'skipped'          => false,
             'notification_key' => $notificationKey,
             'admin_phone'      => $adminPhone,
+            'extra_phones'     => $extraPhones,
             'result'           => $result,
+            'extra_results'    => $extraResults,
         ];
     }
 
