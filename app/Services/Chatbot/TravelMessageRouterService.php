@@ -106,12 +106,22 @@ class TravelMessageRouterService
             return $this->handlePaketFlow($text, $phone, $state, $now);
         }
 
+        // ─── 2c. DROPPING FLOW (rule-based ketat) ────────────────────────
+        if ($state['status'] === 'dropping') {
+            return $this->handleDroppingFlow($text, $phone, $state, $now);
+        }
+
         // ─── 3. SCHEDULE CHANGE FLOW (rule-based ketat) ───────────────────
         if ($state['status'] === 'schedule_change') {
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
         }
 
-        // ─── 4. PAKET START TRIGGER ──────────────────────────────────────
+        // ─── 4. DROPPING START TRIGGER ────────────────────────────────────
+        if ($this->isDroppingStartMessage($text)) {
+            return $this->startDroppingFlow($state);
+        }
+
+        // ─── 4b. PAKET START TRIGGER ─────────────────────────────────────
         if ($this->isPaketStartMessage($text)) {
             return $this->startPaketFlow($state);
         }
@@ -173,7 +183,7 @@ class TravelMessageRouterService
     {
         $normalized = $this->normalizeText($text);
 
-        foreach (['dropping', 'rental', 'sewa mobil'] as $pattern) {
+        foreach (['rental', 'sewa mobil', 'service:rental'] as $pattern) {
             if (str_contains($normalized, $pattern)) {
                 return true;
             }
@@ -254,6 +264,11 @@ class TravelMessageRouterService
         // If user selected "Pengiriman Paket" → start paket flow
         if (str_contains($normalized, 'service:paket') || str_contains($normalized, 'pengiriman paket') || str_contains($normalized, 'kirim paket')) {
             return $this->startPaketFlow($state, $prefix);
+        }
+
+        // If user selected "Dropping" → start dropping flow
+        if (str_contains($normalized, 'service:dropping') || $normalized === 'dropping') {
+            return $this->startDroppingFlow($state, $prefix);
         }
 
         // Otherwise, show service menu first
@@ -1600,6 +1615,19 @@ class TravelMessageRouterService
         return in_array($normalized, $greetings, true);
     }
 
+    private function isDroppingStartMessage(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach (['service:dropping', 'dropping'] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function isPaketStartMessage(string $text): bool
     {
         $normalized = $this->normalizeText($text);
@@ -2675,6 +2703,7 @@ class TravelMessageRouterService
             'current_step'                => null,
             'booking_data'                => [],
             'paket_data'                  => [],
+            'dropping_data'               => [],
             'schedule_change_data'        => [],
             'last_admin_notification_key' => null,
             'last_completed_booking_at'   => null,
@@ -3247,6 +3276,299 @@ class TravelMessageRouterService
             'Ongkos/Biaya          : Akan diinfokan lebih lanjut oleh Admin',
             '',
             'Izin konfirmasi Bapak/Ibu, apakah data pengiriman ini sudah tepat?',
+            '',
+            '1. Benar',
+            '2. Ubah Data',
+            '',
+            'Pilih Benar jika datanya sudah sesuai, atau Ubah Data jika ingin mengisi ulang.',
+        ];
+
+        return implode("\n", $lines);
+    }
+
+    // ─── DROPPING FLOW ──────────────────────────────────────────────────────────
+
+    private function startDroppingFlow(array $state, string $prefix = ''): array
+    {
+        $state['status']       = 'dropping';
+        $state['current_step'] = 'dropping_ask_pickup_address';
+        $state['dropping_data'] = [
+            'pickup_address'     => null,
+            'dropoff_address'    => null,
+            'departure_date'     => null,
+            'departure_date_label' => null,
+            'departure_time'     => null,
+            'customer_name'      => null,
+            'customer_phone'     => null,
+        ];
+
+        return $this->buildResult(
+            replyText: $prefix."Baik, layanan *Dropping* (1 mobil langsung ke tujuan) 🙏\n\n"
+                ."📌 *Informasi Tarif Dropping:*\n"
+                ."Harga mulai dari *Rp 750.000*\n"
+                ."Harga sudah termasuk makan driver dan BBM.\n"
+                ."Ongkos/biaya final akan diinfokan lebih lanjut oleh Admin Utama.\n\n"
+                ."Silakan kirim *alamat lengkap penjemputan* (asal).",
+            intent: 'start_dropping',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'dropping_ask_pickup_address'],
+        );
+    }
+
+    private function handleDroppingFlow(string $text, string $phone, array $state, Carbon $now): array
+    {
+        $step = $state['current_step'] ?? 'dropping_ask_pickup_address';
+
+        return match ($step) {
+            'dropping_ask_pickup_address'  => $this->handleDroppingPickupAddressStep($text, $state),
+            'dropping_ask_dropoff_address' => $this->handleDroppingDropoffAddressStep($text, $state),
+            'dropping_ask_date'            => $this->handleDroppingDateStep($text, $state),
+            'dropping_ask_time'            => $this->handleDroppingTimeStep($text, $state),
+            'dropping_ask_name'            => $this->handleDroppingNameStep($text, $state),
+            'dropping_ask_phone'           => $this->handleDroppingPhoneStep($text, $state, $phone),
+            'dropping_ask_review'          => $this->handleDroppingReviewStep($text, $phone, $state),
+            default                        => $this->startDroppingFlow($state),
+        };
+    }
+
+    private function handleDroppingPickupAddressStep(string $text, array $state): array
+    {
+        $address = trim($text);
+        if ($address === '' || mb_strlen($address) < 5) {
+            return $this->buildResult(
+                replyText: "Mohon dibantu alamat lengkap penjemputan ya Bapak/Ibu.\nContoh: Jl. Sudirman No. 10, Pasir Pengaraian",
+                intent: 'dropping_pickup',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'dropping_ask_pickup_address'],
+            );
+        }
+
+        $state['dropping_data']['pickup_address'] = $address;
+        $state['current_step'] = 'dropping_ask_dropoff_address';
+
+        return $this->buildResult(
+            replyText: "Baik, alamat penjemputan: {$address}\n\nSekarang silakan kirim *alamat lengkap tujuan pengantaran*.",
+            intent: 'dropping_pickup',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'dropping_ask_dropoff_address'],
+        );
+    }
+
+    private function handleDroppingDropoffAddressStep(string $text, array $state): array
+    {
+        $address = trim($text);
+        if ($address === '' || mb_strlen($address) < 5) {
+            return $this->buildResult(
+                replyText: "Mohon dibantu alamat lengkap tujuan pengantaran ya.\nContoh: Jl. HR Soebrantas No. 5, Pekanbaru",
+                intent: 'dropping_dropoff',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'dropping_ask_dropoff_address'],
+            );
+        }
+
+        $state['dropping_data']['dropoff_address'] = $address;
+        $state['current_step'] = 'dropping_ask_date';
+
+        return $this->buildResult(
+            replyText: "Baik, tujuan: {$address}\n\nSilakan pilih tanggal keberangkatan.\nJika tanggal yang diinginkan tidak ada di daftar, silakan ketik langsung tanggalnya (contoh: 25 April 2026).",
+            intent: 'dropping_date',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'dropping_ask_date',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildDepartureDateInteractiveList(7),
+            ],
+        );
+    }
+
+    private function handleDroppingDateStep(string $text, array $state): array
+    {
+        $dateOption = $this->extractSelectedDepartureDateFromInteractive($text)
+            ?? $this->bookingRuleService->findDepartureDate($text);
+
+        // If not found from interactive or findDepartureDate, accept free text date
+        if ($dateOption === null) {
+            $trimmed = trim($text);
+            if (mb_strlen($trimmed) >= 4) {
+                // Accept as free text date
+                $state['dropping_data']['departure_date'] = $trimmed;
+                $state['dropping_data']['departure_date_label'] = $trimmed;
+                $state['current_step'] = 'dropping_ask_time';
+
+                return $this->buildResult(
+                    replyText: "Baik, tanggal keberangkatan: {$trimmed}\n\nSilakan kirim *jam keberangkatan* yang diinginkan.\nContoh: 08.00, 10.30, 14.00",
+                    intent: 'dropping_date',
+                    state: $state,
+                    actions: [['type' => 'save_state']],
+                    meta: ['step' => 'dropping_ask_time'],
+                );
+            }
+
+            return $this->buildResult(
+                replyText: "Mohon pilih tanggal keberangkatan atau ketik langsung tanggalnya.\nContoh: 25 April 2026",
+                intent: 'dropping_date',
+                state: $state,
+                actions: [],
+                meta: [
+                    'step'             => 'dropping_ask_date',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildDepartureDateInteractiveList(7),
+                ],
+            );
+        }
+
+        $state['dropping_data']['departure_date'] = $dateOption['value'] ?? ($dateOption['date'] ?? null);
+        $state['dropping_data']['departure_date_label'] = $dateOption['label'] ?? ($dateOption['title'] ?? null);
+        $state['current_step'] = 'dropping_ask_time';
+
+        return $this->buildResult(
+            replyText: "Baik, tanggal keberangkatan sudah dicatat.\n\nSilakan kirim *jam keberangkatan* yang diinginkan.\nContoh: 08.00, 10.30, 14.00",
+            intent: 'dropping_date',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'dropping_ask_time'],
+        );
+    }
+
+    private function handleDroppingTimeStep(string $text, array $state): array
+    {
+        $time = trim($text);
+        if ($time === '') {
+            return $this->buildResult(
+                replyText: "Mohon dibantu jam keberangkatan ya.\nContoh: 08.00, 10.30, 14.00",
+                intent: 'dropping_time',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'dropping_ask_time'],
+            );
+        }
+
+        $state['dropping_data']['departure_time'] = $time;
+        $state['current_step'] = 'dropping_ask_name';
+
+        return $this->buildResult(
+            replyText: "Baik, jam keberangkatan: {$time}\n\nSilakan kirim *nama lengkap pemesan*.",
+            intent: 'dropping_time',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'dropping_ask_name'],
+        );
+    }
+
+    private function handleDroppingNameStep(string $text, array $state): array
+    {
+        $name = trim($text);
+        if ($name === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nama lengkap pemesan ya.', intent: 'dropping_name', state: $state, actions: [], meta: ['step' => 'dropping_ask_name']);
+        }
+
+        $state['dropping_data']['customer_name'] = $name;
+        $state['current_step'] = 'dropping_ask_phone';
+
+        return $this->buildResult(
+            replyText: "Baik, nama pemesan: {$name}\n\nSilakan kirim *nomor HP* yang bisa dihubungi.",
+            intent: 'dropping_name',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'dropping_ask_phone'],
+        );
+    }
+
+    private function handleDroppingPhoneStep(string $text, array $state, string $phone): array
+    {
+        $normalized = $this->normalizeText($text);
+        $hp = ($normalized === 'sama') ? $phone : ($this->extractPhoneNumber($text) ?? trim($text));
+        if ($hp === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nomor HP yang bisa dihubungi ya.', intent: 'dropping_phone', state: $state, actions: [], meta: ['step' => 'dropping_ask_phone']);
+        }
+
+        $state['dropping_data']['customer_phone'] = $hp;
+        $state['current_step'] = 'dropping_ask_review';
+
+        $reviewText = $this->buildDroppingReviewText($state['dropping_data']);
+
+        return $this->buildResult(
+            replyText: $reviewText,
+            intent: 'dropping_review',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'dropping_ask_review'],
+        );
+    }
+
+    private function handleDroppingReviewStep(string $text, string $phone, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+
+        if (preg_match('/^(?:benar|betul|ya|iya|ok|oke|1|sudah benar|sudah)$/u', $normalized)) {
+            $state['status']       = 'idle';
+            $state['current_step'] = null;
+
+            $d = $state['dropping_data'] ?? [];
+            $adminMessage = "🚗 Pemesanan Dropping Baru\n\n"
+                ."Alamat jemput: ".($d['pickup_address'] ?? '-')."\n"
+                ."Alamat tujuan: ".($d['dropoff_address'] ?? '-')."\n"
+                ."Tanggal: ".($d['departure_date_label'] ?? $d['departure_date'] ?? '-')."\n"
+                ."Jam: ".($d['departure_time'] ?? '-')."\n\n"
+                ."Pemesan: ".($d['customer_name'] ?? '-')."\n"
+                ."No HP: ".($d['customer_phone'] ?? '-')."\n"
+                ."No Customer WA: {$phone}\n\n"
+                ."Seat: Semua (1 mobil penuh)\n"
+                ."Mohon dikonfirmasi ongkos/biaya dropping ya Bos.";
+
+            return $this->buildResult(
+                replyText: "Baik, data pemesanan dropping sudah lengkap dan telah kami terima 🙏😊\n\nAdmin Utama akan menghubungi Bapak/Ibu untuk konfirmasi ongkos/biaya dropping.\n\nTerima kasih telah menggunakan layanan JET 🙏😊",
+                intent: 'dropping_confirmed',
+                state: $state,
+                actions: [
+                    ['type' => 'save_state'],
+                    ['type' => 'notify_admin', 'channel' => 'main_admin', 'message' => $adminMessage],
+                ],
+                meta: ['step' => 'dropping_confirmed'],
+            );
+        }
+
+        if (preg_match('/^(?:ubah|ubah data|salah|batal|2)$/u', $normalized)) {
+            return $this->startDroppingFlow($state);
+        }
+
+        return $this->buildResult(
+            replyText: "Mohon pilih:\n1. *Benar* — jika data sudah sesuai\n2. *Ubah Data* — jika ingin mengisi ulang",
+            intent: 'dropping_review',
+            state: $state,
+            actions: [],
+            meta: ['step' => 'dropping_ask_review'],
+        );
+    }
+
+    private function buildDroppingReviewText(array $d): string
+    {
+        $dateDisplay = trim((string) ($d['departure_date_label'] ?? ''));
+        if ($dateDisplay === '') {
+            $dateDisplay = trim((string) ($d['departure_date'] ?? '-'));
+            if ($dateDisplay !== '-' && $dateDisplay !== '') {
+                $dateDisplay = $this->formatDepartureDateForReview($dateDisplay);
+            }
+        }
+
+        $lines = [
+            'Baik Bapak/Ibu, berikut review pemesanan dropping:',
+            '',
+            'Alamat penjemputan    : '.($d['pickup_address'] ?? '-'),
+            'Alamat tujuan         : '.($d['dropoff_address'] ?? '-'),
+            'Tanggal keberangkatan : '.$dateDisplay,
+            'Jam keberangkatan     : '.(($d['departure_time'] ?? '') !== '' ? $d['departure_time'] : '-'),
+            'Nama pemesan          : '.($d['customer_name'] ?? '-'),
+            'No HP                 : '.($d['customer_phone'] ?? '-'),
+            'Seat                  : Semua (1 mobil penuh)',
+            'Ongkos/Biaya          : Akan diinfokan lebih lanjut oleh Admin Utama',
+            '',
+            'Izin konfirmasi Bapak/Ibu, apakah data pemesanan ini sudah tepat?',
             '',
             '1. Benar',
             '2. Ubah Data',
