@@ -260,22 +260,82 @@ class TravelWhatsAppPipelineService
         array $interactivePayload,
     ): string {
         return match ((string) ($meta['step'] ?? '')) {
-            'ask_pickup_point' => $this->buildNumberedLocationFallbackText(
+            'ask_pickup_point', 'paket_ask_pickup' => $this->buildNumberedLocationFallbackText(
                 interactivePayload: $interactivePayload,
                 intro: 'Izin Bapak/Ibu, silakan pilih titik penjemputannya.',
                 listLabel: 'Pilihan lokasi:',
                 closing: 'Silakan balas dengan nomor yang sesuai dengan lokasi, sebagai contoh ketik 19 otomatis sama dengan Pekanbaru.',
             ),
-            'ask_dropoff_point' => $this->buildNumberedLocationFallbackText(
+            'ask_dropoff_point', 'paket_ask_dropoff' => $this->buildNumberedLocationFallbackText(
                 interactivePayload: $interactivePayload,
                 intro: 'Untuk pengantarannya ke mana, Bapak/Ibu? Silakan pilih lokasinya.',
                 listLabel: 'Pilihan tujuan:',
                 closing: 'Silakan balas dengan nomor yang sesuai dengan lokasi, sebagai contoh ketik 19 otomatis sama dengan Pekanbaru.',
             ),
+            'paket_ask_date' => $this->buildNumberedFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Silakan pilih tanggal pengiriman.',
+                listLabel: 'Pilihan tanggal:',
+                closing: 'Silakan balas dengan nomor yang sesuai.',
+            ),
+            'paket_ask_time' => $this->buildNumberedFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Silakan pilih jam keberangkatan.',
+                listLabel: 'Pilihan jam:',
+                closing: 'Silakan balas dengan nomor yang sesuai.',
+            ),
+            'paket_ask_size' => $this->buildNumberedFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Silakan pilih ukuran paket.',
+                listLabel: 'Pilihan ukuran:',
+                closing: 'Silakan balas dengan nomor atau ketik langsung (Kecil/Sedang/Besar).',
+            ),
+            'paket_ask_seat' => $this->buildNumberedFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Silakan pilih seat untuk paket berukuran besar.',
+                listLabel: 'Pilihan seat:',
+                closing: 'Silakan balas dengan nomor atau ketik langsung.',
+            ),
+            'paket_ask_type' => $this->buildNumberedFallbackText(
+                interactivePayload: $interactivePayload,
+                intro: 'Silakan pilih jenis paket yang dikirim.',
+                listLabel: 'Pilihan jenis:',
+                closing: 'Silakan balas dengan nomor atau ketik langsung.',
+            ),
             default => trim($replyText) !== ''
                 ? $replyText
                 : (string) ($interactivePayload['body'] ?? 'Silakan pilih salah satu.'),
         };
+    }
+
+    /**
+     * Generic numbered fallback for any interactive list (date, time, size, etc.)
+     */
+    private function buildNumberedFallbackText(
+        array $interactivePayload,
+        string $intro,
+        string $listLabel,
+        string $closing,
+    ): string {
+        $lines = [$intro, '', $listLabel];
+        $index = 1;
+
+        foreach ((array) ($interactivePayload['sections'] ?? []) as $section) {
+            foreach ((array) ($section['rows'] ?? []) as $row) {
+                $title = trim((string) ($row['title'] ?? ''));
+                if ($title === '') {
+                    continue;
+                }
+                $desc = trim((string) ($row['description'] ?? ''));
+                $lines[] = $desc !== '' ? $index.'. '.$title.' — '.$desc : $index.'. '.$title;
+                $index++;
+            }
+        }
+
+        $lines[] = '';
+        $lines[] = $closing;
+
+        return implode("\n", $lines);
     }
 
     /**
