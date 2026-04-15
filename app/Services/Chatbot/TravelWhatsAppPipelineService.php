@@ -130,12 +130,36 @@ class TravelWhatsAppPipelineService
                 },
 
                 'notify_admin' => function (string $adminPhone, string $adminMessage, array $context = []): array {
-                    if (trim($adminPhone) === '' || trim($adminMessage) === '') {
+                    if (trim($adminMessage) === '') {
                         return ['status' => 'skipped', 'reason' => 'empty_admin_payload'];
                     }
 
-                    return $this->sender->sendText($adminPhone, $adminMessage, [
-                        'source' => 'travel_whatsapp_pipeline_admin_notify',
+                    // Kumpulkan semua nomor admin (admin_phone + admin_phones)
+                    $allPhones = array_values(array_unique(array_filter(
+                        array_merge(
+                            [trim($adminPhone)],
+                            array_map('trim', (array) config('chatbot.jet.admin_phones', [])),
+                        ),
+                        static fn (string $p): bool => $p !== '',
+                    )));
+
+                    if ($allPhones === []) {
+                        return ['status' => 'skipped', 'reason' => 'no_admin_phones'];
+                    }
+
+                    $results = [];
+                    foreach ($allPhones as $phone) {
+                        $results[$phone] = $this->sender->sendText($phone, $adminMessage, [
+                            'source' => 'travel_whatsapp_pipeline_admin_notify',
+                        ]);
+                    }
+
+                    // Return status dari nomor utama
+                    $primaryResult = $results[$allPhones[0]] ?? ['status' => 'failed'];
+
+                    return array_merge($primaryResult, [
+                        'all_results' => $results,
+                        'phones_count' => count($allPhones),
                     ]);
                 },
             ]
