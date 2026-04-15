@@ -134,14 +134,19 @@ class TravelMessageRouterService
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
         }
 
-        // ─── 4. DROPPING START TRIGGER ────────────────────────────────────
-        if ($this->isDroppingStartMessage($text)) {
-            return $this->startDroppingFlow($state);
-        }
-
-        // ─── 4b. PAKET START TRIGGER ─────────────────────────────────────
-        if ($this->isPaketStartMessage($text)) {
-            return $this->startPaketFlow($state);
+        // ─── 4. SERVICE TRIGGER (from menu selection or free text) ──────
+        //    Menangkap semua pilihan layanan dari menu interaktif
+        //    DAN free text yang menyebut layanan tertentu → tampilkan menu
+        $serviceAction = $this->detectServiceTrigger($text);
+        if ($serviceAction !== null) {
+            return match ($serviceAction) {
+                'start_dropping' => $this->startDroppingFlow($state),
+                'start_paket'    => $this->startPaketFlow($state),
+                'start_rental'   => $this->startRentalFlow($state),
+                'start_reguler'  => $this->startRegularBooking($state),
+                'show_menu'      => $this->showServiceMenu($state),
+                default          => $this->showServiceMenu($state),
+            };
         }
 
         // ─── 5. BOOKING START TRIGGER ─────────────────────────────────────
@@ -1631,6 +1636,39 @@ class TravelMessageRouterService
         ];
 
         return in_array($normalized, $greetings, true);
+    }
+
+    /**
+     * Detect if user selected a service from interactive menu or typed a service name.
+     * Returns action string or null if not a service trigger.
+     */
+    private function detectServiceTrigger(string $text): ?string
+    {
+        $normalized = $this->normalizeText($text);
+
+        // === EXACT matches from interactive menu (service:xxx or exact title) ===
+        // These go DIRECTLY to the flow
+        if (str_contains($normalized, 'service:dropping') || $normalized === 'dropping') {
+            return 'start_dropping';
+        }
+        if (str_contains($normalized, 'service:paket') || $normalized === 'pengiriman paket') {
+            return 'start_paket';
+        }
+        if (str_contains($normalized, 'service:rental') || $normalized === 'rental') {
+            return 'start_rental';
+        }
+        if (str_contains($normalized, 'service:reguler') || $normalized === 'reguler') {
+            return 'start_reguler';
+        }
+
+        // === Free text mentions a service → show menu first ===
+        foreach (['kirim paket', 'pengiriman paket', 'mau paket', 'dropping', 'mau dropping', 'rental', 'sewa mobil', 'mau rental'] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return 'show_menu';
+            }
+        }
+
+        return null;
     }
 
     private function wantsToSwitchService(string $text): bool
