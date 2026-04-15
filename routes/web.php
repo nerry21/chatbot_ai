@@ -330,4 +330,56 @@ Route::prefix('debug')->name('debug.')->group(function (): void {
     
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TEMPORARY: Diagnosa & Test Kirim ke Admin
+// HAPUS SETELAH SELESAI TESTING!
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 1. Cek config: https://spesial.online/debug-admin-config
+Route::get('/debug-admin-config', function () {
+    return response()->json([
+        'admin_phone' => config('chatbot.jet.admin_phone'),
+        'admin_phones' => config('chatbot.jet.admin_phones'),
+        'whatsapp_enabled' => config('chatbot.whatsapp.enabled'),
+        'has_access_token' => !empty(config('chatbot.whatsapp.access_token')),
+        'has_phone_number_id' => !empty(config('chatbot.whatsapp.phone_number_id')),
+        'queue_connection' => config('queue.default'),
+        'env_JET_ADMIN_PHONE' => env('JET_ADMIN_PHONE', '(not set, using default)'),
+        'env_JET_ADMIN_PHONES' => env('JET_ADMIN_PHONES', '(not set, using default)'),
+        'env_QUEUE_CONNECTION' => env('QUEUE_CONNECTION', '(not set)'),
+        'config_cached' => file_exists(base_path('bootstrap/cache/config.php')),
+    ]);
+});
+
+// 2. Test kirim ke semua admin: https://spesial.online/test-send-admin
+Route::get('/test-send-admin', function () {
+    $sender = app(\App\Services\WhatsApp\WhatsAppSenderService::class);
+
+    if (!$sender->isEnabled()) {
+        return response()->json(['error' => 'WhatsApp sender is DISABLED. Check .env WHATSAPP_ENABLED, ACCESS_TOKEN, PHONE_NUMBER_ID'], 500);
+    }
+
+    $adminPhone = (string) config('chatbot.jet.admin_phone', '');
+    $adminPhones = (array) config('chatbot.jet.admin_phones', []);
+    $allPhones = array_values(array_unique(array_filter(
+        array_merge([$adminPhone], $adminPhones),
+        fn ($p) => trim($p) !== ''
+    )));
+
+    $results = [];
+    foreach ($allPhones as $phone) {
+        $result = $sender->sendText($phone, "✅ Test notifikasi admin dari JET Bot.\nNomor tujuan: {$phone}\nWaktu: " . now()->format('d/m/Y H:i:s'));
+        $results[] = [
+            'phone' => $phone,
+            'status' => $result['status'],
+            'error' => $result['error'] ?? null,
+        ];
+    }
+
+    return response()->json([
+        'all_phones' => $allPhones,
+        'results' => $results,
+    ]);
+});
+
 require __DIR__.'/auth.php';
