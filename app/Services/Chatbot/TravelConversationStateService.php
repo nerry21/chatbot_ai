@@ -77,11 +77,15 @@ class TravelConversationStateService
      */
     public function toRouterState(ChatbotConversationState $state): array
     {
+        // paket_data is stored inside booking_data when status=paket
+        $bookingData = $state->booking_data ?: [];
+        $paketData = $bookingData['_paket_data'] ?? [];
+
         return [
             'status'                      => $state->status ?: 'idle',
             'current_step'                => $state->current_step,
-            'booking_data'                => $state->booking_data ?: [],
-            'paket_data'                  => ($state->meta ?? [])['paket_data'] ?? [],
+            'booking_data'                => $bookingData,
+            'paket_data'                  => $paketData,
             'schedule_change_data'        => $state->schedule_change_data ?: [],
             'last_admin_notification_key' => $state->last_admin_notification_key,
             'last_completed_booking_at'   => $state->last_completed_booking_at?->toDateTimeString(),
@@ -106,21 +110,22 @@ class TravelConversationStateService
 
         $state->status                     = (string) ($newState['status'] ?? $state->status ?? 'idle');
         $state->current_step               = $newState['current_step'] ?? null;
-        $state->booking_data               = (array) ($newState['booking_data'] ?? $state->booking_data ?? []);
+
+        // Store paket_data inside booking_data column (no migration needed)
+        $bookingDataToSave = (array) ($newState['booking_data'] ?? $state->booking_data ?? []);
+        if (isset($newState['paket_data']) && is_array($newState['paket_data'])) {
+            $bookingDataToSave['_paket_data'] = $newState['paket_data'];
+        }
+        $state->booking_data               = $bookingDataToSave;
+
         $state->schedule_change_data       = (array) ($newState['schedule_change_data'] ?? $state->schedule_change_data ?? []);
         $state->last_admin_notification_key = $newState['last_admin_notification_key'] ?? $state->last_admin_notification_key;
         $state->last_intent                = $intent !== '' ? $intent : $state->last_intent;
         $state->last_bot_message_at        = $now;
 
-        // Store paket_data inside meta (no DB migration needed)
-        $existingMeta = $state->meta ?? [];
-        if (isset($newState['paket_data']) && is_array($newState['paket_data'])) {
-            $existingMeta['paket_data'] = $newState['paket_data'];
-        }
-
-        // Merge meta: existing + new_state.meta + result.meta (later keys win)
+        // Merge meta (without paket_data — it's in booking_data now)
         $state->meta = array_merge(
-            $existingMeta,
+            $state->meta ?? [],
             (array) ($newState['meta'] ?? []),
             (array) ($routerResult['meta'] ?? []),
         );

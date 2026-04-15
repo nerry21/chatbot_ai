@@ -3044,15 +3044,11 @@ class TravelMessageRouterService
         $state['paket_data']['package_seat'] = '-';
         $state['current_step'] = 'paket_ask_type';
         return $this->buildResult(
-            replyText: "Ukuran paket: *{$size}* (tidak memakan seat).\n\nSilakan pilih jenis paket yang dikirim.",
+            replyText: "Ukuran paket: *{$size}* (tidak memakan seat).\n\nSilakan ketik jenis paket yang dikirim.\nContoh: Dokumen, Makanan, Obat-obatan, Elektronik, Pakaian, dll.",
             intent: 'paket_size',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: [
-                'step'             => 'paket_ask_type',
-                'interactive_type' => 'list',
-                'interactive_list' => $this->buildPaketTypeInteractiveList(),
-            ],
+            meta: ['step' => 'paket_ask_type'],
         );
     }
 
@@ -3073,36 +3069,25 @@ class TravelMessageRouterService
         $state['current_step'] = 'paket_ask_type';
 
         return $this->buildResult(
-            replyText: "Seat untuk paket: *{$seat}*.\n\nSilakan pilih jenis paket yang dikirim.",
+            replyText: "Seat untuk paket: *{$seat}*.\n\nSilakan ketik jenis paket yang dikirim.\nContoh: Dokumen, Makanan, Obat-obatan, Elektronik, Pakaian, dll.",
             intent: 'paket_seat',
             state: $state,
             actions: [['type' => 'save_state']],
-            meta: [
-                'step'             => 'paket_ask_type',
-                'interactive_type' => 'list',
-                'interactive_list' => $this->buildPaketTypeInteractiveList(),
-            ],
+            meta: ['step' => 'paket_ask_type'],
         );
     }
 
     private function handlePaketTypeStep(string $text, array $state): array
     {
-        $normalized = $this->normalizeText($text);
-        $type = match (true) {
-            str_contains($normalized, 'dokumen'), str_contains($normalized, 'type:dokumen') => 'Dokumen',
-            str_contains($normalized, 'makanan'), str_contains($normalized, 'type:makanan') => 'Makanan',
-            str_contains($normalized, 'obat'), str_contains($normalized, 'type:obat') => 'Obat-obatan',
-            str_contains($normalized, 'lain'), str_contains($normalized, 'type:lainnya') => 'Lain-lain',
-            default => null,
-        };
+        $type = trim($text);
 
-        if ($type === null) {
+        if ($type === '') {
             return $this->buildResult(
-                replyText: 'Mohon pilih jenis paket: Dokumen, Makanan, Obat-obatan, atau Lain-lain.',
+                replyText: "Mohon ketik jenis paket yang dikirim.\nContoh: Dokumen, Makanan, Obat-obatan, Elektronik, Pakaian, dll.",
                 intent: 'paket_type',
                 state: $state,
                 actions: [],
-                meta: ['step' => 'paket_ask_type', 'interactive_type' => 'list', 'interactive_list' => $this->buildPaketTypeInteractiveList()],
+                meta: ['step' => 'paket_ask_type'],
             );
         }
 
