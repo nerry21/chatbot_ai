@@ -121,6 +121,14 @@ class TravelMessageRouterService
             return $this->handleDroppingFlow($text, $phone, $state, $now);
         }
 
+        // ─── 2d. RENTAL FLOW (rule-based ketat) ─────────────────────────
+        if ($state['status'] === 'rental') {
+            if ($this->wantsToSwitchService($text)) {
+                return $this->showServiceMenu($state);
+            }
+            return $this->handleRentalFlow($text, $phone, $state, $now);
+        }
+
         // ─── 3. SCHEDULE CHANGE FLOW (rule-based ketat) ───────────────────
         if ($state['status'] === 'schedule_change') {
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
@@ -147,12 +155,7 @@ class TravelMessageRouterService
             return $this->handleScheduleChangeStart($text, $phone, $state, $now);
         }
 
-        // ─── 6. Dropping / Rental / Paket → forward to admin ─────────────
-        if ($this->isDroppingOrRentalOrPaketRequest($text)) {
-            return $this->handleNonRegularService($phone, $state, $text);
-        }
-
-        // ─── 7. SEMUA YANG LAIN → LLM+CRM ────────────────────────────────
+        // ─── 6. SEMUA YANG LAIN → LLM+CRM ────────────────────────────────
         //    LLM akan menjawab berdasarkan:
         //    - Knowledge base (jadwal, harga, seat, rute, dll)
         //    - CRM context (riwayat customer)
@@ -279,6 +282,11 @@ class TravelMessageRouterService
         // If user selected "Dropping" → start dropping flow
         if (str_contains($normalized, 'service:dropping') || $normalized === 'dropping') {
             return $this->startDroppingFlow($state, $prefix);
+        }
+
+        // If user selected "Rental" → start rental flow
+        if (str_contains($normalized, 'service:rental') || $normalized === 'rental') {
+            return $this->startRentalFlow($state, $prefix);
         }
 
         // Otherwise, show service menu first
@@ -1648,11 +1656,12 @@ class TravelMessageRouterService
 
     private function showServiceMenu(array $state): array
     {
-        $state['status']       = 'idle';
-        $state['current_step'] = null;
-        $state['booking_data'] = [];
-        $state['paket_data']   = [];
+        $state['status']        = 'idle';
+        $state['current_step']  = null;
+        $state['booking_data']  = [];
+        $state['paket_data']    = [];
         $state['dropping_data'] = [];
+        $state['rental_data']   = [];
 
         return $this->buildResult(
             replyText: "Baik Bapak/Ibu, silakan pilih layanan yang diinginkan 🙏",
@@ -2756,6 +2765,7 @@ class TravelMessageRouterService
             'booking_data'                => [],
             'paket_data'                  => [],
             'dropping_data'               => [],
+            'rental_data'                 => [],
             'schedule_change_data'        => [],
             'last_admin_notification_key' => null,
             'last_completed_booking_at'   => null,
@@ -3626,6 +3636,231 @@ class TravelMessageRouterService
             '2. Ubah Data',
             '',
             'Pilih Benar jika datanya sudah sesuai, atau Ubah Data jika ingin mengisi ulang.',
+        ];
+
+        return implode("\n", $lines);
+    }
+
+    // ─── RENTAL FLOW ───────────────────────────────────────────────────────────
+
+    private function startRentalFlow(array $state, string $prefix = ''): array
+    {
+        $state['status']       = 'rental';
+        $state['current_step'] = 'rental_ask_pickup_address';
+        $state['rental_data']  = [
+            'pickup_address'     => null,
+            'destination'        => null,
+            'start_date'         => null,
+            'end_date'           => null,
+            'customer_name'      => null,
+            'customer_phone'     => null,
+        ];
+
+        return $this->buildResult(
+            replyText: $prefix."Baik, layanan *Rental Mobil* 🙏\n\n"
+                ."📌 *Informasi Tarif Rental:*\n"
+                ."Harga mulai dari *Rp 850.000* /hari\n"
+                ."BBM dan akomodasi driver (makan, minum, penginapan) ditanggung oleh penyewa.\n"
+                ."Ongkos/biaya final akan diinfokan lebih lanjut oleh Admin Utama.\n\n"
+                ."⚠️ JET belum tersedia mekanisme rental lepas kunci.\n\n"
+                ."Silakan kirim *alamat lengkap penjemputan*.",
+            intent: 'start_rental',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'rental_ask_pickup_address'],
+        );
+    }
+
+    private function handleRentalFlow(string $text, string $phone, array $state, Carbon $now): array
+    {
+        $step = $state['current_step'] ?? 'rental_ask_pickup_address';
+
+        return match ($step) {
+            'rental_ask_pickup_address' => $this->handleRentalPickupStep($text, $state),
+            'rental_ask_destination'    => $this->handleRentalDestinationStep($text, $state),
+            'rental_ask_start_date'     => $this->handleRentalStartDateStep($text, $state),
+            'rental_ask_end_date'       => $this->handleRentalEndDateStep($text, $state),
+            'rental_ask_name'           => $this->handleRentalNameStep($text, $state),
+            'rental_ask_phone'          => $this->handleRentalPhoneStep($text, $state, $phone),
+            'rental_ask_review'         => $this->handleRentalReviewStep($text, $phone, $state),
+            default                     => $this->startRentalFlow($state),
+        };
+    }
+
+    private function handleRentalPickupStep(string $text, array $state): array
+    {
+        $address = trim($text);
+        if ($address === '' || mb_strlen($address) < 5) {
+            return $this->buildResult(
+                replyText: "Mohon dibantu alamat lengkap penjemputan ya Bapak/Ibu.\nContoh: Jl. Sudirman No. 10, Pasir Pengaraian",
+                intent: 'rental_pickup', state: $state, actions: [], meta: ['step' => 'rental_ask_pickup_address'],
+            );
+        }
+
+        $state['rental_data']['pickup_address'] = $address;
+        $state['current_step'] = 'rental_ask_destination';
+
+        return $this->buildResult(
+            replyText: "Baik, alamat penjemputan: {$address}\n\nSilakan kirim *alamat/lokasi tujuan rental*.",
+            intent: 'rental_pickup', state: $state, actions: [['type' => 'save_state']], meta: ['step' => 'rental_ask_destination'],
+        );
+    }
+
+    private function handleRentalDestinationStep(string $text, array $state): array
+    {
+        $dest = trim($text);
+        if ($dest === '' || mb_strlen($dest) < 3) {
+            return $this->buildResult(
+                replyText: "Mohon dibantu tujuan rental ya.\nContoh: Pekanbaru, Bukittinggi, dll.",
+                intent: 'rental_dest', state: $state, actions: [], meta: ['step' => 'rental_ask_destination'],
+            );
+        }
+
+        $state['rental_data']['destination'] = $dest;
+        $state['current_step'] = 'rental_ask_start_date';
+
+        return $this->buildResult(
+            replyText: "Baik, tujuan: {$dest}\n\nSilakan kirim *tanggal mulai penyewaan*.\nContoh: 20 April 2026",
+            intent: 'rental_dest', state: $state, actions: [['type' => 'save_state']], meta: ['step' => 'rental_ask_start_date'],
+        );
+    }
+
+    private function handleRentalStartDateStep(string $text, array $state): array
+    {
+        $date = trim($text);
+        if ($date === '' || mb_strlen($date) < 4) {
+            return $this->buildResult(
+                replyText: "Mohon dibantu tanggal mulai penyewaan ya.\nContoh: 20 April 2026",
+                intent: 'rental_start', state: $state, actions: [], meta: ['step' => 'rental_ask_start_date'],
+            );
+        }
+
+        $state['rental_data']['start_date'] = $date;
+        $state['current_step'] = 'rental_ask_end_date';
+
+        return $this->buildResult(
+            replyText: "Baik, mulai tanggal: {$date}\n\nSilakan kirim *tanggal selesai rental*.\nContoh: 22 April 2026",
+            intent: 'rental_start', state: $state, actions: [['type' => 'save_state']], meta: ['step' => 'rental_ask_end_date'],
+        );
+    }
+
+    private function handleRentalEndDateStep(string $text, array $state): array
+    {
+        $date = trim($text);
+        if ($date === '' || mb_strlen($date) < 4) {
+            return $this->buildResult(
+                replyText: "Mohon dibantu tanggal selesai rental ya.\nContoh: 22 April 2026",
+                intent: 'rental_end', state: $state, actions: [], meta: ['step' => 'rental_ask_end_date'],
+            );
+        }
+
+        $state['rental_data']['end_date'] = $date;
+        $state['current_step'] = 'rental_ask_name';
+
+        return $this->buildResult(
+            replyText: "Baik, selesai tanggal: {$date}\n\nSilakan kirim *nama lengkap penyewa*.",
+            intent: 'rental_end', state: $state, actions: [['type' => 'save_state']], meta: ['step' => 'rental_ask_name'],
+        );
+    }
+
+    private function handleRentalNameStep(string $text, array $state): array
+    {
+        $name = trim($text);
+        if ($name === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nama lengkap penyewa ya.', intent: 'rental_name', state: $state, actions: [], meta: ['step' => 'rental_ask_name']);
+        }
+
+        $state['rental_data']['customer_name'] = $name;
+        $state['current_step'] = 'rental_ask_phone';
+
+        return $this->buildResult(
+            replyText: "Baik, nama penyewa: {$name}\n\nSilakan kirim *nomor HP* yang bisa dihubungi.",
+            intent: 'rental_name', state: $state, actions: [['type' => 'save_state']], meta: ['step' => 'rental_ask_phone'],
+        );
+    }
+
+    private function handleRentalPhoneStep(string $text, array $state, string $phone): array
+    {
+        $normalized = $this->normalizeText($text);
+        $hp = ($normalized === 'sama') ? $phone : ($this->extractPhoneNumber($text) ?? trim($text));
+        if ($hp === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nomor HP yang bisa dihubungi ya.', intent: 'rental_phone', state: $state, actions: [], meta: ['step' => 'rental_ask_phone']);
+        }
+
+        $state['rental_data']['customer_phone'] = $hp;
+        $state['current_step'] = 'rental_ask_review';
+
+        $reviewText = $this->buildRentalReviewText($state['rental_data']);
+
+        return $this->buildResult(
+            replyText: $reviewText, intent: 'rental_review', state: $state, actions: [['type' => 'save_state']], meta: ['step' => 'rental_ask_review'],
+        );
+    }
+
+    private function handleRentalReviewStep(string $text, string $phone, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+
+        if (preg_match('/^(?:benar|betul|ya|iya|ok|oke|1|sudah benar|sudah)$/u', $normalized)) {
+            $state['status']       = 'idle';
+            $state['current_step'] = null;
+
+            $r = $state['rental_data'] ?? [];
+            $adminMessage = "🚙 Pemesanan Rental Baru\n\n"
+                ."Alamat jemput: ".($r['pickup_address'] ?? '-')."\n"
+                ."Tujuan rental: ".($r['destination'] ?? '-')."\n"
+                ."Mulai tanggal: ".($r['start_date'] ?? '-')."\n"
+                ."Selesai tanggal: ".($r['end_date'] ?? '-')."\n\n"
+                ."Penyewa: ".($r['customer_name'] ?? '-')."\n"
+                ."No HP: ".($r['customer_phone'] ?? '-')."\n"
+                ."No Customer WA: {$phone}\n\n"
+                ."Seat: Semua (1 mobil penuh)\n"
+                ."Catatan: BBM & akomodasi driver ditanggung penyewa\n"
+                ."Mohon dikonfirmasi ongkos/biaya rental ya Bos.";
+
+            return $this->buildResult(
+                replyText: "Baik, data pemesanan rental sudah lengkap dan telah kami terima 🙏😊\n\nAdmin Utama akan menghubungi Bapak/Ibu untuk konfirmasi ongkos/biaya rental.\n\nTerima kasih telah menggunakan layanan JET 🙏😊",
+                intent: 'rental_confirmed',
+                state: $state,
+                actions: [
+                    ['type' => 'save_state'],
+                    ['type' => 'notify_admin', 'channel' => 'main_admin', 'message' => $adminMessage],
+                ],
+                meta: ['step' => 'rental_confirmed'],
+            );
+        }
+
+        if (preg_match('/^(?:ubah|ubah data|salah|batal|2)$/u', $normalized)) {
+            return $this->startRentalFlow($state);
+        }
+
+        return $this->buildResult(
+            replyText: "Mohon pilih:\n1. *Benar* — jika data sudah sesuai\n2. *Ubah Data* — jika ingin mengisi ulang",
+            intent: 'rental_review', state: $state, actions: [], meta: ['step' => 'rental_ask_review'],
+        );
+    }
+
+    private function buildRentalReviewText(array $r): string
+    {
+        $lines = [
+            'Baik Bapak/Ibu, berikut review pemesanan rental:',
+            '',
+            'Alamat penjemputan    : '.($r['pickup_address'] ?? '-'),
+            'Tujuan rental         : '.($r['destination'] ?? '-'),
+            'Mulai tanggal         : '.($r['start_date'] ?? '-'),
+            'Selesai tanggal       : '.($r['end_date'] ?? '-'),
+            'Nama penyewa          : '.($r['customer_name'] ?? '-'),
+            'No HP                 : '.($r['customer_phone'] ?? '-'),
+            'Seat                  : Semua (1 mobil penuh)',
+            'Ongkos/Biaya          : Akan diinfokan lebih lanjut oleh Admin Utama',
+            '',
+            'Catatan: BBM dan akomodasi driver (makan, minum, penginapan) ditanggung oleh penyewa.',
+            'JET belum tersedia mekanisme rental lepas kunci.',
+            '',
+            'Izin konfirmasi Bapak/Ibu, apakah data pemesanan ini sudah tepat?',
+            '',
+            '1. Benar',
+            '2. Ubah Data',
         ];
 
         return implode("\n", $lines);

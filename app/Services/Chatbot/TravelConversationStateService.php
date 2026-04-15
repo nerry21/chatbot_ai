@@ -77,10 +77,11 @@ class TravelConversationStateService
      */
     public function toRouterState(ChatbotConversationState $state): array
     {
-        // paket_data and dropping_data stored inside booking_data column
+        // paket_data, dropping_data, rental_data stored inside booking_data column
         $bookingData = $state->booking_data ?: [];
         $paketData = $bookingData['_paket_data'] ?? [];
         $droppingData = $bookingData['_dropping_data'] ?? [];
+        $rentalData = $bookingData['_rental_data'] ?? [];
 
         return [
             'status'                      => $state->status ?: 'idle',
@@ -88,6 +89,7 @@ class TravelConversationStateService
             'booking_data'                => $bookingData,
             'paket_data'                  => $paketData,
             'dropping_data'               => $droppingData,
+            'rental_data'                 => $rentalData,
             'schedule_change_data'        => $state->schedule_change_data ?: [],
             'last_admin_notification_key' => $state->last_admin_notification_key,
             'last_completed_booking_at'   => $state->last_completed_booking_at?->toDateTimeString(),
@@ -113,13 +115,16 @@ class TravelConversationStateService
         $state->status                     = (string) ($newState['status'] ?? $state->status ?? 'idle');
         $state->current_step               = $newState['current_step'] ?? null;
 
-        // Store paket_data and dropping_data inside booking_data column (no migration needed)
+        // Store paket_data, dropping_data, rental_data inside booking_data column (no migration needed)
         $bookingDataToSave = (array) ($newState['booking_data'] ?? $state->booking_data ?? []);
         if (isset($newState['paket_data']) && is_array($newState['paket_data'])) {
             $bookingDataToSave['_paket_data'] = $newState['paket_data'];
         }
         if (isset($newState['dropping_data']) && is_array($newState['dropping_data'])) {
             $bookingDataToSave['_dropping_data'] = $newState['dropping_data'];
+        }
+        if (isset($newState['rental_data']) && is_array($newState['rental_data'])) {
+            $bookingDataToSave['_rental_data'] = $newState['rental_data'];
         }
         $state->booking_data               = $bookingDataToSave;
 
