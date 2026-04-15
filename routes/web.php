@@ -199,13 +199,6 @@ Route::prefix('debug')->name('debug.')->group(function (): void {
      *
      * Writes one test entry to every log channel and returns a health JSON.
      * Use after deployment to verify the full logging pipeline.
-     *
-     * Checks:
-     *   1. Log::info   — default Laravel channel (laravel.log)
-     *   2. WaLog::info — whatsapp_stack (laravel.log + whatsapp-YYYY-MM-DD.log)
-     *   3. Log::channel('whatsapp') — whatsapp channel directly
-     *   4. WaLog::error — triggers emergency fallback copy too
-     *   5. WaLog::emergency — raw emergency file write (paling aman)
      */
     Route::get('/wa-log-test', function (\Illuminate\Http\Request $request) {
         if ($denied = checkDebugToken($request)) {
@@ -335,48 +328,6 @@ Route::prefix('debug')->name('debug.')->group(function (): void {
         ]);
     })->name('wa-write-log');
     
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TEMPORARY: Setup Admin User
-// HAPUS ROUTE INI SETELAH BERHASIL LOGIN!
-// Akses: https://spesial.online/setup-admin-temp
-// ─────────────────────────────────────────────────────────────────────────────
-Route::get('/setup-admin-temp', function () {
-    $user = \App\Models\User::where('email', 'nerrypopindo@gmail.com')->first();
-
-    if ($user) {
-        $user->password = bcrypt('admin12345');
-        $user->is_chatbot_admin = true;
-        $user->is_chatbot_operator = true;
-        $user->email_verified_at = now();
-        $user->save();
-
-        return response()->json([
-            'status' => 'User UPDATED',
-            'email' => $user->email,
-            'id' => $user->id,
-            'is_chatbot_admin' => $user->is_chatbot_admin,
-            'password_baru' => 'admin12345',
-        ]);
-    }
-
-    $user = \App\Models\User::create([
-        'name' => 'Nerry Admin',
-        'email' => 'nerrypopindo@gmail.com',
-        'password' => bcrypt('admin12345'),
-        'is_chatbot_admin' => true,
-        'is_chatbot_operator' => true,
-        'email_verified_at' => now(),
-    ]);
-
-    return response()->json([
-        'status' => 'User CREATED',
-        'email' => $user->email,
-        'id' => $user->id,
-        'is_chatbot_admin' => $user->is_chatbot_admin,
-        'password_baru' => 'admin12345',
-    ]);
 });
 
 require __DIR__.'/auth.php';
