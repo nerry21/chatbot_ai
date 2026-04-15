@@ -234,6 +234,32 @@ class TravelMessageRouterService
             $prefix = $timeLabel.".\n\n";
         }
 
+        $normalized = $this->normalizeText($text);
+
+        // If user already selected "Reguler" from interactive menu → go directly to booking
+        if (str_contains($normalized, 'service:reguler') || $normalized === 'reguler') {
+            return $this->startRegularBooking($state, $prefix);
+        }
+
+        // Otherwise, show service menu first
+        $state['status']       = 'idle';
+        $state['current_step'] = null;
+
+        return $this->buildResult(
+            replyText: $prefix."Baik Bapak/Ibu, silakan pilih layanan yang diinginkan terlebih dahulu ya 🙏",
+            intent: 'show_service_menu',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'ask_service_type',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildServiceMenuInteractiveList(),
+            ],
+        );
+    }
+
+    private function startRegularBooking(array $state, string $prefix = ''): array
+    {
         $state['status']       = 'booking';
         $state['current_step'] = 'ask_passenger_count';
         $state['booking_data'] = [
@@ -243,6 +269,7 @@ class TravelMessageRouterService
             'departure_time_label' => null,
             'passenger_count'      => null,
             'seat'                 => null,
+            'selected_seats'       => [],
             'pickup_point'         => null,
             'pickup_address'       => null,
             'dropoff_point'        => null,
@@ -282,35 +309,7 @@ class TravelMessageRouterService
 
     private function handleBookingStart(array $state): array
     {
-        $state['status']       = 'booking';
-        $state['current_step'] = 'ask_passenger_count';
-        $state['booking_data'] = [
-            'departure_date'       => null,
-            'departure_date_label' => null,
-            'departure_time'       => null,
-            'departure_time_label' => null,
-            'passenger_count'      => null,
-            'seat'                 => null,
-            'pickup_point'         => null,
-            'pickup_address'       => null,
-            'dropoff_point'        => null,
-            'dropoff_address'      => null,
-            'passenger_names'      => [],
-            'contact_number'       => null,
-        ];
-
-        return $this->buildResult(
-            replyText: "Baik, saya bantu bookingnya ya.\n\nUntuk keberangkatan ini ada berapa orang penumpangnya, Bapak/Ibu?",
-            intent: 'start_booking',
-            state: $state,
-            actions: [['type' => 'save_state']],
-            meta: [
-                'booking_started'  => true,
-                'step'             => 'ask_passenger_count',
-                'interactive_type' => 'list',
-                'interactive_list' => $this->buildPassengerCountInteractiveList(),
-            ],
-        );
+        return $this->startRegularBooking($state);
     }
 
     private function handleBookingFlow(string $text, string $phone, array $state, Carbon $now): array

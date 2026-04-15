@@ -153,6 +153,9 @@ class TravelWhatsAppPipelineService
             $originalText = (string) ($result['router_result']['meta']['original_text'] ?? $text);
             $customerName = $customer->name ?? 'Bapak/Ibu';
 
+            // Check if this is a closing message — reset state after responding
+            $isClosingMessage = $this->isClosingMessage($originalText);
+
             $llmReply = $this->callLlmForNaturalResponse($originalText, $customerName, $conversation, $message);
 
             $deliveryMeta = [
@@ -173,10 +176,34 @@ class TravelWhatsAppPipelineService
                 'text'
             );
 
+            // Reset state after closing message so next interaction starts fresh
+            if ($isClosingMessage) {
+                $this->stateService->resetForNewConversation($state);
+            }
+
             return true;
         }
 
         return true;
+    }
+
+    private function isClosingMessage(string $text): bool
+    {
+        $normalized = mb_strtolower(trim($text), 'UTF-8');
+        $normalized = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', ' ', trim($normalized));
+
+        $closingPatterns = [
+            'siap', 'siap min', 'siap kak', 'siap ya',
+            'oke', 'ok', 'oke min', 'oke kak',
+            'baik', 'baik min', 'baik kak',
+            'sip', 'sip min', 'sip kak',
+            'tidak ada', 'tidak ada min', 'tidak ada kak',
+            'sudah cukup', 'cukup', 'cukup min',
+            'tidak ada lagi', 'ga ada', 'gak ada',
+        ];
+
+        return in_array($normalized, $closingPatterns, true);
     }
 
     /**
@@ -360,8 +387,9 @@ class TravelWhatsAppPipelineService
                 . "1. Jawab HANYA dari FAKTA di bawah. DILARANG mengarang.\n"
                 . "2. Jika tidak tahu, bilang akan dikonsultasikan ke admin.\n"
                 . "3. Maksimal 3-4 kalimat.\n"
-                . "4. JANGAN memulai proses booking.\n"
-                . "5. Jika customer bilang terima kasih/oke → balas singkat ramah.\n\n"
+                . "4. JANGAN memulai proses booking. Jika customer mau booking, arahkan bilang 'mau booking' atau 'pesan'.\n"
+                . "5. Jika customer bilang terima kasih, oke, siap, baik → balas SINGKAT saja, misal 'Siap kak 🙏' atau 'Sama-sama kak 😊🙏'. JANGAN bertanya lagi atau menawarkan bantuan lain.\n"
+                . "6. Jika customer bilang 'tidak ada', 'sudah cukup', 'tidak ada lagi' → balas penutup singkat saja, misal 'Baik kak, terima kasih ya 🙏'. JANGAN tanya lagi.\n\n"
                 . "=== JADWAL (setiap hari) ===\n" . implode("\n", $scheduleLines) . "\n\n"
                 . "=== TARIF (per orang) ===\n" . implode("\n", $fareLines) . "\n\n"
                 . "=== LOKASI ===\n" . implode(', ', $locationLabels) . "\n\n"
