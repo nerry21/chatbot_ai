@@ -369,6 +369,23 @@ class TravelMessageRouterService
     {
         $step = $state['current_step'] ?? 'ask_passenger_count';
 
+        // Detect correction request during any step (except review/change steps)
+        if (! in_array($step, ['ask_review_confirmation', 'ask_which_field_to_change'], true)
+            && $this->isCorrectionRequest($text)) {
+            $state['current_step'] = 'ask_which_field_to_change';
+            return $this->buildResult(
+                replyText: "Baik, data mana yang ingin diperbaiki? 🙏",
+                intent: 'correction_request',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'             => 'ask_which_field_to_change',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildChangeFieldInteractiveList(),
+                ],
+            );
+        }
+
         return match ($step) {
             'ask_departure_date'              => $this->handleDepartureDateStep($text, $state),
             'ask_departure_time'              => $this->handleDepartureTimeStep($text, $state),
@@ -1642,6 +1659,25 @@ class TravelMessageRouterService
      * Detect if user selected a service from interactive menu or typed a service name.
      * Returns action string or null if not a service trigger.
      */
+    private function isCorrectionRequest(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach ([
+            'ubah', 'ganti', 'salah', 'koreksi', 'perbaiki', 'revisi',
+            'mau ganti', 'mau ubah', 'mau perbaiki',
+            'salah tanggal', 'salah nama', 'salah alamat', 'salah jam',
+            'ganti tanggal', 'ganti nama', 'ganti alamat', 'ganti jam',
+            'ubah tanggal', 'ubah nama', 'ubah alamat', 'ubah jam',
+        ] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function detectServiceTrigger(string $text): ?string
     {
         $normalized = $this->normalizeText($text);
@@ -2883,6 +2919,27 @@ class TravelMessageRouterService
     {
         $step = $state['current_step'] ?? 'paket_ask_pickup';
 
+        // Detect correction request → show paket field change menu
+        if ($step !== 'paket_ask_review' && $this->isCorrectionRequest($text)) {
+            $state['current_step'] = 'paket_ask_change_field';
+            return $this->buildResult(
+                replyText: "Baik, data mana yang ingin diperbaiki? 🙏\n\n"
+                    ."1. Titik jemput paket\n2. Titik antar paket\n3. Tanggal\n4. Jam\n"
+                    ."5. Nama pengirim\n6. HP pengirim\n7. Alamat pengirim\n"
+                    ."8. Nama penerima\n9. HP penerima\n10. Alamat penerima\n"
+                    ."11. Ukuran paket\n12. Jenis paket\n\nBalas dengan nomor yang ingin diubah.",
+                intent: 'paket_correction',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: ['step' => 'paket_ask_change_field'],
+            );
+        }
+
+        // Handle field change selection
+        if ($step === 'paket_ask_change_field') {
+            return $this->handlePaketFieldChange($text, $state);
+        }
+
         return match ($step) {
             'paket_ask_pickup'           => $this->handlePaketPickupStep($text, $state),
             'paket_ask_dropoff'          => $this->handlePaketDropoffStep($text, $state),
@@ -3420,6 +3477,24 @@ class TravelMessageRouterService
     {
         $step = $state['current_step'] ?? 'dropping_ask_pickup_address';
 
+        // Detect correction request
+        if ($step !== 'dropping_ask_review' && $this->isCorrectionRequest($text)) {
+            $state['current_step'] = 'dropping_ask_change_field';
+            return $this->buildResult(
+                replyText: "Baik, data mana yang ingin diperbaiki? 🙏\n\n"
+                    ."1. Alamat penjemputan\n2. Alamat tujuan\n3. Tanggal\n4. Jam\n"
+                    ."5. Nama pemesan\n6. No HP\n\nBalas dengan nomor yang ingin diubah.",
+                intent: 'dropping_correction',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: ['step' => 'dropping_ask_change_field'],
+            );
+        }
+
+        if ($step === 'dropping_ask_change_field') {
+            return $this->handleDroppingFieldChange($text, $state);
+        }
+
         return match ($step) {
             'dropping_ask_pickup_address'  => $this->handleDroppingPickupAddressStep($text, $state),
             'dropping_ask_dropoff_address' => $this->handleDroppingDropoffAddressStep($text, $state),
@@ -3713,6 +3788,24 @@ class TravelMessageRouterService
     {
         $step = $state['current_step'] ?? 'rental_ask_pickup_address';
 
+        // Detect correction request
+        if ($step !== 'rental_ask_review' && $this->isCorrectionRequest($text)) {
+            $state['current_step'] = 'rental_ask_change_field';
+            return $this->buildResult(
+                replyText: "Baik, data mana yang ingin diperbaiki? 🙏\n\n"
+                    ."1. Alamat penjemputan\n2. Tujuan rental\n3. Tanggal mulai\n4. Tanggal selesai\n"
+                    ."5. Nama penyewa\n6. No HP\n\nBalas dengan nomor yang ingin diubah.",
+                intent: 'rental_correction',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: ['step' => 'rental_ask_change_field'],
+            );
+        }
+
+        if ($step === 'rental_ask_change_field') {
+            return $this->handleRentalFieldChange($text, $state);
+        }
+
         return match ($step) {
             'rental_ask_pickup_address' => $this->handleRentalPickupStep($text, $state),
             'rental_ask_destination'    => $this->handleRentalDestinationStep($text, $state),
@@ -3902,6 +3995,78 @@ class TravelMessageRouterService
         ];
 
         return implode("\n", $lines);
+    }
+
+    // ─── FIELD CHANGE HANDLERS ─────────────────────────────────────────────────
+
+    private function handlePaketFieldChange(string $text, array $state): array
+    {
+        $n = trim($text);
+        $stepMap = [
+            '1' => 'paket_ask_pickup', '2' => 'paket_ask_dropoff',
+            '3' => 'paket_ask_date', '4' => 'paket_ask_time',
+            '5' => 'paket_ask_sender_name', '6' => 'paket_ask_sender_phone',
+            '7' => 'paket_ask_sender_address', '8' => 'paket_ask_receiver_name',
+            '9' => 'paket_ask_receiver_phone', '10' => 'paket_ask_receiver_address',
+            '11' => 'paket_ask_size', '12' => 'paket_ask_type',
+        ];
+        $labels = [
+            '1' => 'titik jemput paket', '2' => 'titik antar paket',
+            '3' => 'tanggal', '4' => 'jam', '5' => 'nama pengirim',
+            '6' => 'HP pengirim', '7' => 'alamat pengirim',
+            '8' => 'nama penerima', '9' => 'HP penerima',
+            '10' => 'alamat penerima', '11' => 'ukuran paket', '12' => 'jenis paket',
+        ];
+
+        if (isset($stepMap[$n])) {
+            $state['current_step'] = $stepMap[$n];
+            return $this->handlePaketFlow($text === $n ? '' : $text, '', $state, now());
+        }
+
+        return $this->buildResult(
+            replyText: "Mohon balas dengan nomor 1-12 untuk memilih data yang ingin diubah.",
+            intent: 'paket_correction', state: $state, actions: [], meta: ['step' => 'paket_ask_change_field'],
+        );
+    }
+
+    private function handleDroppingFieldChange(string $text, array $state): array
+    {
+        $n = trim($text);
+        $stepMap = [
+            '1' => 'dropping_ask_pickup_address', '2' => 'dropping_ask_dropoff_address',
+            '3' => 'dropping_ask_date', '4' => 'dropping_ask_time',
+            '5' => 'dropping_ask_name', '6' => 'dropping_ask_phone',
+        ];
+
+        if (isset($stepMap[$n])) {
+            $state['current_step'] = $stepMap[$n];
+            return $this->handleDroppingFlow('', '', $state, now());
+        }
+
+        return $this->buildResult(
+            replyText: "Mohon balas dengan nomor 1-6 untuk memilih data yang ingin diubah.",
+            intent: 'dropping_correction', state: $state, actions: [], meta: ['step' => 'dropping_ask_change_field'],
+        );
+    }
+
+    private function handleRentalFieldChange(string $text, array $state): array
+    {
+        $n = trim($text);
+        $stepMap = [
+            '1' => 'rental_ask_pickup_address', '2' => 'rental_ask_destination',
+            '3' => 'rental_ask_start_date', '4' => 'rental_ask_end_date',
+            '5' => 'rental_ask_name', '6' => 'rental_ask_phone',
+        ];
+
+        if (isset($stepMap[$n])) {
+            $state['current_step'] = $stepMap[$n];
+            return $this->handleRentalFlow('', '', $state, now());
+        }
+
+        return $this->buildResult(
+            replyText: "Mohon balas dengan nomor 1-6 untuk memilih data yang ingin diubah.",
+            intent: 'rental_correction', state: $state, actions: [], meta: ['step' => 'rental_ask_change_field'],
+        );
     }
 
     /**
