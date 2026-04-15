@@ -93,6 +93,10 @@ class TravelMessageRouterService
         //    Hanya aktif saat status = 'booking'.
         //    Semua input selama booking diproses oleh state machine.
         if ($state['status'] === 'booking') {
+            // Jika customer ingin pindah layanan → kembali ke menu layanan
+            if ($this->wantsToSwitchService($text)) {
+                return $this->showServiceMenu($state);
+            }
             // Jika customer memulai booking baru → reset
             if ($this->isBookingStartMessage($text)) {
                 return $this->handleBookingStartWithGreeting($text, $state, $now);
@@ -103,11 +107,17 @@ class TravelMessageRouterService
 
         // ─── 2b. PAKET FLOW (rule-based ketat) ──────────────────────────
         if ($state['status'] === 'paket') {
+            if ($this->wantsToSwitchService($text)) {
+                return $this->showServiceMenu($state);
+            }
             return $this->handlePaketFlow($text, $phone, $state, $now);
         }
 
         // ─── 2c. DROPPING FLOW (rule-based ketat) ────────────────────────
         if ($state['status'] === 'dropping') {
+            if ($this->wantsToSwitchService($text)) {
+                return $this->showServiceMenu($state);
+            }
             return $this->handleDroppingFlow($text, $phone, $state, $now);
         }
 
@@ -1613,6 +1623,48 @@ class TravelMessageRouterService
         ];
 
         return in_array($normalized, $greetings, true);
+    }
+
+    private function wantsToSwitchService(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        // Explicit cancel/switch keywords
+        foreach (['ganti layanan', 'ganti ke', 'pindah ke', 'bukan ini', 'salah pilih', 'batal', 'cancel'] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        // Mentions a specific service name with intent ("mau dropping", "mau kirim paket", etc.)
+        foreach (['mau dropping', 'mau paket', 'mau rental', 'mau reguler', 'mau kirim paket', 'mau booking', 'mau pesan', 'mau boking'] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function showServiceMenu(array $state): array
+    {
+        $state['status']       = 'idle';
+        $state['current_step'] = null;
+        $state['booking_data'] = [];
+        $state['paket_data']   = [];
+        $state['dropping_data'] = [];
+
+        return $this->buildResult(
+            replyText: "Baik Bapak/Ibu, silakan pilih layanan yang diinginkan 🙏",
+            intent: 'show_service_menu',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'ask_service_type',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildServiceMenuInteractiveList(),
+            ],
+        );
     }
 
     private function isDroppingStartMessage(string $text): bool
