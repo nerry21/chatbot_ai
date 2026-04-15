@@ -101,6 +101,11 @@ class TravelMessageRouterService
             return $this->handleBookingFlow($text, $phone, $state, $now);
         }
 
+        // ─── 2b. PAKET FLOW (rule-based ketat) ──────────────────────────
+        if ($state['status'] === 'paket') {
+            return $this->handlePaketFlow($text, $phone, $state, $now);
+        }
+
         // ─── 3. SCHEDULE CHANGE FLOW (rule-based ketat) ───────────────────
         if ($state['status'] === 'schedule_change') {
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
@@ -163,7 +168,7 @@ class TravelMessageRouterService
     {
         $normalized = $this->normalizeText($text);
 
-        foreach (['dropping', 'rental', 'sewa mobil', 'paket', 'kirim paket', 'pengiriman paket'] as $pattern) {
+        foreach (['dropping', 'rental', 'sewa mobil'] as $pattern) {
             if (str_contains($normalized, $pattern)) {
                 return true;
             }
@@ -239,6 +244,11 @@ class TravelMessageRouterService
         // If user already selected "Reguler" from interactive menu → go directly to booking
         if (str_contains($normalized, 'service:reguler') || $normalized === 'reguler') {
             return $this->startRegularBooking($state, $prefix);
+        }
+
+        // If user selected "Pengiriman Paket" → start paket flow
+        if (str_contains($normalized, 'service:paket') || str_contains($normalized, 'pengiriman paket') || str_contains($normalized, 'kirim paket')) {
+            return $this->startPaketFlow($state, $prefix);
         }
 
         // Otherwise, show service menu first
@@ -2646,6 +2656,7 @@ class TravelMessageRouterService
             'status'                      => 'idle',
             'current_step'                => null,
             'booking_data'                => [],
+            'paket_data'                  => [],
             'schedule_change_data'        => [],
             'last_admin_notification_key' => null,
             'last_completed_booking_at'   => null,
@@ -2682,6 +2693,565 @@ class TravelMessageRouterService
         $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
 
         return trim($text);
+    }
+
+    // ─── PAKET FLOW ────────────────────────────────────────────────────────────
+
+    private function startPaketFlow(array $state, string $prefix = ''): array
+    {
+        $state['status']       = 'paket';
+        $state['current_step'] = 'paket_ask_pickup';
+        $state['paket_data']   = [
+            'pickup_point'       => null,
+            'dropoff_point'      => null,
+            'departure_date'     => null,
+            'departure_date_label' => null,
+            'departure_time'     => null,
+            'departure_time_label' => null,
+            'sender_name'        => null,
+            'sender_phone'       => null,
+            'sender_address'     => null,
+            'receiver_name'      => null,
+            'receiver_phone'     => null,
+            'receiver_address'   => null,
+            'package_size'       => null,
+            'package_seat'       => null,
+            'package_type'       => null,
+        ];
+
+        return $this->buildResult(
+            replyText: $prefix."Baik, saya bantu proses pengiriman paketnya ya 🙏\n\nIzin Bapak/Ibu, silakan pilih titik lokasi penjemputan paket.",
+            intent: 'start_paket',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'paket_ask_pickup',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPickupPointInteractiveList(),
+            ],
+        );
+    }
+
+    private function handlePaketFlow(string $text, string $phone, array $state, Carbon $now): array
+    {
+        $step = $state['current_step'] ?? 'paket_ask_pickup';
+
+        return match ($step) {
+            'paket_ask_pickup'           => $this->handlePaketPickupStep($text, $state),
+            'paket_ask_dropoff'          => $this->handlePaketDropoffStep($text, $state),
+            'paket_ask_date'             => $this->handlePaketDateStep($text, $state),
+            'paket_ask_time'             => $this->handlePaketTimeStep($text, $state),
+            'paket_ask_sender_name'      => $this->handlePaketSenderNameStep($text, $state),
+            'paket_ask_sender_phone'     => $this->handlePaketSenderPhoneStep($text, $state, $phone),
+            'paket_ask_sender_address'   => $this->handlePaketSenderAddressStep($text, $state),
+            'paket_ask_receiver_name'    => $this->handlePaketReceiverNameStep($text, $state),
+            'paket_ask_receiver_phone'   => $this->handlePaketReceiverPhoneStep($text, $state),
+            'paket_ask_receiver_address' => $this->handlePaketReceiverAddressStep($text, $state),
+            'paket_ask_size'             => $this->handlePaketSizeStep($text, $state),
+            'paket_ask_seat'             => $this->handlePaketSeatStep($text, $state),
+            'paket_ask_type'             => $this->handlePaketTypeStep($text, $state),
+            'paket_ask_review'           => $this->handlePaketReviewStep($text, $phone, $state),
+            default                      => $this->startPaketFlow($state),
+        };
+    }
+
+    private function handlePaketPickupStep(string $text, array $state): array
+    {
+        $location = $this->extractSelectedPickupLocationFromInteractive($text)
+            ?? $this->extractLocation($text);
+
+        if ($location === null) {
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, mohon pilih titik penjemputan paket.',
+                intent: 'paket_pickup',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_pickup', 'interactive_type' => 'list', 'interactive_list' => $this->buildPickupPointInteractiveList()],
+            );
+        }
+
+        $state['paket_data']['pickup_point'] = $location;
+        $state['current_step'] = 'paket_ask_dropoff';
+
+        return $this->buildResult(
+            replyText: "Baik, penjemputan paket di {$location}.\n\nSekarang, silakan pilih titik pengantaran paket.",
+            intent: 'paket_pickup',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_dropoff', 'interactive_type' => 'list', 'interactive_list' => $this->buildDropoffPointInteractiveList()],
+        );
+    }
+
+    private function handlePaketDropoffStep(string $text, array $state): array
+    {
+        $location = $this->extractSelectedDropoffLocationFromInteractive($text)
+            ?? $this->extractLocation($text);
+
+        if ($location === null) {
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, mohon pilih titik pengantaran paket.',
+                intent: 'paket_dropoff',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_dropoff', 'interactive_type' => 'list', 'interactive_list' => $this->buildDropoffPointInteractiveList()],
+            );
+        }
+
+        $state['paket_data']['dropoff_point'] = $location;
+        $state['current_step'] = 'paket_ask_date';
+
+        return $this->buildResult(
+            replyText: "Baik, pengantaran paket ke {$location}.\n\nSilakan pilih tanggal pengiriman.",
+            intent: 'paket_dropoff',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_date', 'interactive_type' => 'list', 'interactive_list' => $this->buildDepartureDateInteractiveList(7)],
+        );
+    }
+
+    private function handlePaketDateStep(string $text, array $state): array
+    {
+        $dateOption = $this->extractSelectedDepartureDateFromInteractive($text)
+            ?? $this->bookingRuleService->findDepartureDate($text);
+
+        if ($dateOption === null) {
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, mohon pilih tanggal pengiriman.',
+                intent: 'paket_date',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_date', 'interactive_type' => 'list', 'interactive_list' => $this->buildDepartureDateInteractiveList(7)],
+            );
+        }
+
+        $state['paket_data']['departure_date'] = $dateOption['value'] ?? ($dateOption['date'] ?? null);
+        $state['paket_data']['departure_date_label'] = $dateOption['label'] ?? ($dateOption['title'] ?? null);
+        $state['current_step'] = 'paket_ask_time';
+
+        return $this->buildResult(
+            replyText: "Baik, tanggal pengiriman sudah dicatat.\n\nSilakan pilih jam keberangkatan.",
+            intent: 'paket_date',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_time', 'interactive_type' => 'list', 'interactive_list' => $this->buildDepartureTimeInteractiveList()],
+        );
+    }
+
+    private function handlePaketTimeStep(string $text, array $state): array
+    {
+        $slot = $this->extractSelectedDepartureTimeFromInteractive($text)
+            ?? $this->bookingRuleService->findDepartureTime($text);
+
+        if ($slot === null) {
+            return $this->buildResult(
+                replyText: 'Izin Bapak/Ibu, mohon pilih jam keberangkatan.',
+                intent: 'paket_time',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_time', 'interactive_type' => 'list', 'interactive_list' => $this->buildDepartureTimeInteractiveList()],
+            );
+        }
+
+        $state['paket_data']['departure_time'] = substr((string) ($slot['time'] ?? ''), 0, 5);
+        $state['paket_data']['departure_time_label'] = (string) ($slot['label'] ?? $state['paket_data']['departure_time']);
+        $state['current_step'] = 'paket_ask_sender_name';
+
+        return $this->buildResult(
+            replyText: "Baik, jam keberangkatan ".$state['paket_data']['departure_time']." WIB.\n\nSekarang mohon dibantu data pengirim ya.\nSilakan kirim *nama lengkap pengirim*.",
+            intent: 'paket_time',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_sender_name'],
+        );
+    }
+
+    private function handlePaketSenderNameStep(string $text, array $state): array
+    {
+        $name = trim($text);
+        if ($name === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nama lengkap pengirim ya.', intent: 'paket_sender', state: $state, actions: [], meta: ['step' => 'paket_ask_sender_name']);
+        }
+
+        $state['paket_data']['sender_name'] = $name;
+        $state['current_step'] = 'paket_ask_sender_phone';
+
+        return $this->buildResult(
+            replyText: "Baik, nama pengirim: {$name}.\n\nSilakan kirim *nomor HP pengirim*.",
+            intent: 'paket_sender',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_sender_phone'],
+        );
+    }
+
+    private function handlePaketSenderPhoneStep(string $text, array $state, string $phone): array
+    {
+        $normalized = $this->normalizeText($text);
+        $hp = ($normalized === 'sama') ? $phone : ($this->extractPhoneNumber($text) ?? trim($text));
+        if ($hp === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nomor HP pengirim ya.', intent: 'paket_sender', state: $state, actions: [], meta: ['step' => 'paket_ask_sender_phone']);
+        }
+
+        $state['paket_data']['sender_phone'] = $hp;
+        $state['current_step'] = 'paket_ask_sender_address';
+
+        return $this->buildResult(
+            replyText: "Baik, nomor HP pengirim: {$hp}.\n\nSilakan kirim *alamat lengkap penjemputan paket*.",
+            intent: 'paket_sender',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_sender_address'],
+        );
+    }
+
+    private function handlePaketSenderAddressStep(string $text, array $state): array
+    {
+        $address = trim($text);
+        if ($address === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu alamat penjemputan paket ya.', intent: 'paket_sender', state: $state, actions: [], meta: ['step' => 'paket_ask_sender_address']);
+        }
+
+        $state['paket_data']['sender_address'] = $address;
+        $state['current_step'] = 'paket_ask_receiver_name';
+
+        return $this->buildResult(
+            replyText: "Baik, data pengirim sudah lengkap 🙏\n\nSekarang mohon dibantu data penerima ya.\nSilakan kirim *nama lengkap penerima*.",
+            intent: 'paket_receiver',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_receiver_name'],
+        );
+    }
+
+    private function handlePaketReceiverNameStep(string $text, array $state): array
+    {
+        $name = trim($text);
+        if ($name === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nama lengkap penerima ya.', intent: 'paket_receiver', state: $state, actions: [], meta: ['step' => 'paket_ask_receiver_name']);
+        }
+
+        $state['paket_data']['receiver_name'] = $name;
+        $state['current_step'] = 'paket_ask_receiver_phone';
+
+        return $this->buildResult(
+            replyText: "Baik, nama penerima: {$name}.\n\nSilakan kirim *nomor HP penerima*.",
+            intent: 'paket_receiver',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_receiver_phone'],
+        );
+    }
+
+    private function handlePaketReceiverPhoneStep(string $text, array $state): array
+    {
+        $hp = $this->extractPhoneNumber($text) ?? trim($text);
+        if ($hp === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu nomor HP penerima ya.', intent: 'paket_receiver', state: $state, actions: [], meta: ['step' => 'paket_ask_receiver_phone']);
+        }
+
+        $state['paket_data']['receiver_phone'] = $hp;
+        $state['current_step'] = 'paket_ask_receiver_address';
+
+        return $this->buildResult(
+            replyText: "Baik, nomor HP penerima: {$hp}.\n\nSilakan kirim *alamat lengkap pengantaran paket*.",
+            intent: 'paket_receiver',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_receiver_address'],
+        );
+    }
+
+    private function handlePaketReceiverAddressStep(string $text, array $state): array
+    {
+        $address = trim($text);
+        if ($address === '') {
+            return $this->buildResult(replyText: 'Mohon dibantu alamat pengantaran paket ya.', intent: 'paket_receiver', state: $state, actions: [], meta: ['step' => 'paket_ask_receiver_address']);
+        }
+
+        $state['paket_data']['receiver_address'] = $address;
+        $state['current_step'] = 'paket_ask_size';
+
+        return $this->buildResult(
+            replyText: "Baik, data penerima sudah lengkap 🙏\n\nSilakan pilih ukuran paket yang akan dikirim.",
+            intent: 'paket_size',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'paket_ask_size',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPaketSizeInteractiveList(),
+            ],
+        );
+    }
+
+    private function handlePaketSizeStep(string $text, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+        $size = match (true) {
+            str_contains($normalized, 'kecil'), str_contains($normalized, 'size:kecil') => 'Kecil',
+            str_contains($normalized, 'sedang'), str_contains($normalized, 'size:sedang') => 'Sedang',
+            str_contains($normalized, 'besar'), str_contains($normalized, 'size:besar') => 'Besar',
+            default => null,
+        };
+
+        if ($size === null) {
+            return $this->buildResult(
+                replyText: 'Mohon pilih ukuran paket: Kecil, Sedang, atau Besar.',
+                intent: 'paket_size',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_size', 'interactive_type' => 'list', 'interactive_list' => $this->buildPaketSizeInteractiveList()],
+            );
+        }
+
+        $state['paket_data']['package_size'] = $size;
+
+        // Besar → perlu pilih seat
+        if ($size === 'Besar') {
+            $state['current_step'] = 'paket_ask_seat';
+            return $this->buildResult(
+                replyText: "Ukuran paket: *Besar*.\n\nKarena ukuran besar, paket akan memakan 1 seat.\nSilakan pilih seat untuk paket.",
+                intent: 'paket_size',
+                state: $state,
+                actions: [['type' => 'save_state']],
+                meta: [
+                    'step'             => 'paket_ask_seat',
+                    'interactive_type' => 'list',
+                    'interactive_list' => $this->buildPaketSeatInteractiveList(),
+                ],
+            );
+        }
+
+        // Kecil/Sedang → langsung ke jenis paket
+        $state['paket_data']['package_seat'] = '-';
+        $state['current_step'] = 'paket_ask_type';
+        return $this->buildResult(
+            replyText: "Ukuran paket: *{$size}* (tidak memakan seat).\n\nSilakan pilih jenis paket yang dikirim.",
+            intent: 'paket_size',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'paket_ask_type',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPaketTypeInteractiveList(),
+            ],
+        );
+    }
+
+    private function handlePaketSeatStep(string $text, array $state): array
+    {
+        $seat = $this->extractSelectedSeatFromInteractive($text) ?? trim($text);
+        if ($seat === '') {
+            return $this->buildResult(
+                replyText: 'Mohon pilih seat untuk paket.',
+                intent: 'paket_seat',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_seat', 'interactive_type' => 'list', 'interactive_list' => $this->buildPaketSeatInteractiveList()],
+            );
+        }
+
+        $state['paket_data']['package_seat'] = $seat;
+        $state['current_step'] = 'paket_ask_type';
+
+        return $this->buildResult(
+            replyText: "Seat untuk paket: *{$seat}*.\n\nSilakan pilih jenis paket yang dikirim.",
+            intent: 'paket_seat',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: [
+                'step'             => 'paket_ask_type',
+                'interactive_type' => 'list',
+                'interactive_list' => $this->buildPaketTypeInteractiveList(),
+            ],
+        );
+    }
+
+    private function handlePaketTypeStep(string $text, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+        $type = match (true) {
+            str_contains($normalized, 'dokumen'), str_contains($normalized, 'type:dokumen') => 'Dokumen',
+            str_contains($normalized, 'makanan'), str_contains($normalized, 'type:makanan') => 'Makanan',
+            str_contains($normalized, 'obat'), str_contains($normalized, 'type:obat') => 'Obat-obatan',
+            str_contains($normalized, 'lain'), str_contains($normalized, 'type:lainnya') => 'Lain-lain',
+            default => null,
+        };
+
+        if ($type === null) {
+            return $this->buildResult(
+                replyText: 'Mohon pilih jenis paket: Dokumen, Makanan, Obat-obatan, atau Lain-lain.',
+                intent: 'paket_type',
+                state: $state,
+                actions: [],
+                meta: ['step' => 'paket_ask_type', 'interactive_type' => 'list', 'interactive_list' => $this->buildPaketTypeInteractiveList()],
+            );
+        }
+
+        $state['paket_data']['package_type'] = $type;
+        $state['current_step'] = 'paket_ask_review';
+
+        $reviewText = $this->buildPaketReviewText($state['paket_data']);
+
+        return $this->buildResult(
+            replyText: $reviewText,
+            intent: 'paket_review',
+            state: $state,
+            actions: [['type' => 'save_state']],
+            meta: ['step' => 'paket_ask_review'],
+        );
+    }
+
+    private function handlePaketReviewStep(string $text, string $phone, array $state): array
+    {
+        $normalized = $this->normalizeText($text);
+
+        if (preg_match('/^(?:benar|betul|ya|iya|ok|oke|1|sudah benar|sudah)$/u', $normalized)) {
+            $state['status']       = 'idle';
+            $state['current_step'] = null;
+
+            $paketData = $state['paket_data'] ?? [];
+            $adminMessage = "📦 Pengiriman Paket Baru\n\n"
+                ."Dari: ".($paketData['pickup_point'] ?? '-')."\n"
+                ."Ke: ".($paketData['dropoff_point'] ?? '-')."\n"
+                ."Tanggal: ".($paketData['departure_date_label'] ?? $paketData['departure_date'] ?? '-')."\n"
+                ."Jam: ".($paketData['departure_time'] ?? '-')." WIB\n\n"
+                ."Pengirim: ".($paketData['sender_name'] ?? '-')." | ".($paketData['sender_phone'] ?? '-')."\n"
+                ."Alamat jemput: ".($paketData['sender_address'] ?? '-')."\n\n"
+                ."Penerima: ".($paketData['receiver_name'] ?? '-')." | ".($paketData['receiver_phone'] ?? '-')."\n"
+                ."Alamat antar: ".($paketData['receiver_address'] ?? '-')."\n\n"
+                ."Ukuran: ".($paketData['package_size'] ?? '-')."\n"
+                ."Seat: ".($paketData['package_seat'] ?? '-')."\n"
+                ."Jenis: ".($paketData['package_type'] ?? '-')."\n\n"
+                ."No Customer: {$phone}\n"
+                ."Mohon dikonfirmasi ongkos/biaya pengiriman ya Bos.";
+
+            return $this->buildResult(
+                replyText: "Baik, data pengiriman paket sudah lengkap dan telah kami terima 🙏😊\n\nAdmin Utama akan menghubungi Bapak/Ibu untuk konfirmasi ongkos/biaya pengiriman.\n\nTerima kasih telah menggunakan layanan JET 🙏😊",
+                intent: 'paket_confirmed',
+                state: $state,
+                actions: [
+                    ['type' => 'save_state'],
+                    ['type' => 'notify_admin', 'channel' => 'main_admin', 'message' => $adminMessage],
+                ],
+                meta: ['step' => 'paket_confirmed'],
+            );
+        }
+
+        if (preg_match('/^(?:ubah|ubah data|salah|batal|2)$/u', $normalized)) {
+            return $this->startPaketFlow($state);
+        }
+
+        return $this->buildResult(
+            replyText: "Mohon pilih:\n1. *Benar* — jika data sudah sesuai\n2. *Ubah Data* — jika ingin mengisi ulang",
+            intent: 'paket_review',
+            state: $state,
+            actions: [],
+            meta: ['step' => 'paket_ask_review'],
+        );
+    }
+
+    // ─── Paket Interactive List Builders ──────────────────────────────────
+
+    private function buildPaketSizeInteractiveList(): array
+    {
+        return [
+            'button'   => 'Pilih Ukuran',
+            'header'   => 'Ukuran Paket',
+            'body'     => 'Silakan pilih ukuran paket yang akan dikirim.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [[
+                'title' => 'Ukuran',
+                'rows'  => [
+                    ['id' => 'size:kecil',  'title' => 'Kecil',  'description' => 'Tidak memakan seat'],
+                    ['id' => 'size:sedang', 'title' => 'Sedang', 'description' => 'Tidak memakan seat'],
+                    ['id' => 'size:besar',  'title' => 'Besar',  'description' => 'Memakan 1 seat'],
+                ],
+            ]],
+        ];
+    }
+
+    private function buildPaketSeatInteractiveList(): array
+    {
+        return [
+            'button'   => 'Pilih Seat',
+            'header'   => 'Seat untuk Paket',
+            'body'     => 'Silakan pilih seat untuk paket berukuran besar.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [[
+                'title' => 'Seat Tersedia',
+                'rows'  => [
+                    ['id' => 'seat:cc',             'title' => 'CC'],
+                    ['id' => 'seat:bs-kiri',        'title' => 'BS Kiri'],
+                    ['id' => 'seat:bs-kanan',       'title' => 'BS Kanan'],
+                    ['id' => 'seat:belakang-kiri',  'title' => 'Belakang Kiri'],
+                    ['id' => 'seat:belakang-kanan', 'title' => 'Belakang Kanan'],
+                ],
+            ]],
+        ];
+    }
+
+    private function buildPaketTypeInteractiveList(): array
+    {
+        return [
+            'button'   => 'Pilih Jenis',
+            'header'   => 'Jenis Paket',
+            'body'     => 'Silakan pilih jenis paket yang dikirim.',
+            'footer'   => 'JET Travel Rokan Hulu',
+            'sections' => [[
+                'title' => 'Jenis',
+                'rows'  => [
+                    ['id' => 'type:dokumen',  'title' => 'Dokumen',      'description' => 'Surat, berkas, dll'],
+                    ['id' => 'type:makanan',  'title' => 'Makanan',      'description' => 'Makanan & minuman'],
+                    ['id' => 'type:obat',     'title' => 'Obat-obatan',  'description' => 'Obat & keperluan medis'],
+                    ['id' => 'type:lainnya',  'title' => 'Lain-lain',    'description' => 'Barang lainnya'],
+                ],
+            ]],
+        ];
+    }
+
+    private function buildPaketReviewText(array $paketData): string
+    {
+        $dateDisplay = trim((string) ($paketData['departure_date_label'] ?? ''));
+        if ($dateDisplay === '') {
+            $dateDisplay = trim((string) ($paketData['departure_date'] ?? '-'));
+            if ($dateDisplay !== '-' && $dateDisplay !== '') {
+                $dateDisplay = $this->formatDepartureDateForReview($dateDisplay);
+            }
+        }
+
+        $lines = [
+            'Baik Bapak/Ibu, berikut review pengiriman paket:',
+            '',
+            'Titik jemput paket    : '.($paketData['pickup_point'] ?? '-'),
+            'Titik antar paket     : '.($paketData['dropoff_point'] ?? '-'),
+            'Tanggal pengiriman    : '.$dateDisplay,
+            'Jam keberangkatan     : '.(($paketData['departure_time'] ?? '') !== '' ? $paketData['departure_time'].' WIB' : '-'),
+            '',
+            '*Data Pengirim:*',
+            'Nama                  : '.($paketData['sender_name'] ?? '-'),
+            'No HP                 : '.($paketData['sender_phone'] ?? '-'),
+            'Alamat jemput paket   : '.($paketData['sender_address'] ?? '-'),
+            '',
+            '*Data Penerima:*',
+            'Nama                  : '.($paketData['receiver_name'] ?? '-'),
+            'No HP                 : '.($paketData['receiver_phone'] ?? '-'),
+            'Alamat antar paket    : '.($paketData['receiver_address'] ?? '-'),
+            '',
+            'Ukuran paket          : '.($paketData['package_size'] ?? '-'),
+            'Seat paket            : '.($paketData['package_seat'] ?? '-'),
+            'Jenis paket           : '.($paketData['package_type'] ?? '-'),
+            'Ongkos/Biaya          : Akan diinfokan lebih lanjut oleh Admin',
+            '',
+            'Izin konfirmasi Bapak/Ibu, apakah data pengiriman ini sudah tepat?',
+            '',
+            '1. Benar',
+            '2. Ubah Data',
+            '',
+            'Pilih Benar jika datanya sudah sesuai, atau Ubah Data jika ingin mengisi ulang.',
+        ];
+
+        return implode("\n", $lines);
     }
 
     /**

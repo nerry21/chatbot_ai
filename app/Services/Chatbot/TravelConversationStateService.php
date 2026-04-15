@@ -81,6 +81,7 @@ class TravelConversationStateService
             'status'                      => $state->status ?: 'idle',
             'current_step'                => $state->current_step,
             'booking_data'                => $state->booking_data ?: [],
+            'paket_data'                  => ($state->meta ?? [])['paket_data'] ?? [],
             'schedule_change_data'        => $state->schedule_change_data ?: [],
             'last_admin_notification_key' => $state->last_admin_notification_key,
             'last_completed_booking_at'   => $state->last_completed_booking_at?->toDateTimeString(),
@@ -111,9 +112,15 @@ class TravelConversationStateService
         $state->last_intent                = $intent !== '' ? $intent : $state->last_intent;
         $state->last_bot_message_at        = $now;
 
+        // Store paket_data inside meta (no DB migration needed)
+        $existingMeta = $state->meta ?? [];
+        if (isset($newState['paket_data']) && is_array($newState['paket_data'])) {
+            $existingMeta['paket_data'] = $newState['paket_data'];
+        }
+
         // Merge meta: existing + new_state.meta + result.meta (later keys win)
         $state->meta = array_merge(
-            $state->meta ?? [],
+            $existingMeta,
             (array) ($newState['meta'] ?? []),
             (array) ($routerResult['meta'] ?? []),
         );
