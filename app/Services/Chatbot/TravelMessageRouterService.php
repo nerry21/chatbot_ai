@@ -111,7 +111,12 @@ class TravelMessageRouterService
             return $this->handleScheduleChangeFlow($text, $phone, $state, $now);
         }
 
-        // ─── 4. BOOKING START TRIGGER ─────────────────────────────────────
+        // ─── 4. PAKET START TRIGGER ──────────────────────────────────────
+        if ($this->isPaketStartMessage($text)) {
+            return $this->startPaketFlow($state);
+        }
+
+        // ─── 5. BOOKING START TRIGGER ─────────────────────────────────────
         //    Hanya jika pesan jelas ingin booking (bukan pertanyaan)
         if ($this->isBookingStartMessage($text) && ! $this->looksLikeQuestion($text)) {
             return $this->handleBookingStartWithGreeting($text, $state, $now);
@@ -1593,6 +1598,19 @@ class TravelMessageRouterService
         ];
 
         return in_array($normalized, $greetings, true);
+    }
+
+    private function isPaketStartMessage(string $text): bool
+    {
+        $normalized = $this->normalizeText($text);
+
+        foreach (['service:paket', 'pengiriman paket', 'kirim paket'] as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function isBookingStartMessage(string $text): bool
