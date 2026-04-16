@@ -84,21 +84,26 @@ class TravelWhatsAppPipelineService
                         'conversation_id' => $conversation->id,
                     ];
 
+                    $usedInteractive = false;
+                    $interactiveMetaPayload = [];
+
                     if ($interactiveType === 'list' && $interactiveList !== []) {
                         // Send greeting text separately before interactive menu
                         $greetingKey = (string) ($meta['greeting_key'] ?? '');
                         if ($greetingKey !== '' && trim($replyText) !== '') {
-                            $this->sender->sendText($toPhone, $replyText, $deliveryMeta);
-                            $this->conversationManager->appendOutboundMessage(
+                            $greetingDelivery = $this->sender->sendText($toPhone, $replyText, $deliveryMeta);
+                            $greetingMessage = $this->conversationManager->appendOutboundMessage(
                                 $conversation,
                                 $replyText,
                                 [
                                     'source' => 'travel_whatsapp_pipeline',
-                                    'delivery' => ['status' => 'sent'],
+                                    'delivery' => $greetingDelivery,
                                     'meta' => $meta,
                                 ],
                                 'text'
                             );
+
+                            $this->applyDeliveryStatus($greetingMessage, $greetingDelivery);
                         }
 
                         $fallbackText = $this->resolveInteractiveFallbackText($replyText, $meta, $interactiveList);
@@ -110,21 +115,36 @@ class TravelWhatsAppPipelineService
                         );
 
                         $delivery = $sendResult['delivery'];
+                        $usedInteractive = ! $sendResult['used_text_fallback'];
                         $loggedText = $sendResult['used_text_fallback'] ? $fallbackText : $replyText;
+
+                        if ($usedInteractive) {
+                            $interactiveMetaPayload = $this->buildInteractiveOutboundPayload($interactiveList);
+                        }
                     } else {
                         $delivery = $this->sender->sendText($toPhone, $replyText, $deliveryMeta);
                     }
 
-                    $this->conversationManager->appendOutboundMessage(
+                    $rawPayload = [
+                        'source' => 'travel_whatsapp_pipeline',
+                        'delivery' => $delivery,
+                        'meta' => $meta,
+                    ];
+
+                    if ($usedInteractive) {
+                        $rawPayload['outbound_payload'] = [
+                            'interactive' => $interactiveMetaPayload,
+                        ];
+                    }
+
+                    $outboundMessage = $this->conversationManager->appendOutboundMessage(
                         $conversation,
                         $loggedText,
-                        [
-                            'source' => 'travel_whatsapp_pipeline',
-                            'delivery' => $delivery,
-                            'meta' => $meta,
-                        ],
-                        'text'
+                        $rawPayload,
+                        $usedInteractive ? 'interactive' : 'text'
                     );
+
+                    $this->applyDeliveryStatus($outboundMessage, $delivery);
 
                     return $delivery;
                 },
@@ -180,6 +200,18 @@ class TravelWhatsAppPipelineService
             // Check if this is a closing message — reset state after responding
             $isClosingMessage = $this->isClosingMessage($originalText);
 
+            // Detect booking intent context: either this message or the recent
+            // conversation mentions booking/scheduling/travel intent. When the
+            // customer says "oke baik" right after the bot shared schedule info,
+            // we should follow the LLM reply with an interactive service menu
+            // instead of letting the thread die on "Siap kak".
+            $shouldFollowUpWithMenu = $this->shouldFollowUpWithServiceMenu(
+                $originalText,
+                $conversation,
+                $state,
+                $isClosingMessage
+            );
+
             $llmReply = $this->callLlmForNaturalResponse($originalText, $customerName, $conversation, $message);
 
             $deliveryMeta = [
@@ -189,7 +221,7 @@ class TravelWhatsAppPipelineService
 
             $delivery = $this->sender->sendText($phone, $llmReply, $deliveryMeta);
 
-            $this->conversationManager->appendOutboundMessage(
+            $llmMessage = $this->conversationManager->appendOutboundMessage(
                 $conversation,
                 $llmReply,
                 [
@@ -199,6 +231,75 @@ class TravelWhatsAppPipelineService
                 ],
                 'text'
             );
+
+            $this->applyDeliveryStatus($llmMessage, $delivery);
+
+            // If the customer is ready to book (or has just confirmed after a
+            // booking-related LLM answer), follow up with the interactive
+            // service menu so the conversation advances instead of stalling.
+            if ($shouldFollowUpWithMenu) {
+                $menuList = [
+                    'button'   => 'Pilih Layanan',
+                    'header'   => 'Layanan JET Travel',
+                    'body'     => 'Apakah jadi ingin memesan, Bapak/Ibu? Silakan pilih layanan yang diinginkan 🙏',
+                    'footer'   => 'JET Travel Rokan Hulu',
+                    'sections' => [
+                        [
+                            'title' => 'Pilihan Layanan',
+                            'rows'  => [
+                                ['id' => 'service:reguler',  'title' => 'Reguler',          'description' => 'Antar-jemput standar'],
+                                ['id' => 'service:dropping', 'title' => 'Dropping',         'description' => '1 mobil langsung ke tujuan'],
+                                ['id' => 'service:rental',   'title' => 'Rental',           'description' => 'Sewa mobil min. 2 hari'],
+                                ['id' => 'service:paket',    'title' => 'Pengiriman Paket', 'description' => 'Kirim barang antar kota'],
+                            ],
+                        ],
+                    ],
+                ];
+
+                $menuBody = (string) $menuList['body'];
+                $menuFallbackText = $menuBody."\n\n1. Reguler\n2. Dropping\n3. Rental\n4. Pengiriman Paket\n\nSilakan balas dengan nomor atau nama layanannya.";
+
+                $menuSendResult = $this->sendInteractiveOrTextFallback(
+                    to: $phone,
+                    interactivePayload: $menuList,
+                    fallbackText: $menuFallbackText,
+                    deliveryMeta: [
+                        'source' => 'travel_whatsapp_pipeline_llm_followup_menu',
+                        'conversation_id' => $conversation->id,
+                    ],
+                );
+
+                $menuUsedInteractive = ! $menuSendResult['used_text_fallback'];
+                $menuLoggedText = $menuUsedInteractive ? $menuBody : $menuFallbackText;
+
+                $menuRawPayload = [
+                    'source' => 'travel_whatsapp_pipeline_llm_followup_menu',
+                    'delivery' => $menuSendResult['delivery'],
+                    'meta' => [
+                        'intent' => 'llm_followup_service_menu',
+                        'interactive_type' => 'list',
+                    ],
+                ];
+
+                if ($menuUsedInteractive) {
+                    $menuRawPayload['outbound_payload'] = [
+                        'interactive' => $this->buildInteractiveOutboundPayload($menuList),
+                    ];
+                }
+
+                $menuMessage = $this->conversationManager->appendOutboundMessage(
+                    $conversation,
+                    $menuLoggedText,
+                    $menuRawPayload,
+                    $menuUsedInteractive ? 'interactive' : 'text'
+                );
+
+                $this->applyDeliveryStatus($menuMessage, $menuSendResult['delivery']);
+
+                // Don't reset state when we've just offered the menu — the
+                // customer is about to pick a service.
+                return true;
+            }
 
             // Reset state after closing message so next interaction starts fresh
             if ($isClosingMessage) {
@@ -218,16 +319,195 @@ class TravelWhatsAppPipelineService
         $normalized = preg_replace('/\s+/u', ' ', trim($normalized));
 
         $closingPatterns = [
-            'siap', 'siap min', 'siap kak', 'siap ya',
-            'oke', 'ok', 'oke min', 'oke kak',
-            'baik', 'baik min', 'baik kak',
-            'sip', 'sip min', 'sip kak',
+            'siap', 'siap min', 'siap kak', 'siap ya', 'siap bang', 'siap pak', 'siap bu',
+            'oke', 'ok', 'oke min', 'oke kak', 'oke ya', 'ok ya', 'ok min', 'ok kak',
+            'oke baik', 'ok baik', 'oke sip', 'ok sip', 'oke siap', 'ok siap',
+            'baik', 'baik min', 'baik kak', 'baik ya', 'baik bang', 'baik pak', 'baik bu',
+            'baik sip', 'baik siap', 'baiklah',
+            'sip', 'sip min', 'sip kak', 'sip ya', 'sip lah', 'siplah',
             'tidak ada', 'tidak ada min', 'tidak ada kak',
             'sudah cukup', 'cukup', 'cukup min',
-            'tidak ada lagi', 'ga ada', 'gak ada',
+            'tidak ada lagi', 'ga ada', 'gak ada', 'engga ada', 'nggak ada',
+            'terima kasih', 'makasih', 'makasih kak', 'terima kasih kak', 'thanks', 'thank you',
         ];
 
         return in_array($normalized, $closingPatterns, true);
+    }
+
+    /**
+     * Decide whether the LLM reply should be followed by an interactive
+     * service menu. This bridges the gap between LLM natural answers and the
+     * rule-based booking flow: when the customer signals booking intent —
+     * either directly ("mau pesan") or by confirming ("oke baik") right
+     * after the bot shared schedule/fare info — we proactively offer the
+     * service menu so the conversation keeps moving.
+     *
+     * @param  array<string, mixed>  $state
+     */
+    private function shouldFollowUpWithServiceMenu(
+        string $originalText,
+        Conversation $conversation,
+        array $state,
+        bool $isClosingMessage,
+    ): bool {
+        // Only when the customer is not already inside a booking/paket/
+        // dropping/rental/schedule_change flow — those have their own menus.
+        $status = (string) ($state['status'] ?? 'idle');
+        if (! in_array($status, ['idle', ''], true)) {
+            return false;
+        }
+
+        $normalized = mb_strtolower(trim($originalText), 'UTF-8');
+        $normalized = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $normalized) ?? $normalized;
+        $normalized = (string) preg_replace('/\s+/u', ' ', trim($normalized));
+
+        if ($normalized === '') {
+            return false;
+        }
+
+        // Direct booking intent words → always offer the menu.
+        $bookingIntentPatterns = [
+            'mau booking', 'mau boking', 'mau pesan', 'mau berangkat',
+            'ingin booking', 'ingin boking', 'ingin pesan', 'ingin berangkat',
+            'pesan travel', 'pesan tiket', 'reservasi', 'pemesanan',
+            'saya mau pesan', 'saya mau booking', 'saya mau boking',
+            'saya mau berangkat', 'jadi mau pesan', 'jadi pesan',
+            'jadi booking', 'jadi boking',
+        ];
+
+        foreach ($bookingIntentPatterns as $pattern) {
+            if (str_contains($normalized, $pattern)) {
+                return true;
+            }
+        }
+
+        // Positive confirmation after a booking-related bot message → offer
+        // the menu so the customer can proceed. Without this the thread dies
+        // at "Siap kak" when the customer was actually about to book.
+        if ($isClosingMessage) {
+            return $this->recentBotReplyLooksBookingRelated($conversation);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check the most recent outbound (bot) message to see if the previous
+     * exchange was about scheduling/fares/booking. Used to decide whether a
+     * customer "oke baik" deserves a follow-up service menu.
+     */
+    private function recentBotReplyLooksBookingRelated(Conversation $conversation): bool
+    {
+        try {
+            $recent = ConversationMessage::query()
+                ->where('conversation_id', $conversation->id)
+                ->where('direction', MessageDirection::Outbound)
+                ->orderByDesc('id')
+                ->limit(3)
+                ->get();
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        if ($recent->isEmpty()) {
+            return false;
+        }
+
+        $bookingSignals = [
+            'jadwal', 'keberangkatan', 'berangkat', 'pukul', 'wib',
+            'tarif', 'harga', 'rp', 'seat', 'kursi',
+            'booking', 'boking', 'pesan', 'reservasi', 'antar jemput',
+            'dropping', 'rental', 'paket',
+        ];
+
+        foreach ($recent as $previous) {
+            $body = mb_strtolower((string) ($previous->message_text ?? ''), 'UTF-8');
+
+            if ($body === '') {
+                continue;
+            }
+
+            foreach ($bookingSignals as $signal) {
+                if (str_contains($body, $signal)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Reflect the provider delivery result onto the persisted message so the
+     * admin mobile UI can render the correct delivery ticks. Without this,
+     * every outbound message would remain `pending` (clock icon) forever —
+     * status updates from Meta only arrive for inbound-triggered messages,
+     * and marking sent at append time gives an immediate single tick.
+     *
+     * @param  array<string, mixed>  $delivery
+     */
+    private function applyDeliveryStatus(ConversationMessage $message, array $delivery): void
+    {
+        $status = (string) ($delivery['status'] ?? '');
+
+        if ($status === 'sent') {
+            $waMessageId = null;
+            $response = is_array($delivery['response'] ?? null) ? $delivery['response'] : [];
+            $messages = is_array($response['messages'] ?? null) ? $response['messages'] : [];
+            if (isset($messages[0]['id']) && is_string($messages[0]['id']) && $messages[0]['id'] !== '') {
+                $waMessageId = $messages[0]['id'];
+            }
+
+            $message->markSent($waMessageId, ['wa_send_result' => $delivery]);
+
+            return;
+        }
+
+        if ($status === 'failed') {
+            $errorMessage = (string) ($delivery['error'] ?? 'send_failed');
+            $message->markFailed($errorMessage, ['wa_send_result' => $delivery]);
+        }
+    }
+
+    /**
+     * Convert the internal router-style interactive list payload into the
+     * canonical Meta WhatsApp structure that {@see ConversationMessageResource}
+     * expects (action.sections[].rows[].title, body.text, footer.text,
+     * header.text, action.button). Mirrors the mapping performed inside
+     * {@see \App\Services\WhatsApp\WhatsAppSenderService::sendInteractiveList}.
+     *
+     * @param  array<string, mixed>  $interactiveList
+     * @return array<string, mixed>
+     */
+    private function buildInteractiveOutboundPayload(array $interactiveList): array
+    {
+        $payload = [
+            'type' => 'list',
+            'body' => [
+                'text' => (string) ($interactiveList['body'] ?? 'Silakan pilih salah satu.'),
+            ],
+            'action' => [
+                'button' => (string) ($interactiveList['button'] ?? 'Pilih'),
+                'sections' => array_values((array) ($interactiveList['sections'] ?? [])),
+            ],
+        ];
+
+        $headerText = trim((string) ($interactiveList['header'] ?? ''));
+        if ($headerText !== '') {
+            $payload['header'] = [
+                'type' => 'text',
+                'text' => $headerText,
+            ];
+        }
+
+        $footerText = trim((string) ($interactiveList['footer'] ?? ''));
+        if ($footerText !== '') {
+            $payload['footer'] = [
+                'text' => $footerText,
+            ];
+        }
+
+        return $payload;
     }
 
     /**
@@ -472,7 +752,7 @@ class TravelWhatsAppPipelineService
                 . "2. Jika tidak tahu, bilang akan dikonsultasikan ke admin.\n"
                 . "3. Maksimal 3-4 kalimat.\n"
                 . "4. JANGAN memulai proses booking. Jika customer mau booking, arahkan bilang 'mau booking' atau 'pesan'.\n"
-                . "5. Jika customer bilang terima kasih, oke, siap, baik → balas SINGKAT saja, misal 'Siap kak 🙏' atau 'Sama-sama kak 😊🙏'. JANGAN bertanya lagi atau menawarkan bantuan lain.\n"
+                . "5. Jika customer bilang terima kasih, oke, siap, baik → balas SINGKAT saja, misal 'Siap kak 🙏' atau 'Sama-sama kak 😊🙏'. Sistem akan otomatis menawarkan menu pemesanan bila memang konteksnya tentang booking, jadi kamu cukup balas singkat.\n"
                 . "6. Jika customer bilang 'tidak ada', 'sudah cukup', 'tidak ada lagi' → balas penutup singkat saja, misal 'Baik kak, terima kasih ya 🙏'. JANGAN tanya lagi.\n\n"
                 . "=== JADWAL (setiap hari) ===\n" . implode("\n", $scheduleLines) . "\n\n"
                 . "=== TARIF (per orang) ===\n" . implode("\n", $fareLines) . "\n\n"
