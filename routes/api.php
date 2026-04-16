@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AdminMobile\BotControlController as AdminMobileBotC
 use App\Http\Controllers\Api\AdminMobile\CallAnalyticsController as AdminMobileCallAnalyticsController;
 use App\Http\Controllers\Api\AdminMobile\CallController as AdminMobileCallController;
 use App\Http\Controllers\Api\AdminMobile\ContactController as AdminMobileContactController;
+use App\Http\Controllers\Api\AdminMobile\ConversationActionController as AdminMobileConversationActionController;
 use App\Http\Controllers\Api\AdminMobile\MediaController as AdminMobileMediaController;
 use App\Http\Controllers\Api\AdminMobile\OmnichannelCallReadinessCacheClearController as AdminMobileCallReadinessCacheClearController;
 use App\Http\Controllers\Api\AdminMobile\ReplyController as AdminMobileReplyController;
@@ -84,6 +85,7 @@ Route::prefix('admin-mobile')
             Route::get('conversations/{conversation}/messages', [AdminMobileWorkspaceController::class, 'messages'])->name('conversations.messages.index');
             Route::get('conversations/{conversation}/poll', [AdminMobileWorkspaceController::class, 'pollConversation'])->name('conversations.poll');
             Route::post('conversations/{conversation}/reply', [AdminMobileReplyController::class, 'store'])->name('conversations.reply');
+            Route::post('conversations/{conversation}/mark-read', [AdminMobileConversationActionController::class, 'markRead'])->name('conversations.mark-read');
             Route::post('conversations/{conversation}/call/start', [AdminMobileCallController::class, 'start'])->name('conversations.call.start');
             Route::post('conversations/{conversation}/call/request-permission', [AdminMobileCallController::class, 'requestPermission'])->name('conversations.call.request-permission');
             Route::post('conversations/{conversation}/call/accept', [AdminMobileCallController::class, 'accept'])->name('conversations.call.accept');
