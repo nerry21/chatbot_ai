@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\Chatbot\ConversationManagerService;
+use App\Services\Firebase\FcmNotificationService;
 use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
 use Illuminate\Database\QueryException;
@@ -24,6 +25,7 @@ class WhatsAppWebhookService
         private readonly PhoneNumberService $phoneService,
         private readonly ConversationManagerService $conversationManager,
         private readonly WhatsAppWebhookDedupService $dedupService,
+        private readonly FcmNotificationService $fcmNotificationService,
     ) {
     }
 
@@ -532,6 +534,23 @@ class WhatsAppWebhookService
 
         // Enqueue downstream job
         $this->dispatchIncomingMessageJob($persisted);
+
+        // ─── Trigger push notification ke admin ────────────────────────
+        try {
+            $conversation = \App\Models\Conversation::with('customer')->find($persisted->conversation_id);
+            if ($conversation !== null) {
+                $this->fcmNotificationService->notifyIncomingMessage(
+                    message: $persisted,
+                    conversation: $conversation,
+                    customer: $conversation->customer,
+                );
+            }
+        } catch (\Throwable $e) {
+            // Push gagal tidak boleh mengganggu webhook flow.
+            WaLog::warning('[WebhookService] FCM push failed (non-fatal)', [
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         WaLog::info('[WebhookService] Incoming message queued for processing', [
             'wa_message_id' => $parsedMessage['wa_message_id'] ?? null,

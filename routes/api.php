@@ -103,6 +103,10 @@ Route::prefix('admin-mobile')
             Route::get('contacts', [AdminMobileContactController::class, 'index'])->name('contacts.index');
             Route::post('contacts', [AdminMobileContactController::class, 'create'])->name('contacts.store');
 
+            // ─── Device FCM Token (Push Notification) ──────────────────────
+            Route::post('device-token/register', [\App\Http\Controllers\Api\AdminMobile\DeviceTokenController::class, 'register'])->name('device-token.register');
+            Route::post('device-token/unregister', [\App\Http\Controllers\Api\AdminMobile\DeviceTokenController::class, 'unregister'])->name('device-token.unregister');
+
             Route::get('call-analytics/summary', [AdminMobileCallAnalyticsController::class, 'summary'])->name('call-analytics.summary');
             Route::get('call-analytics/recent', [AdminMobileCallAnalyticsController::class, 'recent'])->name('call-analytics.recent');
             Route::get('poll/list', [AdminMobileWorkspaceController::class, 'pollList'])->name('poll.list');
