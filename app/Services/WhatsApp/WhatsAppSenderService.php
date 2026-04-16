@@ -553,6 +553,42 @@ class WhatsAppSenderService
             ];
         }
 
+        if ($messageType === 'document') {
+            $document = is_array($providerPayload['document'] ?? null) ? $providerPayload['document'] : [];
+            $caption = trim((string) ($providerPayload['caption'] ?? ''));
+            $filename = trim((string) ($providerPayload['filename'] ?? ''));
+            $documentLink = Arr::get($document, 'link');
+            $documentId = $documentLink ? null : Arr::get($document, 'id');
+
+            return [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'document',
+                'document' => array_filter([
+                    'id' => $documentId,
+                    'link' => $documentLink,
+                    'caption' => $caption !== '' ? $caption : null,
+                    'filename' => $filename !== '' ? $filename : null,
+                ], static fn (mixed $value): bool => filled($value)),
+            ];
+        }
+
+        if ($messageType === 'location') {
+            $location = is_array($providerPayload['location'] ?? null) ? $providerPayload['location'] : [];
+
+            return [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'location',
+                'location' => array_filter([
+                    'latitude' => (float) Arr::get($location, 'latitude', 0),
+                    'longitude' => (float) Arr::get($location, 'longitude', 0),
+                    'name' => Arr::get($location, 'name'),
+                    'address' => Arr::get($location, 'address'),
+                ], static fn (mixed $value): bool => $value !== null && $value !== ''),
+            ];
+        }
+
         return [
             'messaging_product' => 'whatsapp',
             'to' => $to,
@@ -606,6 +642,24 @@ class WhatsAppSenderService
             )
         ) {
             return 'image';
+        }
+
+        if (
+            $messageType === 'document'
+            && is_array($providerPayload['document'] ?? null)
+            && (
+                filled($providerPayload['document']['id'] ?? null)
+                || filled($providerPayload['document']['link'] ?? null)
+            )
+        ) {
+            return 'document';
+        }
+
+        if (
+            $messageType === 'location'
+            && is_array($providerPayload['location'] ?? null)
+        ) {
+            return 'location';
         }
 
         return 'text';
@@ -662,7 +716,7 @@ class WhatsAppSenderService
 
     private function shouldFallbackReengagementTemplate(string $resolvedType, int $errorCode, string $errorMessage): bool
     {
-        if (! in_array($resolvedType, ['text', 'audio', 'image', 'contacts', 'interactive'], true)) {
+        if (! in_array($resolvedType, ['text', 'audio', 'image', 'document', 'location', 'contacts', 'interactive'], true)) {
             return false;
         }
 

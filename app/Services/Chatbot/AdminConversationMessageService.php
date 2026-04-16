@@ -45,6 +45,8 @@ class AdminConversationMessageService
         $dedupeSeed = match ($messageType) {
             'audio' => (string) data_get($outboundPayload, 'audio.link', ''),
             'image' => (string) data_get($outboundPayload, 'image.link', ''),
+            'document' => (string) data_get($outboundPayload, 'storage_path', ''),
+            'location' => data_get($outboundPayload, 'location.latitude', '0').'|'.data_get($outboundPayload, 'location.longitude', '0'),
             default => mb_strtolower($normalizedText, 'UTF-8'),
         };
 
@@ -139,7 +141,24 @@ class AdminConversationMessageService
                     'media_size_bytes' => data_get($outboundPayload, 'size_bytes'),
                     'media_storage_disk' => data_get($outboundPayload, 'storage_disk'),
                     'media_storage_path' => data_get($outboundPayload, 'storage_path'),
-                ] : [])),
+                ] : ($messageType === 'document' ? [
+                    'outbound_payload' => [
+                        'document' => [
+                            'link' => (string) data_get($outboundPayload, 'document.link', ''),
+                        ],
+                        'filename' => data_get($outboundPayload, 'filename'),
+                    ],
+                    'media_caption' => data_get($outboundPayload, 'caption'),
+                    'mime_type' => data_get($outboundPayload, 'mime_type'),
+                    'media_original_name' => data_get($outboundPayload, 'original_name'),
+                    'media_size_bytes' => data_get($outboundPayload, 'size_bytes'),
+                    'media_storage_disk' => data_get($outboundPayload, 'storage_disk'),
+                    'media_storage_path' => data_get($outboundPayload, 'storage_path'),
+                ] : ($messageType === 'location' ? [
+                    'outbound_payload' => [
+                        'location' => data_get($outboundPayload, 'location', []),
+                    ],
+                ] : [])))),
             );
 
             $this->adminCorrectionLogger->captureForAdminReply(

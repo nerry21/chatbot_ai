@@ -54,9 +54,25 @@ class ReplyController extends Controller
             ], 422);
         }
 
+        if ($messageType === 'document' && ! $conversation->isWhatsApp()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Dokumen saat ini hanya didukung untuk conversation WhatsApp.',
+            ], 422);
+        }
+
+        if ($messageType === 'location' && ! $conversation->isWhatsApp()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Lokasi saat ini hanya didukung untuk conversation WhatsApp.',
+            ], 422);
+        }
+
         $text = match ($messageType) {
             'audio' => (string) (($validated['caption'] ?? '') ?: '[Voice note admin]'),
             'image' => (string) (($validated['caption'] ?? '') ?: '[Gambar dari Admin Jet]'),
+            'document' => (string) (($validated['caption'] ?? '') ?: '[Dokumen dari Admin Jet]'),
+            'location' => (string) (($validated['location_name'] ?? '') ?: '[Lokasi dari Admin Jet]'),
             default => (string) ($validated['message'] ?? ''),
         };
 
@@ -72,6 +88,11 @@ class ReplyController extends Controller
                 $request->file('image_file'),
                 (string) ($validated['caption'] ?? ''),
             ),
+            'document' => $this->storeDocumentPayload(
+                $request->file('document_file'),
+                (string) ($validated['caption'] ?? ''),
+            ),
+            'location' => $this->buildLocationPayload($validated),
             default => [],
         };
 
@@ -79,9 +100,12 @@ class ReplyController extends Controller
             conversation: $conversation,
             text: $text,
             adminId: (int) $user->id,
-            source: $messageType === 'audio'
-                ? 'admin_mobile_voice_note'
-                : 'admin_mobile_omnichannel',
+            source: match ($messageType) {
+                'audio' => 'admin_mobile_voice_note',
+                'document' => 'admin_mobile_document',
+                'location' => 'admin_mobile_location',
+                default => 'admin_mobile_omnichannel',
+            },
             messageType: $messageType,
             outboundPayload: $outboundPayload,
         );
@@ -107,6 +131,8 @@ class ReplyController extends Controller
             : match ($messageType) {
                 'audio' => 'Voice note admin berhasil diantrekan ke WhatsApp.',
                 'image' => 'Gambar dari Admin Jet berhasil diantrekan ke WhatsApp.',
+                'document' => 'Dokumen dari Admin Jet berhasil diantrekan ke WhatsApp.',
+                'location' => 'Lokasi berhasil diantrekan ke WhatsApp.',
                 default => $conversation->channel === 'mobile_live_chat'
                     ? 'Balasan admin berhasil dikirim ke live chat.'
                     : 'Balasan admin berhasil diantrekan ke WhatsApp.',
@@ -226,5 +252,47 @@ class ReplyController extends Controller
         $safeBaseName = $baseName !== '' ? $baseName : 'voice_note';
 
         return $safeBaseName.'.'.$extension;
+    }
+
+    private function storeDocumentPayload(?UploadedFile $documentFile, string $caption): array
+    {
+        if (! $documentFile instanceof UploadedFile) {
+            return [];
+        }
+
+        $originalName = $documentFile->getClientOriginalName();
+        $extension = strtolower(trim(pathinfo($originalName, PATHINFO_EXTENSION)));
+        $baseName = trim(pathinfo($originalName, PATHINFO_FILENAME));
+        $safeBaseName = $baseName !== '' ? Str::slug($baseName) : 'document_'.now()->timestamp;
+        $storedFileName = $safeBaseName.($extension !== '' ? '.'.$extension : '');
+        $storedPath = $documentFile->storeAs('conversation-media/documents', $storedFileName, 'public');
+
+        return [
+            'document' => [],
+            'caption' => $caption !== '' ? $caption : null,
+            'filename' => $originalName,
+            'mime_type' => $documentFile->getMimeType() ?: $documentFile->getClientMimeType(),
+            'original_name' => $originalName,
+            'size_bytes' => $documentFile->getSize(),
+            'storage_disk' => 'public',
+            'storage_path' => $storedPath,
+        ];
+    }
+
+    private function buildLocationPayload(array $validated): array
+    {
+        $latitude = (float) ($validated['latitude'] ?? 0);
+        $longitude = (float) ($validated['longitude'] ?? 0);
+        $name = trim((string) ($validated['location_name'] ?? ''));
+        $address = trim((string) ($validated['location_address'] ?? ''));
+
+        return [
+            'location' => [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'name' => $name !== '' ? $name : null,
+                'address' => $address !== '' ? $address : null,
+            ],
+        ];
     }
 }

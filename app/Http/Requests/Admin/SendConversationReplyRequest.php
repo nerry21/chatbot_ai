@@ -22,7 +22,7 @@ class SendConversationReplyRequest extends FormRequest
             'message_type' => [
                 'nullable',
                 'string',
-                Rule::in(['text', 'audio', 'image']),
+                Rule::in(['text', 'audio', 'image', 'document', 'location']),
             ],
 
             'message' => [
@@ -51,6 +51,36 @@ class SendConversationReplyRequest extends FormRequest
                 'max:5120',
             ],
 
+            'document_file' => [
+                'nullable',
+                'file',
+                'max:102400',
+            ],
+
+            'latitude' => [
+                'nullable',
+                'numeric',
+                'between:-90,90',
+            ],
+
+            'longitude' => [
+                'nullable',
+                'numeric',
+                'between:-180,180',
+            ],
+
+            'location_name' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
+
+            'location_address' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
+
             'mime_type' => ['nullable', 'string', 'max:120'],
             'voice' => ['nullable', 'boolean'],
             'caption' => ['nullable', 'string', 'max:1000'],
@@ -66,6 +96,10 @@ class SendConversationReplyRequest extends FormRequest
             'audio_file.max' => 'Ukuran voice note maksimal 16 MB.',
             'image_file.image' => 'File yang dipilih harus berupa gambar.',
             'image_file.max' => 'Ukuran gambar maksimal 5 MB.',
+            'document_file.file' => 'Dokumen harus berupa file.',
+            'document_file.max' => 'Ukuran dokumen maksimal 100 MB.',
+            'latitude.between' => 'Latitude harus antara -90 dan 90.',
+            'longitude.between' => 'Longitude harus antara -180 dan 180.',
             'message_type.in' => 'Jenis pesan tidak didukung.',
         ];
     }
@@ -144,6 +178,21 @@ class SendConversationReplyRequest extends FormRequest
             if ($messageType === 'image') {
                 if (! $this->hasFile('image_file')) {
                     $validator->errors()->add('image_file', 'Gambar wajib dipilih dari galeri.');
+                }
+            }
+
+            if ($messageType === 'document') {
+                if (! $this->hasFile('document_file')) {
+                    $validator->errors()->add('document_file', 'Dokumen wajib dipilih.');
+                }
+            }
+
+            if ($messageType === 'location') {
+                $latitude = $this->input('latitude');
+                $longitude = $this->input('longitude');
+
+                if ($latitude === null || $latitude === '' || $longitude === null || $longitude === '') {
+                    $validator->errors()->add('latitude', 'Koordinat lokasi (latitude & longitude) wajib diisi.');
                 }
             }
         });
