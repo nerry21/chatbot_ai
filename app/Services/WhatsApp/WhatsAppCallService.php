@@ -11,6 +11,7 @@ use Illuminate\Support\Arr;
 class WhatsAppCallService
 {
     private const META_HISTORY_LIMIT = 10;
+    private const CONFIG_ERROR_MESSAGE = 'Konfigurasi panggilan belum lengkap. Aktifkan WhatsApp Calling API di Meta Business Manager (Phone Numbers → Calling) untuk nomor ini, lalu coba lagi.';
 
     private readonly bool $permissionRequestEnabled;
     private readonly int $defaultPermissionTtlMinutes;
@@ -44,6 +45,13 @@ class WhatsAppCallService
             'status_before' => $session->status,
             'permission_status' => $session->permission_status,
         ]));
+
+        // Pre-flight: bail out early with a clear, actionable message instead
+        // of round-tripping to Meta with empty credentials.
+        $configCheck = $this->preflightConfigurationCheck($session);
+        if ($configCheck !== null) {
+            return $configCheck;
+        }
 
         if ($session->isConnected()) {
             return $this->buildServiceResult(
@@ -222,6 +230,14 @@ class WhatsAppCallService
     public function ensureUserCallPermission(WhatsAppCallSession $session, array $options = []): array
     {
         $this->ensureBusinessInitiatedSession($session);
+
+        // Pre-flight: bail out early with a clear, actionable message instead
+        // of round-tripping to Meta with empty credentials.
+        $configCheck = $this->preflightConfigurationCheck($session);
+        if ($configCheck !== null) {
+            return $configCheck;
+        }
+
         $customerTarget = $this->resolveCustomerTarget($session);
 
         if ($session->hasGrantedPermission() && ! (bool) ($options['force_remote_permission_status'] ?? false)) {
@@ -277,7 +293,7 @@ class WhatsAppCallService
                     session: $updatedSession,
                     ok: false,
                     action: 'call_blocked_configuration_error',
-                    message: 'Konfigurasi panggilan belum lengkap.',
+                    message: self::CONFIG_ERROR_MESSAGE,
                     permissionRequired: true,
                     permissionStatus: WhatsAppCallSession::PERMISSION_FAILED,
                     metaResult: $metaResult,
@@ -495,7 +511,7 @@ class WhatsAppCallService
                     ? 'call_blocked_configuration_error'
                     : $this->permissionActionForStatus($permissionStatus),
                 message: $this->isConfigurationError($metaError)
-                    ? 'Konfigurasi panggilan belum lengkap.'
+                    ? self::CONFIG_ERROR_MESSAGE
                     : $this->permissionMessageForStatus($permissionStatus, forRequest: true),
                 permissionRequired: $permissionStatus !== WhatsAppCallSession::PERMISSION_GRANTED,
                 permissionStatus: $permissionStatus,
@@ -646,7 +662,7 @@ class WhatsAppCallService
                 ? 'call_blocked_configuration_error'
                 : (($metaResult['is_rate_limited'] ?? false) ? 'call_rate_limited' : 'call_start_failed');
             $message = match ($action) {
-                'call_blocked_configuration_error' => 'Konfigurasi panggilan belum lengkap.',
+                'call_blocked_configuration_error' => self::CONFIG_ERROR_MESSAGE,
                 'call_rate_limited' => 'Layanan panggilan sedang dibatasi sementara.',
                 default => 'Gagal memulai panggilan WhatsApp.',
             };
@@ -1173,7 +1189,7 @@ class WhatsAppCallService
             WhatsAppCallSession::PERMISSION_DENIED => 'Izin panggilan ditolak oleh pengguna.',
             WhatsAppCallSession::PERMISSION_EXPIRED => 'Izin panggilan pengguna sudah kedaluwarsa.',
             WhatsAppCallSession::PERMISSION_RATE_LIMITED => 'Permintaan izin terlalu sering, coba lagi nanti.',
-            WhatsAppCallSession::PERMISSION_FAILED => 'Konfigurasi panggilan belum lengkap.',
+            WhatsAppCallSession::PERMISSION_FAILED => self::CONFIG_ERROR_MESSAGE,
             default => 'Izin panggilan masih diperlukan sebelum memulai panggilan.',
         };
     }
@@ -1202,6 +1218,60 @@ class WhatsAppCallService
         }
 
         return null;
+    }
+
+    /**
+     * Validate that the minimum WhatsApp Calling API configuration is present
+     * before sending any request to Meta. Returns null when configuration is
+     * usable, or a fully-formed error result when something is missing — in
+     * which case callers should return that result immediately.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function preflightConfigurationCheck(WhatsAppCallSession $session): ?array
+    {
+        $callingEnabled = (bool) config('chatbot.whatsapp.calling.enabled', false);
+        $accessToken = trim((string) config('chatbot.whatsapp.calling.access_token', ''));
+        $phoneNumberId = trim((string) config('chatbot.whatsapp.calling.phone_number_id', ''));
+
+        $missing = [];
+        if (! $callingEnabled) {
+            $missing[] = 'WHATSAPP_CALLING_ENABLED=false';
+        }
+        if ($accessToken === '') {
+            $missing[] = 'WHATSAPP_CALLING_ACCESS_TOKEN kosong';
+        }
+        if ($phoneNumberId === '') {
+            $missing[] = 'WHATSAPP_CALLING_PHONE_NUMBER_ID kosong';
+        }
+
+        if ($missing === []) {
+            return null;
+        }
+
+        $detail = implode(', ', $missing);
+
+        $this->auditService->error('call_config_error', $this->auditContext($session, [
+            'status_before' => $session->status,
+            'permission_status' => $session->permission_status,
+            'meta_error_code' => 'calling_configuration_incomplete',
+            'meta_error_message' => $detail,
+        ]));
+
+        return $this->buildServiceResult(
+            session: $session,
+            ok: false,
+            action: 'call_blocked_configuration_error',
+            message: self::CONFIG_ERROR_MESSAGE,
+            permissionRequired: true,
+            permissionStatus: (string) ($session->permission_status ?? WhatsAppCallSession::PERMISSION_FAILED),
+            metaError: [
+                'code' => 'calling_configuration_incomplete',
+                'message' => $detail,
+            ],
+            statusCode: 422,
+            metaCallId: $session->wa_call_id,
+        );
     }
 
     private function isConfigurationError(?array $metaError): bool
