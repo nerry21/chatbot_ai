@@ -37,9 +37,8 @@ class FcmService
         $tokens = DeviceFcmToken::query()
             ->where('is_active', true)
             ->whereHas('user', function ($q): void {
-                $q->where('role', 'admin')
-                  ->orWhere('role', 'super_admin')
-                  ->orWhere('role', 'operator');
+                $q->where('is_chatbot_admin', true)
+                  ->orWhere('is_chatbot_operator', true);
             })
             ->get();
 
