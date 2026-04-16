@@ -178,6 +178,7 @@ class WhatsAppMessageParser
             'video' => $msg['video']['caption'] ?? '[Video]',
             'document' => $msg['document']['caption']
                 ?? ($msg['document']['filename'] ?? '[Dokumen]'),
+            'location' => ($msg['location']['name'] ?? $msg['location']['address'] ?? '[Lokasi]'),
             default => null,
         };
     }
@@ -315,6 +316,15 @@ class WhatsAppMessageParser
             $payload['media_size_bytes'] = $msg['document']['file_size'] ?? null;
             $payload['media_original_name'] = $msg['document']['filename'] ?? null;
             $payload['document_url'] = null;
+        }
+
+        if ($type === 'location') {
+            $payload['location'] = [
+                'latitude' => $msg['location']['latitude'] ?? null,
+                'longitude' => $msg['location']['longitude'] ?? null,
+                'name' => $msg['location']['name'] ?? null,
+                'address' => $msg['location']['address'] ?? null,
+            ];
         }
 
         if ($metadata !== []) {

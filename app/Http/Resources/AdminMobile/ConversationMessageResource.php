@@ -115,7 +115,21 @@ class ConversationMessageResource extends JsonResource
                     ->filter()
                     ->values()
                     ->all(),
+                'header' => data_get($interactivePayload, 'header.text'),
+                'body' => data_get($interactivePayload, 'body.text'),
+                'footer' => data_get($interactivePayload, 'footer.text'),
+                'list_button_title' => data_get($interactivePayload, 'action.button'),
                 'is_booking_review' => filled(data_get($this->raw_payload, 'review_hash')),
+            ],
+            'location' => [
+                'latitude' => $this->locationCoordinate('latitude'),
+                'longitude' => $this->locationCoordinate('longitude'),
+                'name' => data_get($this->raw_payload, 'outbound_payload.location.name')
+                    ?? data_get($this->raw_payload, 'location.name')
+                    ?? data_get($this->raw_payload, 'location_name'),
+                'address' => data_get($this->raw_payload, 'outbound_payload.location.address')
+                    ?? data_get($this->raw_payload, 'location.address')
+                    ?? data_get($this->raw_payload, 'location_address'),
             ],
             'media' => [
                 'image_url' => $normalizedImageLink,
@@ -224,5 +238,29 @@ class ConversationMessageResource extends JsonResource
                 'download' => $download ? 1 : 0,
             ]),
         );
+    }
+
+    /**
+     * Read a `latitude` or `longitude` coordinate from the raw payload.
+     * Returns `null` if the coordinate is missing or not numeric.
+     */
+    private function locationCoordinate(string $key): ?float
+    {
+        $candidates = [
+            data_get($this->raw_payload, 'outbound_payload.location.'.$key),
+            data_get($this->raw_payload, 'location.'.$key),
+            data_get($this->raw_payload, $key),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate === null) {
+                continue;
+            }
+            if (is_numeric($candidate)) {
+                return (float) $candidate;
+            }
+        }
+
+        return null;
     }
 }
