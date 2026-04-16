@@ -98,7 +98,11 @@ Route::prefix('admin-mobile')
             Route::post('conversations/{conversation}/bot-control/on', [AdminMobileBotControlController::class, 'turnOn'])->name('conversations.bot-control.on');
             Route::post('conversations/{conversation}/bot-control/off', [AdminMobileBotControlController::class, 'turnOff'])->name('conversations.bot-control.off');
             Route::post('conversations/{conversation}/bot-mode', [AdminMobileBotControlController::class, 'store'])->name('conversations.bot-mode');
+
+            // ─── WhatsApp Contacts (Address Book) ──────────────────────────
+            Route::get('contacts', [AdminMobileContactController::class, 'index'])->name('contacts.index');
             Route::post('contacts', [AdminMobileContactController::class, 'create'])->name('contacts.store');
+
             Route::get('call-analytics/summary', [AdminMobileCallAnalyticsController::class, 'summary'])->name('call-analytics.summary');
             Route::get('call-analytics/recent', [AdminMobileCallAnalyticsController::class, 'recent'])->name('call-analytics.recent');
             Route::get('poll/list', [AdminMobileWorkspaceController::class, 'pollList'])->name('poll.list');
