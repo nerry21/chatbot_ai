@@ -205,10 +205,12 @@ class TravelWhatsAppPipelineService
             // customer says "oke baik" right after the bot shared schedule info,
             // we should follow the LLM reply with an interactive service menu
             // instead of letting the thread die on "Siap kak".
+            // NOTE: use $routerState (array) not $state (Eloquent Model) —
+            // shouldFollowUpWithServiceMenu expects array as 3rd argument.
             $shouldFollowUpWithMenu = $this->shouldFollowUpWithServiceMenu(
                 $originalText,
                 $conversation,
-                $state,
+                $routerState,
                 $isClosingMessage
             );
 
