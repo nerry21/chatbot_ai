@@ -3,10 +3,16 @@
 namespace Tests\Unit;
 
 use App\Services\AI\PromptBuilderService;
+use App\Services\AI\UnderstandingCrmContextFormatterService;
 use Tests\TestCase;
 
 class PromptBuilderServiceTest extends TestCase
 {
+    private function makeService(): PromptBuilderService
+    {
+        return new PromptBuilderService(new UnderstandingCrmContextFormatterService);
+    }
+
     public function test_it_includes_hubspot_context_in_intent_and_extraction_prompts_when_enabled(): void
     {
         config([
@@ -14,7 +20,7 @@ class PromptBuilderServiceTest extends TestCase
             'chatbot.crm.ai_context.include_in_extraction_tasks' => true,
         ]);
 
-        $service = new PromptBuilderService;
+        $service = $this->makeService();
         $context = [
             'message_text' => 'saya mau booking ke pekanbaru',
             'intent_result' => ['intent' => 'booking'],
@@ -90,7 +96,7 @@ class PromptBuilderServiceTest extends TestCase
             'chatbot.crm.ai_context.include_in_reply_tasks' => true,
         ]);
 
-        $service = new PromptBuilderService;
+        $service = $this->makeService();
         $prompt = $service->buildReplyPrompt([
             'message_text' => 'berapa harga ke pekanbaru',
             'intent_result' => ['intent' => 'tanya_harga'],
@@ -156,5 +162,43 @@ class PromptBuilderServiceTest extends TestCase
         $this->assertStringContainsString('Kondisi saat ini: admin takeover aktif.', $prompt['user']);
         $this->assertStringContainsString('Data booking yang harus diprioritaskan: pickup_location, destination', $prompt['user']);
         $this->assertStringContainsString('Pelanggan ini pernah bertransaksi. Jaga kesinambungan konteks.', $prompt['user']);
+    }
+
+    /**
+     * Regression test untuk bug:
+     *   "Unknown named parameter $crmContext" yang muncul di IntentClassifierService /
+     *   EntityExtractorService / ConversationSummaryService karena
+     *   PromptBuilderService::appendUnifiedCrmContextLines() memanggil
+     *   UnderstandingCrmContextFormatterService::formatForUnderstanding(crmContext: ...)
+     *   padahal signature-nya menerima `array $crmHints`.
+     *
+     * Test ini memanggil 3 builder publik yang semuanya menjalankan
+     * appendUnifiedCrmContextLines() dengan crm_context non-empty.
+     * Sebelum fix: TypeError / Error karena named parameter tidak dikenal.
+     * Setelah fix: berjalan normal dan menghasilkan blok CRM di prompt.
+     */
+    public function test_unified_crm_context_lines_does_not_throw_unknown_named_parameter(): void
+    {
+        $service = $this->makeService();
+
+        $context = [
+            'message_text' => 'mau booking ke pekanbaru',
+            'intent_result' => ['intent' => 'booking'],
+            'crm_context' => [
+                'customer' => ['name' => 'Nerry'],
+                'lead_pipeline' => ['stage' => 'engaged'],
+                'conversation' => ['current_intent' => 'booking'],
+            ],
+            'conversation_summary' => 'Pelanggan ingin booking.',
+            'admin_takeover' => false,
+        ];
+
+        $intentPrompt = $service->buildIntentPrompt($context);
+        $extractionPrompt = $service->buildExtractionPrompt($context);
+        $replyPrompt = $service->buildReplyPrompt($context);
+
+        $this->assertNotEmpty($intentPrompt['user']);
+        $this->assertNotEmpty($extractionPrompt['user']);
+        $this->assertNotEmpty($replyPrompt['user']);
     }
 }

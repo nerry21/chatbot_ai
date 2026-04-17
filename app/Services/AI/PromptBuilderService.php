@@ -561,7 +561,7 @@ class PromptBuilderService
     private function appendUnifiedCrmContextLines(array $lines, array $context): array
     {
         $block = $this->crmFormatter->formatForUnderstanding(
-            crmContext: is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [],
+            crmHints: is_array($context['crm_context'] ?? null) ? $context['crm_context'] : [],
             conversationSummary: isset($context['conversation_summary']) ? (string) $context['conversation_summary'] : null,
             adminTakeover: (bool) ($context['admin_takeover'] ?? false),
         );
