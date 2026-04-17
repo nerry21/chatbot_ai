@@ -5,11 +5,11 @@ namespace App\Services\WhatsApp;
 use App\Enums\MessageDeliveryStatus;
 use App\Enums\MessageDirection;
 use App\Jobs\ProcessIncomingWhatsAppMessage;
+use App\Jobs\SendFcmPushJob;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
 use App\Services\Chatbot\ConversationManagerService;
-use App\Services\Firebase\FcmNotificationService;
 use App\Services\Support\PhoneNumberService;
 use App\Support\WaLog;
 use Illuminate\Database\QueryException;
@@ -25,8 +25,10 @@ class WhatsAppWebhookService
         private readonly PhoneNumberService $phoneService,
         private readonly ConversationManagerService $conversationManager,
         private readonly WhatsAppWebhookDedupService $dedupService,
-        private readonly FcmNotificationService $fcmNotificationService,
     ) {
+        // FCM push notification dipindah ke SendFcmPushJob agar webhook
+        // tidak memblokir. Dependency FcmNotificationService dihapus dari
+        // constructor karena tidak lagi dipanggil langsung di sini.
     }
 
     /**
@@ -535,20 +537,23 @@ class WhatsAppWebhookService
         // Enqueue downstream job
         $this->dispatchIncomingMessageJob($persisted);
 
-        // ─── Trigger push notification ke admin ────────────────────────
+        // ─── Trigger push notification ke admin (async via queue) ─────────
+        // Dulu dipanggil sinkron di sini → memblokir webhook 1–3 detik karena
+        // HTTP call ke Google OAuth2 + Firebase FCM. Sekarang di-dispatch ke
+        // queue agar webhook langsung return 200 OK ke Meta.
         try {
-            $conversation = \App\Models\Conversation::with('customer')->find($persisted->conversation_id);
-            if ($conversation !== null) {
-                $this->fcmNotificationService->notifyIncomingMessage(
-                    message: $persisted,
-                    conversation: $conversation,
-                    customer: $conversation->customer,
+            if ($persisted->id !== null) {
+                SendFcmPushJob::dispatch(
+                    (int) $persisted->id,
+                    WaLog::traceId(),
                 );
             }
         } catch (\Throwable $e) {
-            // Push gagal tidak boleh mengganggu webhook flow.
-            WaLog::warning('[WebhookService] FCM push failed (non-fatal)', [
+            // Dispatch gagal (misalnya koneksi DB queue bermasalah) tidak
+            // boleh mengganggu webhook flow.
+            WaLog::warning('[WebhookService] Failed to dispatch FCM push job (non-fatal)', [
                 'error' => $e->getMessage(),
+                'message_id' => $persisted->id ?? null,
             ]);
         }
 

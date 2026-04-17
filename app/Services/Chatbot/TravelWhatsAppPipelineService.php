@@ -241,7 +241,7 @@ class TravelWhatsAppPipelineService
                 $menuList = [
                     'button'   => 'Pilih Layanan',
                     'header'   => 'Layanan JET Travel',
-                    'body'     => 'Apakah jadi ingin memesan, Bapak/Ibu? Silakan pilih layanan yang diinginkan 🙏',
+                    'body'     => 'Bila berkenan memesan, silakan pilih layanan di bawah ini ya, Bapak/Ibu 🙏',
                     'footer'   => 'JET Travel Rokan Hulu',
                     'sections' => [
                         [
