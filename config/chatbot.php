@@ -13,6 +13,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Global Auto-Reply Kill Switch
+    |--------------------------------------------------------------------------
+    |
+    | Master toggle untuk SEMUA auto-reply chatbot. Saat false, pesan
+    | customer tetap diterima dan disimpan ke conversation log, tapi
+    | bot tidak akan generate auto-reply. Admin balas manual via dashboard.
+    | Digunakan saat refaktor besar atau maintenance window.
+    |
+    */
+    'global_auto_reply_enabled' => (bool) env('CHATBOT_GLOBAL_AUTO_REPLY_ENABLED', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | LLM Provider Settings
     |--------------------------------------------------------------------------
     */

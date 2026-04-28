@@ -193,6 +193,34 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
         try {
             $conversation = $botToggleService->resumeIfDue($conversation);
+
+            // ── 1.0 Guard: GLOBAL kill switch ──────────────────────────────
+            // When chatbot.global_auto_reply_enabled=false, ALL auto-replies
+            // are suppressed system-wide. Inbound messages are still logged
+            // (already persisted before this job), so admin can reply manually
+            // via dashboard. Used during major refactors / maintenance windows.
+            if (! config('chatbot.global_auto_reply_enabled', true)) {
+                WaLog::info('[Job:ProcessIncoming] SKIPPED — global kill switch active', [
+                    'conversation_id' => $conversation->id,
+                    'message_id'      => $message->id,
+                    'reason'          => 'global_kill_switch',
+                ]);
+
+                $audit->record(AuditActionType::BotReplySkippedTakeover, [
+                    'actor_user_id'    => null,
+                    'conversation_id'  => $conversation->id,
+                    'message'          => 'Auto-reply bot diblokir karena global kill switch aktif.',
+                    'context'          => [
+                        'conversation_id' => $conversation->id,
+                        'message_id'      => $message->id,
+                        'reason'          => 'global_kill_switch',
+                        'text_preview'    => $message->textPreview(80),
+                    ],
+                ]);
+
+                return;
+            }
+
             // ── 1.5 Guard: admin takeover — bot pipeline suppressed ─────────
             // This guard MUST run before ANY AI pipeline step.
             // When handoff_mode = 'admin', the conversation is owned by a human;
