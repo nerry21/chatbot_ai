@@ -55,6 +55,52 @@ class JetCrmContextService
     }
 
     /**
+     * Resolve the customer profile (preferences + counters) used by the LLM
+     * agent to drive warmth-aware replies. Cached per customer.
+     *
+     * @return array<string, mixed>
+     */
+    public function resolveCustomerProfile(Customer $customer): array
+    {
+        if (! config('chatbot.crm.ai_context.enabled', true)) {
+            return [];
+        }
+
+        $cacheKey = 'jet_crm_profile_customer_'.$customer->id;
+        $ttl = (int) config('chatbot.crm.ai_context.ttl_seconds', 600);
+
+        return Cache::remember($cacheKey, $ttl, function () use ($customer): array {
+            $customer->loadMissing('preferences');
+
+            $totalBookings = (int) ($customer->total_bookings ?? 0);
+            $isReturning = $totalBookings >= 1;
+
+            $prefs = [];
+            foreach ($customer->preferences as $pref) {
+                if ((float) $pref->confidence < 0.5) {
+                    continue;
+                }
+                $prefs[$pref->key] = [
+                    'value'      => $pref->getTypedValue(),
+                    'confidence' => (float) $pref->confidence,
+                ];
+            }
+
+            return [
+                'name'                     => $customer->name,
+                'phone'                    => $customer->phone_e164,
+                'is_returning_customer'    => $isReturning,
+                'total_bookings'           => $totalBookings,
+                'last_interaction_at'      => optional($customer->last_interaction_at)->toIso8601String(),
+                'preferred_pickup'         => $customer->preferred_pickup,
+                'preferred_destination'    => $customer->preferred_destination,
+                'preferred_departure_time' => optional($customer->preferred_departure_time)->format('H:i'),
+                'preferences'              => $prefs,
+            ];
+        });
+    }
+
+    /**
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
