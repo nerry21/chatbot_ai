@@ -93,7 +93,7 @@ class LlmAgentOrchestratorService
                     $toolsCalled[] = $name;
 
                     try {
-                        $result = $this->tools->execute($name, $args);
+                        $result = $this->tools->execute($name, $args, $customer);
                     } catch (Throwable $e) {
                         WaLog::error('[LlmAgent] Tool execution failed', [
                             'tool' => $name,
