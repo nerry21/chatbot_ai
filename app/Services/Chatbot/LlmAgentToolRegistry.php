@@ -2,20 +2,39 @@
 
 namespace App\Services\Chatbot;
 
+use App\Models\Customer;
 use App\Services\Booking\FareCalculatorService;
 use App\Services\Booking\RouteValidationService;
 use App\Services\Booking\SeatAvailabilityService;
+use App\Services\CRM\CustomerPreferenceUpdaterService;
+use App\Services\CRM\JetCrmContextService;
 use App\Services\Knowledge\KnowledgeBaseService;
 use App\Support\WaLog;
+use Illuminate\Support\Facades\Cache;
 use InvalidArgumentException;
 
 class LlmAgentToolRegistry
 {
+    public const WRITABLE_PREFERENCE_KEYS = [
+        'language_style',
+        'preferred_greeting_style',
+        'child_traveler',
+        'elderly_traveler',
+        'luggage_pattern',
+        'frequent_companion',
+        'preferred_service_type',
+        'vip_indicator',
+        'notes_freeform',
+        'internal_tags',
+    ];
+
     public function __construct(
         private readonly FareCalculatorService $fareCalculator,
         private readonly SeatAvailabilityService $seatAvailability,
         private readonly KnowledgeBaseService $knowledgeBase,
         private readonly RouteValidationService $routeValidator,
+        private readonly CustomerPreferenceUpdaterService $preferenceUpdater,
+        private readonly JetCrmContextService $crmContext,
     ) {}
 
     /**
@@ -117,6 +136,50 @@ class LlmAgentToolRegistry
                     ],
                 ],
             ],
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'get_customer_preferences',
+                    'description' => 'Baca preferensi customer yang sudah tercatat (gaya bahasa, sapaan, dll). Pakai untuk personalisasi reply. Hanya return preferensi dengan confidence >= 0.5.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'keys' => [
+                                'type' => 'array',
+                                'items' => ['type' => 'string'],
+                                'description' => 'Optional. Filter by specific keys (e.g. ["language_style", "preferred_greeting_style"]). Kosongkan untuk dapat semua.',
+                            ],
+                        ],
+                        'required' => [],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'record_customer_preference',
+                    'description' => 'Catat preferensi baru customer saat detect dari conversation. Pakai HANYA untuk hal yang relevan untuk relationship-building. Whitelist key: language_style, preferred_greeting_style, child_traveler, elderly_traveler, luggage_pattern, frequent_companion, preferred_service_type, vip_indicator, notes_freeform, internal_tags.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'key' => [
+                                'type' => 'string',
+                                'description' => 'Key preferensi (harus dari whitelist).',
+                            ],
+                            'value' => [
+                                'type' => 'string',
+                                'description' => 'Nilai preferensi (e.g. "formal", "Mbak", "true").',
+                            ],
+                            'confidence_level' => [
+                                'type' => 'string',
+                                'enum' => ['explicit', 'inferred'],
+                                'description' => 'explicit = customer eksplisit bilang (confidence 1.0). inferred = LLM nebak dari pola (confidence 0.5).',
+                            ],
+                        ],
+                        'required' => ['key', 'value', 'confidence_level'],
+                    ],
+                ],
+            ],
         ];
     }
 
@@ -124,15 +187,17 @@ class LlmAgentToolRegistry
      * @param  array<string, mixed>  $args
      * @return array<string, mixed>
      */
-    public function execute(string $toolName, array $args): array
+    public function execute(string $toolName, array $args, ?Customer $customer = null): array
     {
         return match ($toolName) {
-            'get_fare_for_route'      => $this->executeGetFareForRoute($args),
-            'check_seat_availability' => $this->executeCheckSeatAvailability($args),
-            'search_knowledge_base'   => $this->executeSearchKnowledgeBase($args),
-            'get_route_info'          => $this->executeGetRouteInfo($args),
-            'escalate_to_admin'       => $this->executeEscalateToAdmin($args),
-            default                   => throw new InvalidArgumentException(
+            'get_fare_for_route'         => $this->executeGetFareForRoute($args),
+            'check_seat_availability'    => $this->executeCheckSeatAvailability($args),
+            'search_knowledge_base'      => $this->executeSearchKnowledgeBase($args),
+            'get_route_info'             => $this->executeGetRouteInfo($args),
+            'escalate_to_admin'          => $this->executeEscalateToAdmin($args),
+            'get_customer_preferences'   => $this->executeGetCustomerPreferences($args, $customer),
+            'record_customer_preference' => $this->executeRecordCustomerPreference($args, $customer),
+            default                      => throw new InvalidArgumentException(
                 "Unknown tool: {$toolName}",
             ),
         };
@@ -255,5 +320,142 @@ class LlmAgentToolRegistry
             'handoff_triggered' => true,
             'reason' => $reason,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $args
+     * @return array<string, mixed>
+     */
+    private function executeGetCustomerPreferences(array $args, ?Customer $customer): array
+    {
+        if ($customer === null) {
+            return [
+                'error'       => 'Customer context unavailable',
+                'preferences' => [],
+                'count'       => 0,
+            ];
+        }
+
+        $filterKeys = is_array($args['keys'] ?? null) ? $args['keys'] : [];
+
+        $query = $customer->preferences()
+            ->where('confidence', '>=', 0.5);
+
+        if ($filterKeys !== []) {
+            $query->whereIn('key', $filterKeys);
+        }
+
+        $prefs = $query->get();
+
+        $formatted = [];
+        foreach ($prefs as $pref) {
+            $formatted[$pref->key] = [
+                'value'      => $pref->getTypedValue(),
+                'confidence' => (float) $pref->confidence,
+                'source'     => $pref->source,
+            ];
+        }
+
+        return [
+            'preferences' => $formatted,
+            'count'       => count($formatted),
+            'customer_id' => $customer->id,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $args
+     * @return array<string, mixed>
+     */
+    private function executeRecordCustomerPreference(array $args, ?Customer $customer): array
+    {
+        if ($customer === null) {
+            return [
+                'error'    => 'Customer context unavailable',
+                'recorded' => false,
+            ];
+        }
+
+        $key = trim((string) ($args['key'] ?? ''));
+        $value = $args['value'] ?? '';
+        $confidenceLevel = (string) ($args['confidence_level'] ?? 'inferred');
+
+        if (! in_array($key, self::WRITABLE_PREFERENCE_KEYS, true)) {
+            WaLog::warning('[LlmAgent] Rejected non-whitelisted preference key', [
+                'key'         => $key,
+                'customer_id' => $customer->id,
+            ]);
+
+            return [
+                'error'    => "Key '{$key}' not in whitelist. Allowed keys: ".implode(', ', self::WRITABLE_PREFERENCE_KEYS),
+                'recorded' => false,
+            ];
+        }
+
+        if ($value === null || $value === '' || (is_string($value) && trim($value) === '')) {
+            return [
+                'error'    => 'Value cannot be empty',
+                'recorded' => false,
+            ];
+        }
+
+        $source = $confidenceLevel === 'explicit'
+            ? CustomerPreferenceUpdaterService::SOURCE_EXPLICIT
+            : CustomerPreferenceUpdaterService::SOURCE_INFERRED;
+
+        $valueType = $this->inferValueType($value);
+
+        $saved = $this->preferenceUpdater->upsertPreference(
+            customer:  $customer,
+            key:       $key,
+            value:     $value,
+            valueType: $valueType,
+            source:    $source,
+            metadata:  ['recorded_by' => 'llm_agent'],
+        );
+
+        if ($saved === null) {
+            return [
+                'error'    => 'Failed to save preference',
+                'recorded' => false,
+            ];
+        }
+
+        Cache::forget('jet_crm_profile_customer_'.$customer->id);
+
+        WaLog::info('[LlmAgent] Recorded preference', [
+            'customer_id'      => $customer->id,
+            'key'              => $key,
+            'value'            => is_string($value) ? mb_substr($value, 0, 100) : $value,
+            'confidence_level' => $confidenceLevel,
+        ]);
+
+        return [
+            'recorded'   => true,
+            'key'        => $saved->key,
+            'value'      => $saved->getTypedValue(),
+            'confidence' => (float) $saved->confidence,
+            'source'     => $saved->source,
+        ];
+    }
+
+    private function inferValueType(mixed $value): string
+    {
+        if (is_bool($value)) {
+            return 'bool';
+        }
+        if (is_int($value)) {
+            return 'int';
+        }
+        if (is_array($value)) {
+            return 'json';
+        }
+
+        $strLower = is_string($value) ? strtolower(trim($value)) : '';
+        if (in_array($strLower, ['true', 'false', 'yes', 'no'], true)) {
+            return 'bool';
+        }
+
+        return 'string';
     }
 }
