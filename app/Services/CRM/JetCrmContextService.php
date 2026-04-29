@@ -86,16 +86,20 @@ class JetCrmContextService
                 ];
             }
 
+            $unacknowledgedMilestones = app(\App\Services\CRM\CustomerJourneyService::class)
+                ->getUnacknowledgedMilestones($customer, 3);
+
             return [
-                'name'                     => $customer->name,
-                'phone'                    => $customer->phone_e164,
-                'is_returning_customer'    => $isReturning,
-                'total_bookings'           => $totalBookings,
-                'last_interaction_at'      => optional($customer->last_interaction_at)->toIso8601String(),
-                'preferred_pickup'         => $customer->preferred_pickup,
-                'preferred_destination'    => $customer->preferred_destination,
-                'preferred_departure_time' => optional($customer->preferred_departure_time)->format('H:i'),
-                'preferences'              => $prefs,
+                'name'                              => $customer->name,
+                'phone'                             => $customer->phone_e164,
+                'is_returning_customer'             => $isReturning,
+                'total_bookings'                    => $totalBookings,
+                'last_interaction_at'               => optional($customer->last_interaction_at)->toIso8601String(),
+                'preferred_pickup'                  => $customer->preferred_pickup,
+                'preferred_destination'             => $customer->preferred_destination,
+                'preferred_departure_time'          => optional($customer->preferred_departure_time)->format('H:i'),
+                'preferences'                       => $prefs,
+                'recent_unacknowledged_milestones'  => $unacknowledgedMilestones,
             ];
         });
     }

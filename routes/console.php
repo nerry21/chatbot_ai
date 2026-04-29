@@ -69,3 +69,13 @@ Schedule::command('chatbot:daily-summary')
     ->withoutOverlapping()
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/daily-summary-report.log'));
+
+// Customer journey sync — runs every day at 03:00 WIB.
+// Reconciles booking milestones (backup for sync trigger),
+// detects anniversaries, and at-risk customers (30/60/90 day silent).
+Schedule::command('chatbot:sync-customer-journey --type=all')
+    ->dailyAt('03:00')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->appendOutputTo(storage_path('logs/customer-journey-sync.log'));

@@ -25,6 +25,7 @@ class Customer extends Model
         'preferred_departure_time',
         'total_bookings',
         'total_spent',
+        'first_booking_at',
         'last_interaction_at',
         'crm_contact_id',
         'notes',
@@ -34,6 +35,7 @@ class Customer extends Model
     protected $casts = [
         'total_spent'              => 'decimal:2',
         'total_bookings'           => 'integer',
+        'first_booking_at'         => 'datetime',
         'last_interaction_at'      => 'datetime',
         'preferred_departure_time' => 'datetime',
     ];
@@ -85,6 +87,16 @@ class Customer extends Model
     public function preferences(): HasMany
     {
         return $this->hasMany(CustomerPreference::class);
+    }
+
+    public function journeyEvents(): HasMany
+    {
+        return $this->hasMany(CustomerJourneyEvent::class);
+    }
+
+    public function milestones(): HasMany
+    {
+        return $this->hasMany(CustomerMilestone::class);
     }
 
     // -------------------------------------------------------------------------

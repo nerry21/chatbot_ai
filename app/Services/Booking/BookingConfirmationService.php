@@ -3,6 +3,8 @@
 namespace App\Services\Booking;
 
 use App\Models\BookingRequest;
+use App\Models\Customer;
+use App\Services\CRM\CustomerJourneyService;
 use App\Services\CRM\CustomerPreferenceUpdaterService;
 use Illuminate\Support\Facades\Log;
 
@@ -13,6 +15,7 @@ class BookingConfirmationService
         private readonly SeatAvailabilityService $seatAvailability,
         private readonly BookingReviewFormatterService $reviewFormatter,
         private readonly CustomerPreferenceUpdaterService $preferenceUpdater,
+        private readonly CustomerJourneyService $journeyService,
     ) {}
 
     public function buildSummary(BookingRequest $booking): string
@@ -53,6 +56,30 @@ class BookingConfirmationService
             $this->preferenceUpdater->updateFromBooking($booking);
         } catch (\Throwable $e) {
             Log::warning('[BookingConfirmation] Preference update failed', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            $customer = $booking->customer ?? Customer::find($booking->customer_id);
+            if ($customer !== null && $customer->first_booking_at === null) {
+                $customer->forceFill(['first_booking_at' => now()])->save();
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[BookingConfirmation] First booking timestamp failed', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            $customer = $booking->customer ?? Customer::find($booking->customer_id);
+            if ($customer !== null) {
+                $this->journeyService->syncBookingMilestones($customer);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[BookingConfirmation] Milestone sync failed', [
                 'booking_id' => $booking->id,
                 'error' => $e->getMessage(),
             ]);

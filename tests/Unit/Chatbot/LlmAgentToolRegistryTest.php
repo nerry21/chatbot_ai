@@ -24,11 +24,11 @@ class LlmAgentToolRegistryTest extends TestCase
         return app(LlmAgentToolRegistry::class);
     }
 
-    public function test_returns_tools_schema_with_7_tools(): void
+    public function test_returns_tools_schema_with_8_tools(): void
     {
         $schema = $this->registry()->getToolsSchema();
 
-        $this->assertCount(7, $schema);
+        $this->assertCount(8, $schema);
 
         $names = [];
         foreach ($schema as $entry) {
@@ -45,6 +45,7 @@ class LlmAgentToolRegistryTest extends TestCase
                 'get_route_info',
                 'escalate_to_admin',
                 'get_customer_preferences',
+                'acknowledge_milestone',
                 'record_customer_preference',
             ],
             $names,

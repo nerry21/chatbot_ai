@@ -6,6 +6,7 @@ use App\Models\Customer;
 use App\Services\Booking\FareCalculatorService;
 use App\Services\Booking\RouteValidationService;
 use App\Services\Booking\SeatAvailabilityService;
+use App\Services\CRM\CustomerJourneyService;
 use App\Services\CRM\CustomerPreferenceUpdaterService;
 use App\Services\CRM\JetCrmContextService;
 use App\Services\Knowledge\KnowledgeBaseService;
@@ -157,6 +158,23 @@ class LlmAgentToolRegistry
             [
                 'type' => 'function',
                 'function' => [
+                    'name' => 'acknowledge_milestone',
+                    'description' => 'Tandai bahwa milestone customer sudah disebutkan/dirayakan dalam percakapan ini, supaya tidak diulang di chat berikutnya. Pakai SEGERA setelah kamu menyebutkan milestone di reply.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'milestone_key' => [
+                                'type' => 'string',
+                                'description' => 'Key milestone yang baru disebutkan, misal "5_bookings", "1_year_anniversary"',
+                            ],
+                        ],
+                        'required' => ['milestone_key'],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'function',
+                'function' => [
                     'name' => 'record_customer_preference',
                     'description' => 'Catat preferensi baru customer saat detect dari conversation. Pakai HANYA untuk hal yang relevan untuk relationship-building. Whitelist key: language_style, preferred_greeting_style, child_traveler, elderly_traveler, luggage_pattern, frequent_companion, preferred_service_type, vip_indicator, notes_freeform, internal_tags.',
                     'parameters' => [
@@ -197,6 +215,7 @@ class LlmAgentToolRegistry
             'escalate_to_admin'          => $this->executeEscalateToAdmin($args),
             'get_customer_preferences'   => $this->executeGetCustomerPreferences($args, $customer),
             'record_customer_preference' => $this->executeRecordCustomerPreference($args, $customer),
+            'acknowledge_milestone'      => $this->executeAcknowledgeMilestone($args, $customer),
             default                      => throw new InvalidArgumentException(
                 "Unknown tool: {$toolName}",
             ),
@@ -437,6 +456,28 @@ class LlmAgentToolRegistry
             'confidence' => (float) $saved->confidence,
             'source'     => $saved->source,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $args
+     * @return array<string, mixed>
+     */
+    private function executeAcknowledgeMilestone(array $args, ?Customer $customer): array
+    {
+        if ($customer === null) {
+            return ['error' => 'Customer context required'];
+        }
+
+        $key = trim((string) ($args['milestone_key'] ?? ''));
+        if ($key === '') {
+            return ['error' => 'milestone_key is required'];
+        }
+
+        app(CustomerJourneyService::class)->acknowledgeMilestone($customer, $key);
+
+        Cache::forget('jet_crm_profile_customer_'.$customer->id);
+
+        return ['ok' => true, 'milestone_key' => $key];
     }
 
     private function inferValueType(mixed $value): string
