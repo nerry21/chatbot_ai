@@ -124,6 +124,14 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
 
         $customer = $conversation->customer;
 
+        // PR-CRM-1: Touch customer interaction timestamp (cheap; before guards)
+        try {
+            app(\App\Services\CRM\CustomerPreferenceUpdaterService::class)
+                ->touchInteraction($customer);
+        } catch (\Throwable $e) {
+            // Non-critical — never break the inbound pipeline on a touch failure.
+        }
+
         $contextPayload = null;
 
         $aiContext = [

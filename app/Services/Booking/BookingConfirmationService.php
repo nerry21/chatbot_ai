@@ -3,6 +3,8 @@
 namespace App\Services\Booking;
 
 use App\Models\BookingRequest;
+use App\Services\CRM\CustomerPreferenceUpdaterService;
+use Illuminate\Support\Facades\Log;
 
 class BookingConfirmationService
 {
@@ -10,6 +12,7 @@ class BookingConfirmationService
         private readonly FareCalculatorService $fareCalculator,
         private readonly SeatAvailabilityService $seatAvailability,
         private readonly BookingReviewFormatterService $reviewFormatter,
+        private readonly CustomerPreferenceUpdaterService $preferenceUpdater,
     ) {}
 
     public function buildSummary(BookingRequest $booking): string
@@ -45,5 +48,14 @@ class BookingConfirmationService
         $booking->markConfirmed();
         $booking->save();
         $this->seatAvailability->confirmSeats($booking);
+
+        try {
+            $this->preferenceUpdater->updateFromBooking($booking);
+        } catch (\Throwable $e) {
+            Log::warning('[BookingConfirmation] Preference update failed', [
+                'booking_id' => $booking->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
