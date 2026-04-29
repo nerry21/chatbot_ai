@@ -221,6 +221,37 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
                 return;
             }
 
+            // ── 1.6 Guard: LLM Agent route (paralel dengan rule-based) ──────
+            // Saat config('chatbot.agent.enabled')=true, route ke LlmAgent
+            // dan SKIP rule-based pipeline (TravelWhatsAppPipelineService).
+            // Fallback ke rule-based kalau agent throw exception.
+            if (config('chatbot.agent.enabled', false)) {
+                try {
+                    $agent = app(\App\Services\Chatbot\LlmAgentOrchestratorService::class);
+                    $result = $agent->handle($message, $conversation, $conversation->customer);
+
+                    WaLog::info('[Job:ProcessIncoming] Handled by LlmAgentOrchestrator', [
+                        'conversation_id' => $conversation->id,
+                        'message_id' => $message->id,
+                        'iterations' => $result['iterations'] ?? null,
+                        'tools_called' => $result['tools_called'] ?? [],
+                        'should_handoff' => $result['should_handoff'] ?? false,
+                    ]);
+
+                    if (! empty($result['reply_text'])) {
+                        app(\App\Services\WhatsApp\WhatsAppSenderService::class)
+                            ->sendText($conversation->customer->phone_e164, $result['reply_text']);
+                    }
+
+                    return;
+                } catch (\Throwable $e) {
+                    WaLog::error('[Job:ProcessIncoming] LlmAgent failed, fallback ke rule-based', [
+                        'conversation_id' => $conversation->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             // ── 1.5 Guard: admin takeover — bot pipeline suppressed ─────────
             // This guard MUST run before ANY AI pipeline step.
             // When handoff_mode = 'admin', the conversation is owned by a human;

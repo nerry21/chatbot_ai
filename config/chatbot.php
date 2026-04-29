@@ -58,6 +58,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | LLM Agent (Track A — agentic loop with tool calling)
+    |--------------------------------------------------------------------------
+    | When enabled=true, ProcessIncomingWhatsAppMessage routes inbound
+    | messages to LlmAgentOrchestratorService instead of the rule-based
+    | pipeline. Defaults to false in prod; turn on per-environment.
+    */
+
+    'agent' => [
+        'enabled'        => (bool) env('CHATBOT_USE_LLM_AGENT', false),
+        'model'          => env('OPENAI_MODEL_AGENT', 'gpt-5.4-mini'),
+        'max_iterations' => (int) env('CHATBOT_AGENT_MAX_ITERATIONS', 5),
+        'history_size'   => (int) env('CHATBOT_AGENT_HISTORY_SIZE', 10),
+        'temperature'    => (float) env('CHATBOT_AGENT_TEMPERATURE', 0.7),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Prompt Behaviour
     |--------------------------------------------------------------------------
     */

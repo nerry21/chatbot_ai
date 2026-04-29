@@ -926,4 +926,55 @@ class LlmClientService
             ]);
         }
     }
+
+    /**
+     * Function-calling chat completion. Returns finish_reason, content, tool_calls,
+     * usage, and the raw assistant message for re-injection in the next iteration.
+     *
+     * @param  array<int, array<string, mixed>>  $messages
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return array<string, mixed>
+     */
+    public function callWithTools(array $messages, array $tools, ?string $model = null): array
+    {
+        $model = $model ?? config('chatbot.agent.model', 'gpt-5.4-mini');
+        $temperature = (float) config('chatbot.agent.temperature', 0.7);
+
+        $payload = [
+            'model' => $model,
+            'messages' => $messages,
+            'tools' => $tools,
+            'temperature' => $temperature,
+        ];
+
+        try {
+            $response = Http::withToken((string) config('openai.api_key'))
+                ->timeout((int) config('openai.http.timeout', 30))
+                ->acceptJson()
+                ->post($this->chatCompletionsUrl(), $payload);
+
+            if (! $response->successful()) {
+                Log::error('[LlmAgent:callWithTools] HTTP error', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+                throw new \RuntimeException('OpenAI API error: '.$response->status());
+            }
+
+            $data = $response->json();
+            $choice = $data['choices'][0] ?? [];
+            $message = $choice['message'] ?? [];
+
+            return [
+                'finish_reason' => $choice['finish_reason'] ?? 'stop',
+                'content' => $message['content'] ?? null,
+                'tool_calls' => $message['tool_calls'] ?? [],
+                'usage' => $data['usage'] ?? [],
+                'raw_message' => $message,
+            ];
+        } catch (Throwable $e) {
+            Log::error('[LlmAgent:callWithTools] Exception', ['error' => $e->getMessage()]);
+            throw $e;
+        }
+    }
 }
