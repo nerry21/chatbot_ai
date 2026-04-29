@@ -251,7 +251,7 @@ class PromptBuilderService
                 $lines[] = "Tujuan biasa: {$preferredDestination}";
             }
 
-            $hubspot = $this->hubspotPromptContext($context);
+            $hubspot = $this->crmPromptContext($context);
             if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_intent_tasks', true)) {
                 $lines[] = '';
                 $lines[] = '=== INFO CRM HUBSPOT ===';
@@ -314,7 +314,7 @@ class PromptBuilderService
             $lines[] = '(Gunakan preferensi di atas HANYA jika pelanggan mengkonfirmasinya secara eksplisit dalam percakapan ini)';
             $lines[] = '';
 
-            $hubspot = $this->hubspotPromptContext($context);
+            $hubspot = $this->crmPromptContext($context);
             if (! empty($hubspot) && config('chatbot.crm.ai_context.include_in_extraction_tasks', true)) {
                 $lines[] = '=== KONTEKS CRM HUBSPOT ===';
                 if (! empty($hubspot['company'])) {
@@ -367,7 +367,7 @@ class PromptBuilderService
 
         $memory = $context['customer_memory'] ?? [];
         $name = $this->customerNameFromMemory(is_array($memory) ? $memory : []);
-        $hubspot = $this->hubspotPromptContext($context);
+        $hubspot = $this->crmPromptContext($context);
 
         if ($name !== null) {
             $lines[] = "Nama pelanggan: {$name}";
@@ -388,7 +388,7 @@ class PromptBuilderService
                 $lines[] = "Lead status: {$hubspot['lead_status']}";
             }
             if (! empty($hubspot['score'])) {
-                $lines[] = "HubSpot score: {$hubspot['score']}";
+                $lines[] = "CRM score: {$hubspot['score']}";
             }
             if (! empty($hubspot['source'])) {
                 $lines[] = "Sumber CRM: {$hubspot['source']}";
@@ -722,7 +722,7 @@ class PromptBuilderService
      * @param  array<string, mixed>  $context
      * @return array<string, mixed>
      */
-    private function hubspotPromptContext(array $context): array
+    private function crmPromptContext(array $context): array
     {
         $crmHubspot = is_array($context['crm_context']['hubspot'] ?? null)
             ? $context['crm_context']['hubspot']

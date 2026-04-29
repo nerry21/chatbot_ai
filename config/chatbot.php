@@ -871,4 +871,16 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Daily Summary Report (PR #5)
+    |--------------------------------------------------------------------------
+    | Daftar nomor WhatsApp admin yang menerima summary harian bot stats.
+    | Dikirim setiap hari jam 21:00 WIB via scheduler.
+    | Format E.164 (628117598804, BUKAN 08117598804).
+    */
+    'daily_summary' => [
+        'recipients' => array_filter(array_map('trim', explode(',', (string) env('CHATBOT_DAILY_SUMMARY_RECIPIENTS', '628117598804,6281267975175')))),
+    ],
+
 ];

@@ -11,6 +11,8 @@ use App\Models\AuditLog;
 use App\Models\Conversation;
 use App\Models\ConversationMessage;
 use App\Models\Customer;
+use App\Services\Chatbot\LlmAgentOrchestratorService;
+use App\Services\Chatbot\LlmAgentRateLimiter;
 use App\Services\Chatbot\TravelWhatsAppPipelineService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
@@ -86,6 +88,74 @@ class GlobalKillSwitchTest extends TestCase
             ->count();
 
         $this->assertSame(0, $killSwitchAuditCount, 'No skip audit should be recorded when kill switch is enabled.');
+    }
+
+    public function test_rate_limit_hit_falls_back_to_rule_based(): void
+    {
+        config([
+            'chatbot.global_auto_reply_enabled' => true,
+            'chatbot.agent.enabled' => true,
+        ]);
+
+        [$conversation, $message] = $this->seedInboundMessage();
+
+        $rateLimiterMock = Mockery::mock(LlmAgentRateLimiter::class);
+        $rateLimiterMock->shouldReceive('shouldAllow')->once()->andReturn(false);
+        $this->app->instance(LlmAgentRateLimiter::class, $rateLimiterMock);
+
+        $orchestratorMock = Mockery::mock(LlmAgentOrchestratorService::class);
+        $orchestratorMock->shouldNotReceive('handle');
+        $this->app->instance(LlmAgentOrchestratorService::class, $orchestratorMock);
+
+        $pipelineMock = Mockery::mock(TravelWhatsAppPipelineService::class);
+        $pipelineMock->shouldReceive('handleIfApplicable')->once()->andReturn(true);
+        $this->app->instance(TravelWhatsAppPipelineService::class, $pipelineMock);
+
+        $job = new ProcessIncomingWhatsAppMessage(
+            messageId: $message->id,
+            conversationId: $conversation->id,
+        );
+
+        $this->app->call([$job, 'handle']);
+
+        $this->addToAssertionCount(1);
+    }
+
+    public function test_rate_limit_allows_normal_flow(): void
+    {
+        config([
+            'chatbot.global_auto_reply_enabled' => true,
+            'chatbot.agent.enabled' => true,
+        ]);
+
+        [$conversation, $message] = $this->seedInboundMessage();
+
+        $rateLimiterMock = Mockery::mock(LlmAgentRateLimiter::class);
+        $rateLimiterMock->shouldReceive('shouldAllow')->once()->andReturn(true);
+        $this->app->instance(LlmAgentRateLimiter::class, $rateLimiterMock);
+
+        $orchestratorMock = Mockery::mock(LlmAgentOrchestratorService::class);
+        $orchestratorMock->shouldReceive('handle')->once()->andReturn([
+            'reply_text' => '',
+            'tools_called' => [],
+            'iterations' => 1,
+            'should_handoff' => false,
+            'meta' => [],
+        ]);
+        $this->app->instance(LlmAgentOrchestratorService::class, $orchestratorMock);
+
+        $pipelineMock = Mockery::mock(TravelWhatsAppPipelineService::class);
+        $pipelineMock->shouldNotReceive('handleIfApplicable');
+        $this->app->instance(TravelWhatsAppPipelineService::class, $pipelineMock);
+
+        $job = new ProcessIncomingWhatsAppMessage(
+            messageId: $message->id,
+            conversationId: $conversation->id,
+        );
+
+        $this->app->call([$job, 'handle']);
+
+        $this->addToAssertionCount(1);
     }
 
     /**
