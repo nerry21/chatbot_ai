@@ -938,6 +938,7 @@ class LlmClientService
     public function callWithTools(array $messages, array $tools, ?string $model = null): array
     {
         $model = $model ?? config('chatbot.agent.model', 'gpt-5.4-mini');
+        Log::info('[LlmAgent:callWithTools] Calling model', ['model' => $model]);
         $temperature = (float) config('chatbot.agent.temperature', 0.7);
 
         $payload = [

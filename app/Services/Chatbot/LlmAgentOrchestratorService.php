@@ -20,6 +20,7 @@ class LlmAgentOrchestratorService
         private readonly LlmClientService $llm,
         private readonly LlmAgentToolRegistry $tools,
         private readonly LlmAgentPromptBuilder $promptBuilder,
+        private readonly LlmAgentTierRouter $tierRouter,
     ) {}
 
     /**
@@ -42,6 +43,8 @@ class LlmAgentOrchestratorService
         $messages = $this->buildInitialMessages($message, $conversation, $customer, $historySize);
         $toolsSchema = $this->tools->getToolsSchema();
 
+        $tierDecision = $this->tierRouter->decide($message, $conversation, $customer);
+
         $toolsCalled = [];
         $shouldHandoff = false;
         $replyText = '';
@@ -51,7 +54,7 @@ class LlmAgentOrchestratorService
         for ($i = 1; $i <= $maxIterations; $i++) {
             $iterations = $i;
 
-            $response = $this->llm->callWithTools($messages, $toolsSchema);
+            $response = $this->llm->callWithTools($messages, $toolsSchema, $tierDecision['model']);
 
             $usage = is_array($response['usage'] ?? null) ? $response['usage'] : [];
             foreach (['prompt_tokens', 'completion_tokens', 'total_tokens'] as $key) {
@@ -140,6 +143,10 @@ class LlmAgentOrchestratorService
                 'usage' => $usageTotals,
                 'history_size' => $historySize,
                 'max_iterations' => $maxIterations,
+                'tier' => $tierDecision['tier'],
+                'tier_model' => $tierDecision['model'],
+                'tier_score' => $tierDecision['score'],
+                'tier_reasons' => $tierDecision['reasons'],
             ],
         ];
     }
