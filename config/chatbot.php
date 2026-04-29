@@ -422,9 +422,8 @@ return [
     |--------------------------------------------------------------------------
     |
     | crm.enabled  — master switch for all CRM operations.
-    | hubspot.*    — HubSpot-specific settings.
-    |               Set hubspot.enabled=false (or leave token empty) to run
-    |               in local-only mode without any external API calls.
+    | jet_crm.*    — JET in-house CRM adapter (local-only). Always-on;
+    |               all reads/writes go to MariaDB via Eloquent models.
     |
     */
 
@@ -432,25 +431,8 @@ return [
 
         'enabled' => (bool) env('CHATBOT_CRM_ENABLED', env('CRM_ENABLED', true)),
 
-        'hubspot' => [
-            'enabled' => (bool) env('HUBSPOT_ENABLED', false),
-            'token'   => env('HUBSPOT_ACCESS_TOKEN', ''),
-            // HubSpot portal/account ID — used for building deep links if needed.
-            'portal_id' => env('HUBSPOT_PORTAL_ID', ''),
-            // Remove a property from this list to disable syncing it if it's
-            // not yet available in your HubSpot account.
-            'allowed_contact_properties' => [
-                'firstname',
-                'phone',
-                'email',
-                'last_ai_intent',
-                'last_ai_summary',
-                'customer_interest_topic',
-                'ai_sentiment',
-                'needs_human_followup',
-                'admin_takeover_active',
-                'last_whatsapp_interaction_at',
-            ],
+        'jet_crm' => [
+            'enabled' => true,
         ],
 
         'ai_context' => [

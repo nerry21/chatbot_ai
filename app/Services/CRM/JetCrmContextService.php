@@ -4,20 +4,13 @@ namespace App\Services\CRM;
 
 use App\Models\Customer;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 
-class HubSpotContextService
+class JetCrmContextService
 {
-    public function __construct(
-        private readonly HubSpotService $hubSpotService,
-    ) {}
-
     /**
      * Resolve CRM context that is safe and useful for AI prompts.
-     *
-     * Priority:
-     * 1. crm_contacts.sync_payload
-     * 2. refresh from HubSpot API when enabled and external ID exists
+     * Reads from the local Customer + crm_contacts.sync_payload only —
+     * JET Travel does not subscribe to HubSpot, so there is no remote refresh.
      *
      * @return array<string, mixed>
      */
@@ -35,37 +28,12 @@ class HubSpotContextService
             return [];
         }
 
-        $cacheKey = 'hubspot_ai_context_customer_'.$customer->id;
+        $cacheKey = 'jet_crm_ai_context_customer_'.$customer->id;
         $ttl = (int) config('chatbot.crm.ai_context.ttl_seconds', 600);
 
         return Cache::remember($cacheKey, $ttl, function () use ($customer, $crmContact): array {
             $payload = is_array($crmContact->sync_payload) ? $crmContact->sync_payload : [];
             $contextSource = $payload !== [] ? 'crm_sync_payload' : null;
-
-            if (
-                $this->hubSpotService->isEnabled()
-                && filled($crmContact->external_contact_id)
-            ) {
-                try {
-                    $fresh = $this->hubSpotService->getContactById((string) $crmContact->external_contact_id);
-
-                    if (($fresh['status'] ?? null) === 'success' && is_array($fresh['data'] ?? null)) {
-                        $payload = $fresh['data'];
-
-                        $crmContact->update([
-                            'sync_payload' => $payload,
-                            'last_synced_at' => now(),
-                        ]);
-
-                        $contextSource = 'hubspot_api';
-                    }
-                } catch (\Throwable $e) {
-                    Log::warning('[HubSpotContext] refresh failed, fallback to local payload', [
-                        'crm_contact_id' => $crmContact->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
 
             return $this->clean($this->buildPromptSafeContext(
                 customer: $customer,

@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
 class CrmSyncService
 {
     public function __construct(
-        private readonly HubSpotService $hubspot,
+        private readonly JetCrmService $hubspot,
     ) {}
 
     /**

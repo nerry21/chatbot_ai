@@ -11,7 +11,7 @@ use App\Models\LeadPipeline;
 class CRMContextService
 {
     public function __construct(
-        private readonly HubSpotContextService $hubSpotContextService,
+        private readonly JetCrmContextService $jetCrmContextService,
     ) {}
 
     /**
@@ -29,7 +29,7 @@ class CRMContextService
     ): array {
         $customer->loadMissing('crmContact', 'tags');
 
-        $hubspot = $this->hubSpotContextService->resolveForCustomer($customer);
+        $hubspot = $this->jetCrmContextService->resolveForCustomer($customer);
         $lead = $this->resolveLead($customer, $conversation, $booking);
         $openEscalation = $this->resolveOpenEscalation($conversation);
         $customerTags = $customer->tags()
