@@ -134,6 +134,31 @@ class LlmAgentOrchestratorService
             $shouldHandoff = true;
         }
 
+        try {
+            \App\Models\AiLog::writeLog('llm_agent', 'success', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'provider' => 'openai',
+                'model' => $tierDecision['model'],
+                'token_input' => $usageTotals['prompt_tokens'] ?? null,
+                'token_output' => $usageTotals['completion_tokens'] ?? null,
+                'latency_ms' => null,
+                'parsed_output' => [
+                    'tier' => $tierDecision['tier'],
+                    'tier_score' => $tierDecision['score'],
+                    'tier_reasons' => $tierDecision['reasons'],
+                    'iterations' => $iterations,
+                    'tools_called' => $toolsCalled,
+                    'should_handoff' => $shouldHandoff,
+                    'reply_text_preview' => mb_substr($replyText, 0, 200),
+                ],
+            ]);
+        } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('[LlmAgent] Failed to write ai_logs', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         return [
             'reply_text' => $replyText !== '' ? $replyText : self::HANDOFF_REPLY,
             'tools_called' => $toolsCalled,

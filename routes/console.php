@@ -60,3 +60,12 @@ Schedule::command('travel-chatbot:process-followups')
     ->withoutOverlapping()
     ->runInBackground()
     ->appendOutputTo(storage_path('logs/travel-chatbot-followups.log'));
+
+// Daily summary bot stats — runs every day at 21:00 WIB.
+// Sends report to admin numbers (Bos Nerry, Bu Bos Maidiana).
+Schedule::command('chatbot:daily-summary')
+    ->dailyAt('21:00')
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping()
+    ->runInBackground()
+    ->appendOutputTo(storage_path('logs/daily-summary-report.log'));

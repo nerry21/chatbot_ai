@@ -232,31 +232,41 @@ class ProcessIncomingWhatsAppMessage implements ShouldQueue
             // ── 1.6 Guard: LLM Agent route (paralel dengan rule-based) ──────
             // Saat config('chatbot.agent.enabled')=true, route ke LlmAgent
             // dan SKIP rule-based pipeline (TravelWhatsAppPipelineService).
-            // Fallback ke rule-based kalau agent throw exception.
+            // Fallback ke rule-based kalau agent throw exception ATAU rate limit hit.
             if (config('chatbot.agent.enabled', false)) {
-                try {
-                    $agent = app(\App\Services\Chatbot\LlmAgentOrchestratorService::class);
-                    $result = $agent->handle($message, $conversation, $conversation->customer);
+                $rateLimiter = app(\App\Services\Chatbot\LlmAgentRateLimiter::class);
 
-                    WaLog::info('[Job:ProcessIncoming] Handled by LlmAgentOrchestrator', [
+                if (! $rateLimiter->shouldAllow($conversation->customer)) {
+                    WaLog::info('[Job:ProcessIncoming] Rate limit hit — fallback to rule-based', [
                         'conversation_id' => $conversation->id,
-                        'message_id' => $message->id,
-                        'iterations' => $result['iterations'] ?? null,
-                        'tools_called' => $result['tools_called'] ?? [],
-                        'should_handoff' => $result['should_handoff'] ?? false,
+                        'customer_id' => $conversation->customer->id,
                     ]);
+                    // Jatuh ke rule-based pipeline di bawah (jangan return).
+                } else {
+                    try {
+                        $agent = app(\App\Services\Chatbot\LlmAgentOrchestratorService::class);
+                        $result = $agent->handle($message, $conversation, $conversation->customer);
 
-                    if (! empty($result['reply_text'])) {
-                        app(\App\Services\WhatsApp\WhatsAppSenderService::class)
-                            ->sendText($conversation->customer->phone_e164, $result['reply_text']);
+                        WaLog::info('[Job:ProcessIncoming] Handled by LlmAgentOrchestrator', [
+                            'conversation_id' => $conversation->id,
+                            'message_id' => $message->id,
+                            'iterations' => $result['iterations'] ?? null,
+                            'tools_called' => $result['tools_called'] ?? [],
+                            'should_handoff' => $result['should_handoff'] ?? false,
+                        ]);
+
+                        if (! empty($result['reply_text'])) {
+                            app(\App\Services\WhatsApp\WhatsAppSenderService::class)
+                                ->sendText($conversation->customer->phone_e164, $result['reply_text']);
+                        }
+
+                        return;
+                    } catch (\Throwable $e) {
+                        WaLog::error('[Job:ProcessIncoming] LlmAgent failed, fallback ke rule-based', [
+                            'conversation_id' => $conversation->id,
+                            'error' => $e->getMessage(),
+                        ]);
                     }
-
-                    return;
-                } catch (\Throwable $e) {
-                    WaLog::error('[Job:ProcessIncoming] LlmAgent failed, fallback ke rule-based', [
-                        'conversation_id' => $conversation->id,
-                        'error' => $e->getMessage(),
-                    ]);
                 }
             }
 

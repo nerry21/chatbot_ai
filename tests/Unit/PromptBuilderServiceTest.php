@@ -149,7 +149,7 @@ class PromptBuilderServiceTest extends TestCase
         $this->assertStringContainsString('Jabatan: Procurement', $prompt['user']);
         $this->assertStringContainsString('Lifecycle stage: opportunity', $prompt['user']);
         $this->assertStringContainsString('Lead status: QUALIFIED', $prompt['user']);
-        $this->assertStringContainsString('HubSpot score: 77', $prompt['user']);
+        $this->assertStringContainsString('CRM score: 77', $prompt['user']);
         $this->assertStringContainsString('Sumber CRM: hubspot_api', $prompt['user']);
         $this->assertStringContainsString('=== KONTEKS CRM TERPADU (FAKTA BISNIS) ===', $prompt['user']);
         $this->assertStringContainsString('=== HIRARKI KEPUTUSAN WAJIB ===', $prompt['user']);
