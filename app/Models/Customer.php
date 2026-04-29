@@ -82,6 +82,11 @@ class Customer extends Model
         return $this->hasMany(BookingRequest::class);
     }
 
+    public function preferences(): HasMany
+    {
+        return $this->hasMany(CustomerPreference::class);
+    }
+
     // -------------------------------------------------------------------------
     // Scopes
     // -------------------------------------------------------------------------

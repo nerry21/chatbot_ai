@@ -4,21 +4,24 @@ namespace App\Services\Chatbot;
 
 use App\Models\Customer;
 use App\Services\Booking\RouteValidationService;
+use App\Services\CRM\JetCrmContextService;
 
 class LlmAgentPromptBuilder
 {
     public function __construct(
         private readonly RouteValidationService $routeValidator,
+        private readonly JetCrmContextService $crmContext,
     ) {}
 
     public function buildSystemPrompt(Customer $customer): string
     {
-        $customerName = $customer->name ?: 'Belum diketahui';
-        $customerPhone = $customer->phone_e164 ?: '-';
         $knownLocations = $this->routeValidator->allKnownLocations();
         $locationList = $knownLocations === []
             ? '(belum dikonfigurasi)'
             : implode(', ', $knownLocations);
+
+        $profile = $this->crmContext->resolveCustomerProfile($customer);
+        $contextBlock = $this->buildCustomerContextBlock($customer, $profile);
 
         return <<<PROMPT
 Kamu adalah customer service JET Travel via WhatsApp.
@@ -65,9 +68,145 @@ ATURAN OUTPUT:
 - Kalau tool return error, handle gracefully (jangan tunjukkan error mentah ke customer)
 - Kalau butuh info lanjutan, tanya 1 hal saja per turn (jangan overwhelm)
 
-CUSTOMER CONTEXT:
-- Nama: {$customerName}
-- Phone: {$customerPhone}
+{$contextBlock}
 PROMPT;
+    }
+
+    /**
+     * @param  array<string, mixed>  $profile
+     */
+    private function buildCustomerContextBlock(Customer $customer, array $profile): string
+    {
+        $name = $customer->name ?: 'Belum diketahui';
+        $phone = $customer->phone_e164 ?: '-';
+        $isReturning = (bool) ($profile['is_returning_customer'] ?? false);
+
+        if (! $isReturning) {
+            return <<<BLOCK
+KONTEKS CUSTOMER:
+- Nama: {$name}
+- Phone: {$phone}
+- Status: NEW CUSTOMER (belum ada booking confirmed)
+
+INSTRUKSI NEW CUSTOMER:
+- Sapa hangat tapi formal: "Halo kak, terima kasih sudah menghubungi JET Travel 🙏"
+- Tanya kebutuhan secara natural, JANGAN minta semua info sekaligus.
+- TUJUAN: collect info bertahap (pickup, destinasi, jam, kursi, jumlah penumpang) sambil bangun rapport.
+BLOCK;
+        }
+
+        $totalBookings = (int) ($profile['total_bookings'] ?? 0);
+        $preferredPickup = $profile['preferred_pickup'] ?? null;
+        $preferredDestination = $profile['preferred_destination'] ?? null;
+        $preferredTime = $profile['preferred_departure_time'] ?? null;
+        $prefs = is_array($profile['preferences'] ?? null) ? $profile['preferences'] : [];
+
+        $tier = $this->extractValue($prefs['customer_tier'] ?? null);
+        $seatSpecific = $this->extractValue($prefs['preferred_seat_specific'] ?? null);
+        $seatPosition = $this->extractValue($prefs['preferred_seat_position'] ?? null);
+        $paymentMethod = $this->extractValue($prefs['preferred_payment_method'] ?? null);
+        $milestone = $this->extractValue($prefs['total_lifetime_bookings_milestone'] ?? null);
+        $seatLine = $seatSpecific ?? $seatPosition;
+
+        $lines = [
+            'KONTEKS CUSTOMER:',
+            "- Nama: {$name}",
+            "- Phone: {$phone}",
+            "- Status: RETURNING CUSTOMER ({$totalBookings}x booking)",
+            '- Pickup favorit: '.($preferredPickup ?: '(belum diketahui)'),
+            '- Destinasi favorit: '.($preferredDestination ?: '(belum diketahui)'),
+            '- Jam favorit: '.($preferredTime ?: '(belum diketahui)'),
+            '- Tier: '.($tier ?: 'regular'),
+            '- Kursi favorit: '.($seatLine ?: '(belum diketahui)'),
+            '- Pembayaran favorit: '.($paymentMethod ?: '(belum diketahui)'),
+        ];
+
+        $extraPrefs = $this->renderHighConfidencePrefs($prefs, [
+            'customer_tier',
+            'preferred_seat_specific',
+            'preferred_seat_position',
+            'preferred_payment_method',
+            'preferred_pickup_area',
+            'preferred_destination_area',
+            'preferred_departure_time',
+            'total_lifetime_bookings_milestone',
+        ]);
+
+        if ($extraPrefs !== []) {
+            $lines[] = '- Preferences lain (confidence ≥ 0.7): '.implode('; ', $extraPrefs);
+        }
+
+        $milestoneInstruction = $milestone !== null
+            ? "- Customer baru saja mencapai milestone {$milestone} — UCAP terimakasih atas loyalty mereka."
+            : null;
+
+        $warmthLines = [
+            '',
+            'INSTRUKSI WARMTH (RETURNING CUSTOMER):',
+            '- WAJIB sapa dengan nama customer (default panggilan "kak" kalau tidak ada style spesifik).',
+            '- ACKNOWLEDGE bahwa kamu kenal mereka dari history. Contoh: "Pak Budi, mau berangkat ke Pekanbaru lagi seperti biasa?"',
+            '- TAWARKAN proactive berdasarkan preferences. Contoh: "Jam 7 pagi seperti biasa, atau ada perubahan?"',
+            "- KALAU customer_tier 'gold' atau 'platinum': lebih warm + apresiasi (tapi tidak berlebihan, max 1 emoji).",
+            '- KALAU ada milestone (e.g., 5_bookings, 10_bookings): UCAP terimakasih atas loyalty.',
+            '- TUJUAN: bikin customer merasa di-recognize, supaya proses pemesanan smooth dan cepat ditutup deal-nya.',
+            '- JANGAN tanya ulang info yang sudah ada di preferences (kecuali untuk konfirmasi cepat).',
+        ];
+
+        if ($milestoneInstruction !== null) {
+            $warmthLines[] = $milestoneInstruction;
+        }
+
+        return implode("\n", array_merge($lines, $warmthLines));
+    }
+
+    private function extractValue(mixed $entry): ?string
+    {
+        if (! is_array($entry)) {
+            return null;
+        }
+
+        $value = $entry['value'] ?? null;
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_array($value)) {
+            return null;
+        }
+
+        return (string) $value;
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $prefs
+     * @param  array<int, string>  $excludeKeys
+     * @return array<int, string>
+     */
+    private function renderHighConfidencePrefs(array $prefs, array $excludeKeys): array
+    {
+        $out = [];
+
+        foreach ($prefs as $key => $entry) {
+            if (in_array($key, $excludeKeys, true)) {
+                continue;
+            }
+            if (! is_array($entry)) {
+                continue;
+            }
+            $confidence = (float) ($entry['confidence'] ?? 0);
+            if ($confidence < 0.7) {
+                continue;
+            }
+
+            $value = $entry['value'] ?? null;
+            if ($value === null || $value === '' || is_array($value)) {
+                continue;
+            }
+
+            $out[] = "{$key}={$value}";
+        }
+
+        return $out;
     }
 }

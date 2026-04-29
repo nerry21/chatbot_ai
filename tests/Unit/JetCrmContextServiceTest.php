@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Models\CrmContact;
 use App\Models\Customer;
+use App\Models\CustomerPreference;
 use App\Services\CRM\JetCrmContextService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -125,6 +126,81 @@ class JetCrmContextServiceTest extends TestCase
         $this->assertSame('+6281234567890', $context['phone']);
         $this->assertSame('nerry@example.com', $context['email']);
         $this->assertSame('local-456', $context['contact_id']);
+    }
+
+    public function test_resolve_customer_profile_returns_returning_status_with_reliable_prefs(): void
+    {
+        config(['chatbot.crm.ai_context.enabled' => true]);
+
+        $customer = Customer::create([
+            'name'           => 'Pak Budi',
+            'phone_e164'     => '+6281234567890',
+            'status'         => 'active',
+            'total_bookings' => 6,
+            'preferred_pickup' => 'Pasir Pengaraian',
+            'preferred_destination' => 'Pekanbaru',
+            'preferred_departure_time' => '2026-04-29 07:00:00',
+        ]);
+
+        CustomerPreference::create([
+            'customer_id' => $customer->id,
+            'key'         => 'customer_tier',
+            'value'       => 'silver',
+            'value_type'  => 'string',
+            'confidence'  => 1.0,
+            'source'      => 'inferred',
+        ]);
+
+        // Below threshold — must be excluded.
+        CustomerPreference::create([
+            'customer_id' => $customer->id,
+            'key'         => 'noisy_signal',
+            'value'       => 'maybe',
+            'value_type'  => 'string',
+            'confidence'  => 0.3,
+            'source'      => 'inferred',
+        ]);
+
+        $profile = app(JetCrmContextService::class)->resolveCustomerProfile($customer->fresh());
+
+        $this->assertTrue($profile['is_returning_customer']);
+        $this->assertSame(6, $profile['total_bookings']);
+        $this->assertSame('Pasir Pengaraian', $profile['preferred_pickup']);
+        $this->assertSame('07:00', $profile['preferred_departure_time']);
+        $this->assertArrayHasKey('customer_tier', $profile['preferences']);
+        $this->assertSame('silver', $profile['preferences']['customer_tier']['value']);
+        $this->assertArrayNotHasKey('noisy_signal', $profile['preferences']);
+    }
+
+    public function test_resolve_customer_profile_marks_new_customer_when_no_bookings(): void
+    {
+        config(['chatbot.crm.ai_context.enabled' => true]);
+
+        $customer = Customer::create([
+            'name'           => 'Bu Sari',
+            'phone_e164'     => '+6285555555555',
+            'status'         => 'active',
+            'total_bookings' => 0,
+        ]);
+
+        $profile = app(JetCrmContextService::class)->resolveCustomerProfile($customer->fresh());
+
+        $this->assertFalse($profile['is_returning_customer']);
+        $this->assertSame(0, $profile['total_bookings']);
+        $this->assertSame([], $profile['preferences']);
+    }
+
+    public function test_resolve_customer_profile_returns_empty_when_disabled(): void
+    {
+        config(['chatbot.crm.ai_context.enabled' => false]);
+
+        $customer = Customer::create([
+            'name'       => 'Disabled',
+            'phone_e164' => '+6281111111111',
+            'status'     => 'active',
+        ]);
+
+        $this->assertSame([], app(JetCrmContextService::class)->resolveCustomerProfile($customer));
     }
 
     public function test_it_caches_resolved_context_per_customer(): void
