@@ -140,6 +140,28 @@ BLOCK;
             $lines[] = '- Preferences lain (confidence ≥ 0.7): '.implode('; ', $extraPrefs);
         }
 
+        $milestones = is_array($profile['recent_unacknowledged_milestones'] ?? null)
+            ? $profile['recent_unacknowledged_milestones']
+            : [];
+
+        if ($milestones !== []) {
+            $lines[] = '';
+            $lines[] = 'PENCAPAIAN BARU YANG BELUM DIRAYAKAN:';
+            foreach ($milestones as $m) {
+                $key = (string) ($m['key'] ?? '');
+                $category = (string) ($m['category'] ?? '');
+                $lines[] = "- {$key} (kategori: {$category})";
+            }
+            $lines[] = '';
+            $lines[] = 'INSTRUKSI CELEBRATION:';
+            $lines[] = '- Kalau topik percakapan natural memungkinkan, sapa dengan ucapan selamat singkat di awal reply';
+            $lines[] = '- Contoh booking_count: "Wah, ini sudah booking ke-50 ya kak! 🎉 Terima kasih sudah loyal sama JET Travel."';
+            $lines[] = '- Contoh anniversary: "Selamat ya kak, sudah 1 tahun jadi customer JET Travel! 🎂 Terima kasih kepercayaannya."';
+            $lines[] = '- JANGAN paksa celebration kalau customer lagi komplain atau pertanyaan urgent — fokus jawab dulu, celebration nanti aja';
+            $lines[] = '- Setelah celebration, lanjut bantuin sesuai kebutuhan customer';
+            $lines[] = '- Setelah menyebut milestone di reply, PANGGIL tool acknowledge_milestone supaya tidak diulang.';
+        }
+
         $milestoneInstruction = $milestone !== null
             ? "- Customer baru saja mencapai milestone {$milestone} — UCAP terimakasih atas loyalty mereka."
             : null;
